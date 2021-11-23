@@ -54,6 +54,7 @@ pub fn read_line(path: &String, pos: u64) -> io::Result<(Vec<u8>, u64)> {
     // read one line
     let mut buf = Vec::new();
     reader.read_until(b'\n', &mut buf)?;
+    println!("{:?}", buf);
     if let Some(last) = buf.last() {
         if *last == b'\r' {
             buf.pop();
@@ -75,6 +76,7 @@ pub fn parse_line(headers: &String, path: &String, pos: u64) -> Result<(Record, 
         .has_headers(true)
         .flexible(true)
         .from_reader(csv_text.as_bytes());
+    println!("{}", csv_text);
     
     for result in rdr.deserialize() {
         match result {
