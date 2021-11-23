@@ -1,54 +1,45 @@
-#![feature(proc_macro_hygiene, decl_macro)]
-#[macro_use] extern crate rocket;
-#[macro_use] extern crate serde_derive;
-
-use rocket_contrib::serve::StaticFiles;
-use rocket_contrib::templates::Template;
-use rocket_contrib::json::Json;
-use rocket::Data;
-use rocket::State;
 use serde::{Serialize, Deserialize};
-use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Seek, SeekFrom, Write, BufRead};
 
 #[derive(Debug)]
-struct AppConfig {
+pub struct AppConfig {
     pub input: String,
-    pub output: String
+    pub output: String,
+    pub headers: String
 }
 
 #[derive(Debug, PartialEq, Eq, Deserialize)]
-struct ApplyData {
-    approved: bool,
-    time: u64
+pub struct ApplyData {
+    pub approved: bool,
+    pub time: i64
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(rename_all = "SnakeCase")]
-struct Record {
-    similarity,
-    match_y_n,
-    dh_product_name,
-    match_product_name,
-    dh_size_unit_std,
-    match_size_unit_std,
-    dh_size_std,
-    match_size_std,
-    dh_num_pieces,
-    match_num_pieces,
-    dh_price,
-    match_price,
-    dh_sku,
-    match_sku,
-    dh_img_url,
-    image_url,
-    dh_image,
-    shopee_image
+#[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub struct Record {
+    pub similarity: String,
+    pub match_y_n: String,
+    pub dh_product_name: String,
+    pub match_product_name: String,
+    pub dh_size_unit_std: String,
+    pub match_size_unit_std: String,
+    pub dh_size_std: String,
+    pub match_size_std: String,
+    pub dh_num_pieces: String,
+    pub match_num_pieces: String,
+    pub dh_price: String,
+    pub match_price: String,
+    pub dh_sku: String,
+    pub match_sku: String,
+    pub dh_img_url: String,
+    pub image_url: String,
+    pub dh_image: String,
+    pub shopee_image: String
 }
 
-fn read_line(path: &String, pos: u64) -> io::Result<(Vec<u8>, u64)> {
-    let mut file = File::open(path)?;
+pub fn read_line(path: &String, pos: u64) -> io::Result<(Vec<u8>, u64)> {
+    let file = File::open(path)?;
     let mut reader = io::BufReader::new(file);
 
     // make sure the file pointer is at the start of a line
@@ -69,11 +60,10 @@ fn read_line(path: &String, pos: u64) -> io::Result<(Vec<u8>, u64)> {
         }
     }
 
-    let current_pos = reader.stream_position()?;
     Ok((buf, reader.stream_position()?))
 }
 
-fn parse_line(headers: &String, path: &String, pos: u64) -> Result<(Record, u64), String> {
+pub fn parse_line(headers: &String, path: &String, pos: u64) -> Result<(Record, u64), String> {
     let (raw_data, new_pos) = match read_line(path, pos) {
         Ok(v) => v,
         Err(e) => return Err(format!("{}", e))
@@ -82,17 +72,20 @@ fn parse_line(headers: &String, path: &String, pos: u64) -> Result<(Record, u64)
     
     // read data from line by using the headers for easy access
     let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(true)
         .flexible(true)
         .from_reader(csv_text.as_bytes());
-    for result in rdr.records() {
-        if let Ok(record) = result {
+    
+    for result in rdr.deserialize() {
+        if let Ok(raw_record) = result {
+            let record: Record = raw_record;
             return Ok((record, new_pos))
         }
     }
     Err(format!("Couldn't parse the data at position {}", pos))
 }
 
-fn write_line(config: &AppConfig, text: String, pos: u64, append: bool) -> io::Result<()> {
+pub fn write_line(config: &AppConfig, text: String, pos: u64, append: bool) -> io::Result<()> {
     // get data from input file
     let (buf, _) = read_line(&config.input, pos)?;
 
@@ -108,7 +101,7 @@ fn write_line(config: &AppConfig, text: String, pos: u64, append: bool) -> io::R
         0 => format!("{}{}", String::from_utf8(buf).unwrap(), text),
         _ => format!("{},{}", String::from_utf8(buf).unwrap(), text)
     };
-    write!(output_file, "{}", text);
+    write!(output_file, "{}", text)?;
 
     Ok(())
 }

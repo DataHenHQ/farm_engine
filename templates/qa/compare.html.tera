@@ -1,5 +1,64 @@
+<!doctype html>
 <html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link href="https://unpkg.com/tailwindcss@^2/dist/tailwind.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="/public/css/home.css">
+    <script type="text/javascript">
+      const pos = {{pos}};
+      const next_pos = {{next_pos}};
+      const start_time = {{start_time}};
+
+      function are_equal(does_match) {
+        const xhttp = new XMLHttpRequest();
+        xhttp.onload = function() {
+          if (this.responseText == "OK") {
+            document.location = "/compare/" + next_pos;
+          } else {
+            alert("There was an error trying to apply the match");
+          }
+        xhttp.open("POST", "/compare/" + pos + "/apply", true);
+        xhttp.setRequestHeader("Content-type", "application/json");
+        xhttp.send(JSON.stringify({
+          "approved": does_match,
+          "time": start_time
+        }));
+      }
+    </script>
+  </head>
   <body>
-    hello from compare
+    <div class="grid grid-flow-col grid-rows-3 grid-cols-6 gap-4">
+      <div class="col-span-6">
+        <h1>Compare</h1>
+      </div>
+      <div>
+        <img src="{{data["dh_img_url"]}}">
+      </div>
+      <div class="col-span-4">
+        <div>
+          <h2>{{data["dh_product_name"]}}</h2>
+        </div>
+        <div>
+          <h2>{{data["match_product_name"]}}</h2>
+        </div>
+      </div>
+      <div>
+        <img src="{{data["image_url"]}}">
+      </div>
+      <div class="col-span-1 col-offset-1">
+        <a href="javascript:are_equal(true);" class="inline-flex items-center h-8 px-4 m-2 text-m text-green-100 transition-colors duration-150 bg-green-700 rounded-lg focus:shadow-outline hover:bg-green-800">
+          YES
+        </a>
+      </div>
+      <div>
+        Are the same?
+      </div>
+      <div class="col-span-1">
+        <a href="javascript:are_equal(false)" class="inline-flex items-center h-8 px-4 m-2 text-m text-red-100 transition-colors duration-150 bg-red-700 rounded-lg focus:shadow-outline hover:bg-red-800">
+          No
+        </a>
+      </div>
+    </div>
   </body>
 </html>
