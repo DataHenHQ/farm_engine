@@ -14,11 +14,11 @@
         const xhttp = new XMLHttpRequest();
         xhttp.onload = function() {
           if (this.responseText == "OK") {
-            document.location = "/compare/" + next_pos;
+            document.location = "/qa/compare/" + next_pos;
           } else {
             alert("There was an error trying to apply the match");
           }
-        xhttp.open("POST", "/compare/" + pos + "/apply", true);
+        xhttp.open("POST", "/qa/compare/" + pos + "/apply", true);
         xhttp.setRequestHeader("Content-type", "application/json");
         xhttp.send(JSON.stringify({
           "approved": does_match,

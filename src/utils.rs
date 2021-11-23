@@ -77,9 +77,14 @@ pub fn parse_line(headers: &String, path: &String, pos: u64) -> Result<(Record, 
         .from_reader(csv_text.as_bytes());
     
     for result in rdr.deserialize() {
-        if let Ok(raw_record) = result {
-            let record: Record = raw_record;
-            return Ok((record, new_pos))
+        match result {
+            Ok(raw_record) => {
+                let record: Record = raw_record;
+                return Ok((record, new_pos))
+            }
+            Err(e) => {
+                println!("Couldn't parse the data at position {}: {}", pos, e);
+            }
         }
     }
     Err(format!("Couldn't parse the data at position {}", pos))
@@ -91,9 +96,9 @@ pub fn write_line(config: &AppConfig, text: String, pos: u64, append: bool) -> i
 
     // decide on append or just override
     let mut output_file = if append {
-        OpenOptions::new().append(true).open(&config.output)?
+        OpenOptions::new().create(true).append(true).open(&config.output)?
     } else {
-        OpenOptions::new().write(true).open(&config.output)?
+        OpenOptions::new().create(true).write(true).open(&config.output)?
     };
 
     // open file and write
