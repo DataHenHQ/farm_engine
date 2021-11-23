@@ -6,7 +6,8 @@ use std::io::{self, Seek, SeekFrom, Write, BufRead};
 pub struct AppConfig {
     pub input: String,
     pub output: String,
-    pub headers: String
+    pub headers: String,
+    pub start_pos: u64
 }
 
 #[derive(Debug, PartialEq, Eq, Deserialize)]
@@ -16,9 +17,9 @@ pub struct ApplyData {
 }
 
 #[derive(Debug, Serialize, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "snake_case")]
 pub struct Record {
     pub similarity: String,
+    #[serde(rename = "Match (Y/N)")]
     pub match_y_n: String,
     pub dh_product_name: String,
     pub match_product_name: String,
@@ -34,7 +35,9 @@ pub struct Record {
     pub match_sku: String,
     pub dh_img_url: String,
     pub image_url: String,
+    #[serde(rename = "DH image")]
     pub dh_image: String,
+    #[serde(rename = "Shopee image")]
     pub shopee_image: String
 }
 
@@ -54,10 +57,14 @@ pub fn read_line(path: &String, pos: u64) -> io::Result<(Vec<u8>, u64)> {
     // read one line
     let mut buf = Vec::new();
     reader.read_until(b'\n', &mut buf)?;
-    println!("{:?}", buf);
     if let Some(last) = buf.last() {
-        if *last == b'\r' {
+        if *last == b'\n' {
             buf.pop();
+        }
+        if let Some(last) = buf.last() {
+            if *last == b'\r' {
+                buf.pop();
+            }
         }
     }
 
@@ -76,7 +83,6 @@ pub fn parse_line(headers: &String, path: &String, pos: u64) -> Result<(Record, 
         .has_headers(true)
         .flexible(true)
         .from_reader(csv_text.as_bytes());
-    println!("{}", csv_text);
     
     for result in rdr.deserialize() {
         match result {
@@ -100,7 +106,7 @@ pub fn write_line(config: &AppConfig, text: String, pos: u64, append: bool) -> i
     let mut output_file = if append {
         OpenOptions::new().create(true).append(true).open(&config.output)?
     } else {
-        OpenOptions::new().create(true).write(true).open(&config.output)?
+        OpenOptions::new().create(true).write(true).truncate(true).open(&config.output)?
     };
 
     // open file and write
@@ -108,7 +114,7 @@ pub fn write_line(config: &AppConfig, text: String, pos: u64, append: bool) -> i
         0 => format!("{}{}", String::from_utf8(buf).unwrap(), text),
         _ => format!("{},{}", String::from_utf8(buf).unwrap(), text)
     };
-    write!(output_file, "{}", text)?;
+    writeln!(output_file, "{}", text)?;
 
     Ok(())
 }

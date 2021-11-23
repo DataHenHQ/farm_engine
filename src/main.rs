@@ -5,7 +5,6 @@ use rocket_contrib::serve::StaticFiles;
 use rocket_contrib::templates::Template;
 use rocket_contrib::json::Json;
 use rocket::State;
-use std::collections::HashMap;
 use clap::{clap_app, crate_version};
 use chrono::prelude::*;
 use serde_json::{json, Value};
@@ -14,8 +13,10 @@ use utils::*;
 mod utils;
 
 #[get("/")]
-fn index(_config: State<AppConfig>) -> Template {
-    let context: HashMap<String, String> = HashMap::new();
+fn index(config: State<AppConfig>) -> Template {
+    let context = json!({
+        "pos": config.start_pos
+    });
     Template::render("home", &context)
 }
 
@@ -79,7 +80,7 @@ fn apply(config: State<AppConfig>, raw_pos: &rocket::http::RawStr, raw_data: Jso
     
     let data = raw_data.into_inner();
     let matched = if data.approved { "Y" } else { "N" };
-    let track_time = Utc::now().timestamp_nanos() - data.time;
+    let track_time = (Utc::now().timestamp_nanos() - data.time) / 1000000;
 
     if let Err(e) = write_line(&config, format!("{},{}", matched, track_time), pos, true) {
         println!("{}", e);
@@ -99,13 +100,31 @@ fn main() {
             (@arg output_file: +required "Must provide an output CSV file path")
     ).get_matches();
 
-    // write output headers
-    let config = AppConfig{
-        input: clap.value_of("input_file").unwrap().to_string(),
-        output: clap.value_of("output_file").unwrap().to_string(),
-        headers: String::new()
+    // build app config
+    let input = clap.value_of("input_file").unwrap().to_string();
+    let (buf, start_pos) = match read_line(&input, 0) {
+        Ok(v) => v,
+        Err(e) => {
+            println!("Error reading headers from input file \"{}\": {}", &input, e);
+            return;
+        }
     };
-    if let Err(e) = write_line(&config, "manual_match,time".to_string(), 0, false) {
+    let headers = match String::from_utf8(buf) {
+        Ok(s) => s.to_string(),
+        Err(e) => {
+            println!("Error reading headers from input file \"{}\": {}", &input, e);
+            return;
+        }
+    };
+    let config = AppConfig{
+        input,
+        output: clap.value_of("output_file").unwrap().to_string(),
+        headers: headers,
+        start_pos
+    };
+
+    // write output headers
+    if let Err(e) = write_line(&config, "manual_match,manual_match_time_ms".to_string(), 0, false) {
         println!("Error writing headers on output file \"{}\": {}", config.output, e);
         return;
     }

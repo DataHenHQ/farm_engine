@@ -18,6 +18,7 @@
           } else {
             alert("There was an error trying to apply the match");
           }
+        };
         xhttp.open("POST", "/qa/compare/" + pos + "/apply", true);
         xhttp.setRequestHeader("Content-type", "application/json");
         xhttp.send(JSON.stringify({
