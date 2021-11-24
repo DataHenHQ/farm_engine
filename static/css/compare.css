@@ -20,7 +20,8 @@ html, body {
 }
 
 .wrapper > div {
-    width: 1000px;
+    max-width: 1000px;
+    min-width: 300px;
     margin: 0 auto;
 }
 
@@ -30,79 +31,136 @@ body {
 }
 
 h1 {
+    margin: 10px 0 0 0;
+    padding: 0;
     text-align: center;
+    font-size: 30px;
+    line-height: 50px;
+    vertical-align: middle;
+}
+
+h1 img {
+    display: inline-block;
+    width: 50px;
+    height: auto;
+    margin-right: 3px;
+    vertical-align: middle;
+    position: relative;
+    top: -5px;
 }
 
 .data {
-    height: 200px;
+    padding-bottom: 10px;
+    margin-top: 10px;
+    border-color: #ddd;
+    border-width: 2px;
+    border-style: solid none;
     position: relative;
+    overflow: hidden;
+}
+
+.spacer {
+    width: 1px;
+    height: 100%;
+    background-color: #ddd;
+    position: absolute;
+    top: 0;
+}
+
+.spacer.a {
+    left: 50%;
+}
+
+.spacer.b {
+    right: 50%;
 }
 
 .product {
     margin: 0;
     padding: 0;
+    overflow: hidden;
+}
+
+.product .a, .product .b {
+    display: block;
     width: 50%;
     float: left;
 }
 
-.product > div {
-    padding: 5px 8px;
-}
-
-.product h2 {
-    font-size: 14px;
-    font-weight: normal;
-    display: block;
-}
-
-.product.prod-a {
+.product .a {
     text-align: right;
 }
 
-.product.prod-a > div {
-    border-right: solid #333 1px;
-}
-
-.product.prod-b {
+.product .b {
     text-align: left;
 }
 
-.product.prod-b > div {
-    border-left: solid #333 1px;
+.product .img {
+    margin-top: 10px;
+    overflow: hidden;
+    line-height: 200px;
 }
 
-.product .prod-img {
-    width: 100px;
-    height: 100px;
-}
-
-.product.prod-a .prod-img {
-    float: right;
-    margin-left: 8px;
-}
-
-.product.prod-b .prod-img {
-    float: left;
-    margin-right: 8px;
-}
-
-.product .prod-img img {
-    width: 100%;
+.product .img img {
+    width: 200px;
     height: auto;
+    vertical-align: middle;
+    margin-right: 8px
+}
+
+.product .name {
+    margin-top: 10px;
+    overflow: hidden;
+}
+
+.product .name h2 {
+    font-size: 16px;
+    font-weight: normal;
+    padding: 0;
+    margin: 0;
+}
+
+.product .name h2 > span {
+    display: block;
+    color: #000;
+}
+
+.product .name h2.a > span {
+    padding-right: 10px;
+}
+
+.product .name h2.b > span {
+    padding-left: 10px;
 }
 
 .extra-data {
-    font-size: 12px;
     line-height: 20px;
-    white-space: nowrap;
     overflow: hidden;
+}
+
+.extra-data .a > div, .extra-data .b > div {
+    padding: 0 10px;
+}
+
+.extra-data .title, .extra-data .value {
     text-overflow: ellipsis;
+    overflow: hidden;
 }
 
 .extra-data .title {
-    display: block;
-    font-size: 9px;
-    color: #ccc;
+    font-size: 11px;
+    font-weight: bold;
+    margin-top: 7px;
+    height: 13px;
+    line-height: 13px;
+    color: #aaa;
+}
+
+.extra-data .value {
+    height: 15px;
+    margin-top: 3px;
+    line-height: 15px;
+    font-size: 13px;
 }
 
 .options {
@@ -124,7 +182,8 @@ h1 {
     display: inline-block;
     text-decoration: none;
     border-radius: 5px;
-    padding: 20px 25px;
+    width: 100px;
+    padding: 22px 0 17px 0;
 }
 
 .button.yes {
@@ -149,4 +208,112 @@ h1 {
 
 .button.no:active {
     background-color: #b02a37;
+}
+
+.button.skip {
+    background-color: #aaa;
+    display: block;
+    margin: 20px auto;
+}
+
+.button.skip:hover {
+    background-color: #ccc;
+}
+
+.button.skip:active {
+    background-color: #777;
+}
+
+@media only screen and (max-width: 399px) {
+    h1 {
+        margin: 10px 0 0 0;
+        font-size: 20px;
+        line-height: 30px;
+    }
+    
+    h1 img {
+        width: 30px;
+        margin-right: 3px;
+    }
+    
+    .data {
+        padding-bottom: 10px;
+        margin-top: 10px;
+    }
+
+    .product .img {
+        margin-top: 10px;
+        line-height: 100px;
+    }
+    
+    .product .img img {
+        width: 100px;
+    }
+    
+    .product .name h2 {
+        font-size: 12px;
+    }
+
+    .extra-data .title {
+        font-size: 10px;
+        margin-top: 5px;
+        height: 14px;
+        line-height: 12px;
+    }
+    
+    .extra-data .value {
+        height: 15px;
+        margin-top: 1px;
+        line-height: 12px;
+        font-size: 12px;
+    }
+
+    .decision {
+        font-size: 17px;
+    }
+
+    .button {
+        font-size: 17px;
+        width: 80px;
+        padding: 18px 0 13px 0;
+    }
+}
+
+@media only screen and (max-width: 349px) {
+    .data {
+        padding-bottom: 10px;
+        margin-top: 8px;
+    }
+
+    .extra-data .title {
+        font-size: 9px;
+        margin-top: 4px;
+        height: 13px;
+        line-height: 12px;
+    }
+    
+    .extra-data .value {
+        height: 15px;
+        margin-top: 0px;
+        line-height: 12px;
+        font-size: 11px;
+    }
+
+    .options {
+        margin-top: 20px;
+    }
+
+    .decision {
+        font-size: 15px;
+    }
+
+    .button {
+        font-size: 15px;
+        width: 60px;
+        padding: 17px 0 12px 0;
+    }
+
+    .button.skip {
+        margin-top: 15px;
+    }
 }

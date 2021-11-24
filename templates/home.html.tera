@@ -9,7 +9,7 @@
     <div class="main">
       <div class="wrapper">
         <div>
-          <img src="/public/images/datahen.png" class="logo" alt="Datahen Canada Inc." />
+          <img src="/public/images/logo.png" class="logo" alt="Datahen Canada Inc." />
         </div>
         <h1>Welcome to Match QA</h1>
         <div class="description">Press start to begin</div>

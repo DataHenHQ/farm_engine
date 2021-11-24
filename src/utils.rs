@@ -13,6 +13,7 @@ pub struct AppConfig {
 #[derive(Debug, PartialEq, Eq, Deserialize)]
 pub struct ApplyData {
     pub approved: bool,
+    pub skip: bool,
     pub time: i64
 }
 

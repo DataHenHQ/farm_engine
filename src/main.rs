@@ -79,7 +79,8 @@ fn apply(config: State<AppConfig>, raw_pos: &rocket::http::RawStr, raw_data: Jso
     };
     
     let data = raw_data.into_inner();
-    let matched = if data.approved { "Y" } else { "N" };
+    let matched = if data.skip { "S" } else 
+        if data.approved { "Y" } else { "N" };
     let track_time = (Utc::now().timestamp_nanos() - data.time) / 1000000;
 
     if let Err(e) = write_line(&config, format!("{},{}", matched, track_time), pos, true) {
@@ -92,7 +93,7 @@ fn apply(config: State<AppConfig>, raw_pos: &rocket::http::RawStr, raw_data: Jso
 fn main() {
     // CLI configuration
     let clap = clap_app!(
-        mdrend =>
+        matchqa =>
             (version:crate_version!())
             (author: "Datahen Canada Inc.")
             (about: "Easily compare 2 products to approve or reject equality.")

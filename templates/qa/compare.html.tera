@@ -9,7 +9,7 @@
       const next_pos = {{next_pos}};
       const start_time = {{start_time}};
 
-      function are_equal(does_match) {
+      function are_equal(does_match, skip) {
         const xhttp = new XMLHttpRequest();
         xhttp.onload = function() {
           if (this.responseText == "OK") {
@@ -22,58 +22,85 @@
         xhttp.setRequestHeader("Content-type", "application/json");
         xhttp.send(JSON.stringify({
           "approved": does_match,
+          "skip": skip,
           "time": start_time
         }));
       }
+
+      function approve() { are_equal(true, false); }
+      function reject() { are_equal(false, false); }
+      function skip() { are_equal(false, true); }
     </script>
   </head>
   <body>
     <div class="main">
       <div class="wrapper">
         <div>
-          <h1>Compare</h1>
-          <div class="data summary">
-            <div class="product prod-a">
-              <div>
-                <div class="prod-img">
+          <h1><img src="/public/images/logo.png" />Compare</h1>
+          <div class="data">
+            <div class="spacer a"></div>
+            <div class="spacer b"></div>
+            <div class="product">
+              <div class="img">
+                <div class="a">
                   <img src="{{data["dh_img_url"]}}">
                 </div>
-                <h2 title="{{data["dh_product_name"]}}">{{data["dh_product_name"]}}</h2>
-                <div class="extra-data">
-                  <span class="title">Price</span>
-                  {{data["match_price"]}}
-                  <span class="title"></span>
-                  <span class="title"></span>
-                  <span class="title"></span>
-                  <span class="title"></span>
-                </div>
-              </div>
-            </div>
-            <div class="product prod-b">
-              <div>
-                <div class="prod-img">
+                <div class="b">
                   <img src="{{data["image_url"]}}">
                 </div>
-                <h2 title="{{data["match_product_name"]}}">{{data["match_product_name"]}}</h2>
-                <div class="extra-data">
-                  <span class="title"></span>
-                  <span class="title"></span>
-                  <span class="title"></span>
-                  <span class="title"></span>
-                  <span class="title"></span>
+              </div>
+              <div class="name">
+                <h2 class="a" title="{{data["dh_product_name"]}}">
+                  <span>{{data["dh_product_name"]}}</span>
+                </h2>
+                <h2 class="b" title="{{data["match_product_name"]}}">
+                  <span>{{data["match_product_name"]}}</span>
+                </h2>
+              </div>
+              <div class="extra-data">
+                <div class="a">
+                  <div>
+                    <div class="title">Size unit</div>
+                    <div class="value">{{data["dh_size_unit_std"]}}</div>
+                    <div class="title">Size</div>
+                    <div class="value">{{data["dh_size_std"]}}</div>
+                    <div class="title">Number of pieces</div>
+                    <div class="value">{{data["dh_num_pieces"]}}</div>
+                    <div class="title">Price</div>
+                    <div class="value">{{data["dh_price"]}}</div>
+                    <div class="title">SKU</div>
+                    <div class="value">{{data["dh_sku"]}}</div>
+                  </div>
+                </div>
+                <div class="b">
+                  <div>
+                    <div class="title">Size unit</div>
+                    <div class="value">{{data["match_size_unit_std"]}}</div>
+                    <div class="title">Size</div>
+                    <div class="value">{{data["match_size_std"]}}</div>
+                    <div class="title">Number of pieces</div>
+                    <div class="value">{{data["match_num_pieces"]}}</div>
+                    <div class="title">Price</div>
+                    <div class="value">{{data["match_price"]}}</div>
+                    <div class="title">SKU</div>
+                    <div class="value">{{data["match_sku"]}}</div>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
           <div class="options">
-            <a href="javascript:are_equal(true);" class="button yes">
+            <a href="javascript:approve();" class="button yes">
               YES
             </a>
             <span class="decision">
-            Are the same?
+              Are the same?
             </span>
-            <a href="javascript:are_equal(false)" class="button no">
+            <a href="javascript:reject()" class="button no">
               NO
+            </a>
+            <a href="javascript:skip()" class="button skip">
+              SKIP
             </a>
           </div>
         </div>
