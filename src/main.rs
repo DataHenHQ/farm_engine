@@ -7,16 +7,20 @@
 #![feature(proc_macro_hygiene, decl_macro)]
 #[macro_use] extern crate rocket;
 
+mod utils;
+mod engine;
+
 use rocket_contrib::serve::StaticFiles;
-use rocket_contrib::templates::Template;
+use rocket_contrib::templates::{Engines as RcktEngines, Template};
+use rocket_contrib::templates::tera::Error as RcktError;
 use rocket_contrib::json::Json;
 use rocket::State;
 use clap::{clap_app, crate_version};
 use chrono::prelude::*;
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use utils::*;
-
-mod utils;
+//use engine::Engine;
 
 /// Handle homepage GET requests.
 /// 
@@ -75,7 +79,10 @@ fn compare(config: State<AppConfig>, raw_start_pos: &rocket::http::RawStr) -> Te
     context["start_time"] = Value::Number(serde_json::Number::from(Utc::now().timestamp_nanos()));
     context["pos"] = Value::Number(serde_json::Number::from(pos));
     context["next_pos"] = Value::Number(serde_json::Number::from(next_pos));
-    context["data"] = serde_json::to_value(data).unwrap();
+    context["data"] = data;
+    
+
+    // add diff filter
     Template::render("qa/compare", &context)
 }
 
@@ -118,24 +125,78 @@ fn apply(config: State<AppConfig>, raw_start_pos: &rocket::http::RawStr, raw_dat
     "OK"
 }
 
+/// Tera filter that displays the difference between 2 texts and adds html tags to it.
+/// 
+/// # Arguments
+/// 
+/// * `after` - Text after the changes.
+/// * `before` - Text before the changes.
+fn filter_diff_single(after: Value, args: HashMap<String, Value>) -> Result<Value, RcktError> {
+    let after = match after {
+        Value::String(s) => s,
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => if b { "Yes".to_string() } else { "No".to_string() },
+        Value::Null => "".to_string(),
+        _ => {
+            return Err(RcktError::from("This filter doesn't works with objects nor arrays."));
+        }
+    };
+    let before = match &args["before"] {
+        Value::String(s) => s.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::Bool(b) => if *b { "Yes".to_string() } else { "No".to_string() },
+        Value::Null => "".to_string(),
+        _ => {
+            return Err(RcktError::from("This filter doesn't works with objects nor arrays."));
+        }
+    };
+
+    let text = diff_html_single(&before, &after);
+    Ok(Value::String(text))
+}
+
 fn main() {
     // CLI configuration
-    let clap = clap_app!(
+    let cli = clap_app!(
         matchqa =>
             (version:crate_version!())
             (author: "Datahen Canada Inc.")
             (about: "Easily compare 2 products to approve or reject equality.")
-            (@arg input_file: +required "Must provide an input CSV file path")
-            (@arg output_file: +required "Must provide an output CSV file path")
-            (@arg config_file: +required format!(
-                "Must provide a JSON config file path, example:\n{}",
-                CONFIG_SAMPLE
-            ))
-    ).get_matches();
+            (@subcommand start =>
+                (about: "Start matchqa web server.")
+                (@arg input_file: +required "Must provide an input CSV file path")
+                (@arg output_file: +required "Must provide an output CSV file path")
+                (@arg config_file: +required "Must provide a JSON config file path")
+            )
+            (@subcommand config_sample =>
+                (about: "Print a config file sample.")
+            )
+    );
+    let mut help_msg = Vec::new();
+    if let Err(e) = cli.write_help(&mut help_msg) {
+        println!("Error generiting help message: {}", e);
+        return;
+    }
+    let cli_matches = cli.get_matches();
+
+    // print config sample
+    if let Some(_) = cli_matches.subcommand_matches("config_sample") {
+        println!("{}", CONFIG_SAMPLE);
+        return;
+    }
+
+    // print help
+    let cli_start = match cli_matches.subcommand_matches("start") {
+        Some(v) => v,
+        None => {
+            println!("{}", String::from_utf8(help_msg).unwrap());
+            return;
+        }
+    };
 
     // build app config
-    let input = clap.value_of("input_file").unwrap().to_string();
-    let (buf, start_pos, next_pos) = match read_line(&input, 0) {
+    let input = cli_start.value_of("input_file").unwrap().to_string();
+    let (buf, _, start_pos) = match read_line(&input, 0) {
         Ok(v) => v,
         Err(e) => {
             println!("Error reading headers from input file \"{}\": {}", &input, e);
@@ -149,8 +210,8 @@ fn main() {
             return;
         }
     };
-    let user_config_path = clap.value_of("config_file").unwrap().to_string();
-    let user_config = match UserConfig::from_file(user_config_path) {
+    let user_config_path = cli_start.value_of("config_file").unwrap().to_string();
+    let user_config = match UserConfig::from_file(&user_config_path) {
         Ok(v) => v,
         Err(e) => {
             println!("Error parsing config file \"{}\": {}", &user_config_path, e);
@@ -159,7 +220,7 @@ fn main() {
     };
     let config = AppConfig{
         input,
-        output: clap.value_of("output_file").unwrap().to_string(),
+        output: cli_start.value_of("output_file").unwrap().to_string(),
         headers: headers,
         start_pos,
         user_config
@@ -173,7 +234,9 @@ fn main() {
 
     // configure server and routes
     rocket::ignite()
-        .attach(Template::fairing())
+        .attach(Template::custom(|engines: &mut RcktEngines| {
+            engines.tera.register_filter("diff_single", filter_diff_single);
+        }))
         .manage(config)
         .mount("/public", StaticFiles::from("static"))
         .mount("/", routes![index])

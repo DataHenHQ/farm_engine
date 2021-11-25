@@ -30,9 +30,14 @@
       function approve() { are_equal(true, false); }
       function reject() { are_equal(false, false); }
       function skip() { are_equal(false, true); }
+
+      function toggle_show_more() {
+        var element = document.getElementsByTagName('body')[0];
+        element.classList.toggle("hidden");
+      }
     </script>
   </head>
-  <body>
+  <body class="show_more hidden">
     <div class="main">
       <div class="wrapper">
         <div>
@@ -43,47 +48,67 @@
             <div class="product">
               <div class="img">
                 <div class="a">
-                  <img src="{{data["dh_imgage_url"]}}">
+                  <img src="{{data[ui_config.image_url.a]}}">
                 </div>
                 <div class="b">
-                  <img src="{{data["match_image_url"]}}">
+                  <img src="{{data[ui_config.image_url.b]}}">
                 </div>
               </div>
               <div class="name">
-                <h2 class="a" title="{{data["dh_product_name"]}}">
-                  <span>{{data["dh_product_name"]}}</span>
+                <h2 class="a" title="{{data[ui_config.product_name.a]}}">
+                  <span>{{data[ui_config.product_name.a]|diff_single(before = data[ui_config.product_name.b])}}</span>
                 </h2>
-                <h2 class="b" title="{{data["match_product_name"]}}">
-                  <span>{{data["match_product_name"]}}</span>
+                <h2 class="b" title="{{data[ui_config.product_name.b]}}">
+                  <span>{{data[ui_config.product_name.b]|diff_single(before = data[ui_config.product_name.a])}}</span>
                 </h2>
               </div>
               <div class="extra-data">
                 <div class="a">
                   <div>
-                    <div class="title">Size unit</div>
-                    <div class="value">{{data["dh_size_unit_std"]}}</div>
-                    <div class="title">Size</div>
-                    <div class="value">{{data["dh_size_std"]}}</div>
-                    <div class="title">Number of pieces</div>
-                    <div class="value">{{data["dh_num_pieces"]}}</div>
-                    <div class="title">Price</div>
-                    <div class="value">{{data["dh_price"]}}</div>
-                    <div class="title">SKU</div>
-                    <div class="value">{{data["dh_sku"]}}</div>
+                    {% for data_config in ui_config.data %}
+                      <div {% if data_config.show_more %}class="show_more_data"{% endif %}>
+                        <div class="title">{{data_config.label}}</div>
+                        <div class="value">
+                          {% if data_config.no_diff %}
+                            {% if data_config.a %}
+                              {{data[data_config.a]}}
+                            {% endif %}
+                          {% else %}
+                            {% if data_config.a and data_config.b %}
+                              {{data[data_config.a]|diff_single(before = data[data_config.b])}}
+                            {% else %}
+                              {% if data_config.a %}
+                                {{data[data_config.a]|diff_single(before = "")}}
+                              {% endif %}
+                            {% endif %}
+                          {% endif %}
+                        </div>
+                      </div>
+                    {% endfor %}
                   </div>
                 </div>
                 <div class="b">
                   <div>
-                    <div class="title">Size unit</div>
-                    <div class="value">{{data["match_size_unit_std"]}}</div>
-                    <div class="title">Size</div>
-                    <div class="value">{{data["match_size_std"]}}</div>
-                    <div class="title">Number of pieces</div>
-                    <div class="value">{{data["match_num_pieces"]}}</div>
-                    <div class="title">Price</div>
-                    <div class="value">{{data["match_price"]}}</div>
-                    <div class="title">SKU</div>
-                    <div class="value">{{data["match_sku"]}}</div>
+                    {% for data_config in ui_config.data %}
+                      <div {% if data_config.show_more %}class="show_more_data"{% endif %}>
+                        <div class="title">{{data_config.label}}</div>
+                        <div class="value">
+                          {% if data_config.no_diff %}
+                            {% if data_config.b %}
+                              {{data[data_config.b]}}
+                            {% endif %}
+                          {% else %}
+                            {% if data_config.a and data_config.b %}
+                              {{data[data_config.b]|diff_single(before = data[data_config.a])}}
+                            {% else %}
+                              {% if data_config.b %}
+                                {{data[data_config.b]|diff_single(before = "")}}
+                              {% endif %}
+                            {% endif %}
+                          {% endif %}
+                        </div>
+                      </div>
+                    {% endfor %}
                   </div>
                 </div>
               </div>
@@ -94,6 +119,10 @@
               YES
             </a>
             <span class="decision">
+              <a href="javascript:toggle_show_more();" class="show_more_trigger">
+                <span class="less">&uarr;show less;&uarr;</span>
+                <span class="more">&darr;show more&darr;</span>
+              </a>
               Are the same?
             </span>
             <a href="javascript:reject()" class="button no">

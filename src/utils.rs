@@ -2,22 +2,25 @@
 
 use serde::{Serialize, Deserialize};
 use std::fs::{File, OpenOptions};
-use std::io::{self, Seek, SeekFrom, Write, BufRead, BufWriter};
+use std::io::{self, Seek, SeekFrom, Write, BufRead, BufReader, BufWriter};
+use difference::{Changeset, Difference};
 
 const BUF_SIZE: usize = 4096;
-const EMPTY_RESULT_LINE_SIZE: usize = 40;
+
+/// Match fields size used to build output file
+const MATCH_FIELD_SIZE:u8 = 20;
 
 /// User config sample file.
-const CONFIG_SAMPLE: &str = r#"
+pub const CONFIG_SAMPLE: &str = r#"
 {
   "ui": {
     "image_url": {
       "a": "dh_image_url",
-      "b": "match_image_url",
+      "b": "match_image_url"
     },
     "product_name": {
       "a": "dh_product_name",
-      "b": "match_product_name",
+      "b": "match_product_name"
     },
     "data": [
       {
@@ -36,7 +39,8 @@ const CONFIG_SAMPLE: &str = r#"
         "label": "GID",
         "a": "dh_global_id",
         "b": null,
-        "show_more": true
+        "show_more": true,
+        "no_diff": true
       }
     ]
   }
@@ -47,14 +51,16 @@ const CONFIG_SAMPLE: &str = r#"
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiDataValue {
     /// Label to be display on the compare UI.
-    pub label: String,
+    pub label: Option<String>,
     /// Product A field header key.
     pub a: Option<String>,
     /// Product B field header key.
     pub b: Option<String>,
     /// Show more flag, will be hidden when true until the user
     /// enable `show more` feature.
-    pub show_more: Option<bool>
+    pub show_more: Option<bool>,
+    /// No diff will be executed if `true`.
+    pub no_diff: Option<bool>
 }
 
 /// UI configuration used to describe the compare view.
@@ -84,7 +90,7 @@ impl UserConfig {
     pub fn from_file(path: &str) -> io::Result<UserConfig> {
         // open the file in read-only mode with buffer
         let file = File::open(path)?;
-        let reader = io::BufReader::new(file);
+        let reader = BufReader::new(file);
     
         // read the JSON contents of the file into the user config
         let config = serde_json::from_reader(reader)?;
@@ -135,7 +141,7 @@ pub struct ApplyData {
 /// ```
 pub fn read_line(path: &String, start_pos: u64) -> io::Result<(Vec<u8>, u64, u64)> {
     let file = File::open(path)?;
-    let mut reader = io::BufReader::new(file);
+    let mut reader = BufReader::new(file);
     let mut pos = start_pos;
 
     // make sure the file pointer is at the start of a line
@@ -152,7 +158,7 @@ pub fn read_line(path: &String, start_pos: u64) -> io::Result<(Vec<u8>, u64, u64
     }
 
     // read one line
-    let mut buf = Vec::new();
+    let mut buf: Vec<u8> = Vec::new();
     reader.read_until(b'\n', &mut buf)?;
 
     // remove any new line at the end
@@ -198,11 +204,11 @@ pub fn parse_line(headers: &String, path: &String, start_pos: u64) -> Result<(se
         .from_reader(csv_text.as_bytes());
     
     // deserialize CSV string object into a JSON object
-    for result in rdr.deserialize() {
+    for result in rdr.deserialize::<serde_json::Map<String, serde_json::Value>>() {
         match result {
             Ok(record) => {
                 // return data after the first successful record
-                return Ok((record, pos, next_pos))
+                return Ok((serde_json::Value::Object(record), pos, next_pos))
             }
             Err(e) => {
                 println!("Couldn't parse the data at position {}: {}", start_pos, e);
@@ -224,7 +230,7 @@ pub fn parse_line(headers: &String, path: &String, start_pos: u64) -> Result<(se
 /// * `append` - Append flag to decide whenever append or override the output file.
 pub fn write_line(config: &AppConfig, text: String, start_pos: u64, append: bool) -> io::Result<()> {
     // get data from input file
-    let (buf, pos, _) = read_line(&config.input, start_pos)?;
+    let (buf, _, _) = read_line(&config.input, start_pos)?;
 
     // decide on append or just override, then open file
     let mut output_file = if append {
@@ -243,63 +249,27 @@ pub fn write_line(config: &AppConfig, text: String, start_pos: u64, append: bool
     Ok(())
 }
 
-/// Analyze an input file to track new lines and record it's positions.
-/// Returns total line count.
-/// 
-/// # Arguments
-/// 
-/// * `input_path` - File path to analize.
-/// * `result_path` - File path to write results.
-pub fn analize(input_path: &str, result_path: &str) -> io::Result<u64> {
-    let file = File::open(input_path)?;
-    let result_file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .open(result_path)?;
-    
-    let empty_line: [U8; EMPTY_RESULT_LINE_SIZE] = [u8; EMPTY_RESULT_LINE_SIZE];
-    file.write
-
-    unimplemented!();
+/// Encode html entities on a string.
+pub fn encode_html(s: &str) -> String {
+    html_escape::encode_text(&s).to_string()
 }
 
-/// Fill a file with zero byte until the target size or ignore if
-/// bigger. Return true if file is bigger.
-/// 
-/// # Arguments
-/// 
-/// * `path` - File path to fill.
-/// * `target_size` - Target file size in bytes.
-pub fn fill_file(path: &str, target_size: u64) -> io::Result<bool> {
-    let file = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .open(path)?;
+/// Diff 2 texts and add html tags to it's differences.
+pub fn diff_html_single(before: &str, after: &str) -> String {
+    let before = html_escape::decode_html_entities(&before);
+    let after = html_escape::decode_html_entities(&after);
+    let changeset = Changeset::new(&before, &after, "");
 
-    file.sync_all()?;
-    let size = file.metadata()?.len();
+    let mut text = String::new();
+    for change in changeset.diffs {
+        let segment: String = match change {
+            Difference::Same(v) => encode_html(&v),
+            Difference::Rem(_) => "".to_string(),
+            Difference::Add(v) => format!("<span class='diff'>{}</span>", encode_html(&v))
+        };
 
-    // validate file current size vs target size
-    if target_size < size {
-        // file is bigger, return true
-        return Ok(true);
-    }
-    if target_size == size {
-        return Ok(false);
+        text.push_str(&segment);
     }
 
-    // fill file with zeros until target size is match
-    let buf_size = 4096u64;
-    let buf = [0u8; 4096];
-    let wrt = BufWriter::new(file);
-    while size + buf_size < target_size {
-        wrt.write_all(&buf)?;
-        size += buf_size;
-    }
-    let remaining = (target_size - size) as usize;
-    if remaining > 0 {
-        wrt.write_all(&buf[..remaining])?;
-    }
-
-    Ok(false)
+    text
 }
