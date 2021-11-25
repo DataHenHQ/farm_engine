@@ -119,7 +119,8 @@ pub struct AppConfig {
 pub struct ApplyData {
     pub approved: bool,
     pub skip: bool,
-    pub time: i64
+    pub time: i64,
+    pub pos: u64
 }
 
 /// Reads the closest line on a CSV file from the provided position
@@ -142,7 +143,7 @@ pub struct ApplyData {
 pub fn read_line(path: &String, start_pos: u64) -> io::Result<(Vec<u8>, u64, u64)> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
-    let mut pos = start_pos;
+    let pos = start_pos;
 
     // make sure the file pointer is at the start of a line
     if start_pos > 0 {
@@ -152,8 +153,7 @@ pub fn read_line(path: &String, start_pos: u64) -> io::Result<(Vec<u8>, u64, u64
         reader.read_until(b'\n', &mut disposable_buf)?;
 
         // move to closest line first char
-        let current_pos = reader.stream_position()?;
-        pos = current_pos + 1u64;
+        let pos = reader.stream_position()?;
         reader.seek(SeekFrom::Start(pos))?;
     }
 

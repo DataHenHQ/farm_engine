@@ -117,7 +117,7 @@ fn apply(config: State<AppConfig>, raw_start_pos: &rocket::http::RawStr, raw_dat
     let track_time = (Utc::now().timestamp_nanos() - data.time) / 1000000;
 
     // join original line contents with match data and write to output file
-    let text = format!("{},{}", matched, track_time);
+    let text = format!("{},{},http://localhost:8000/qa/compare/{}", matched, track_time, data.pos);
     if let Err(e) = write_line(&config, text, start_pos, true) {
         println!("{}", e);
         return "Err";
@@ -227,7 +227,7 @@ fn main() {
     };
 
     // write output headers
-    if let Err(e) = write_line(&config, "manual_match,manual_match_time_ms".to_string(), 0, false) {
+    if let Err(e) = write_line(&config, "manual_match,manual_match_time_ms,compare_link".to_string(), 0, false) {
         println!("Error writing headers on output file \"{}\": {}", config.output, e);
         return;
     }

@@ -23,7 +23,8 @@
         xhttp.send(JSON.stringify({
           "approved": does_match,
           "skip": skip,
-          "time": start_time
+          "time": start_time,
+          "pos": pos
         }));
       }
 
