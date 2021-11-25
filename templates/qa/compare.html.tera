@@ -43,10 +43,10 @@
             <div class="product">
               <div class="img">
                 <div class="a">
-                  <img src="{{data["dh_img_url"]}}">
+                  <img src="{{data["dh_imgage_url"]}}">
                 </div>
                 <div class="b">
-                  <img src="{{data["image_url"]}}">
+                  <img src="{{data["match_image_url"]}}">
                 </div>
               </div>
               <div class="name">
