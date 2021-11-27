@@ -38,7 +38,7 @@ impl<'engine> Engine<'engine> {
     /// * `index_path` - Index path (Optional).
     pub fn new(input_path: &str, output_path: &str, index_path: Option<&str>) -> Self {
         let index_path = match index_path {
-            Some(s) => s.to_string(),
+            Some(s) => s,
             None => format!("{}.index", input_path)
         };
 
@@ -46,10 +46,7 @@ impl<'engine> Engine<'engine> {
         Self{
             input_path,
             output_path: output_path.to_string(),
-            index: Indexer{
-                input_path: &input_path,
-                index_path
-            }
+            index: Indexer::new(&input_path, index_path)
         }
     }
 

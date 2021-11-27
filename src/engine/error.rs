@@ -4,6 +4,7 @@ pub enum ParseError {
     InvalidSize,
     InvalidFormat,
     InvalidValue,
+    Unavailable(super::index::IndexStatus),
     IO(std::io::Error)
 }
 
