@@ -4,15 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="stylesheet" href="/public/css/compare.css">
-    <script type="text/javascript">
-      const pos = {{pos}};
-      const next_pos = {{next_pos}};
-      const start_time = {{start_time}};
 
-      function are_equal(does_match, skip) {
+    <script type="text/javascript">
+      const pos = {{pos}}n;
+      const next_pos = {{next_pos}}n;
+      const start_time = {{start_time}}n;
+      const comments_limit = {{comments_limit}};
+
+      function areEqual(does_match, skip) {
         const xhttp = new XMLHttpRequest();
         xhttp.onload = function() {
-          if (this.responseText == "OK") {
+          if (this.responseText === "OK") {
             document.location = "/qa/compare/" + next_pos;
           } else {
             alert("There was an error trying to apply the match");
@@ -24,21 +26,55 @@
           "approved": does_match,
           "skip": skip,
           "time": start_time,
-          "pos": pos
+          "pos": pos,
+          "comments": document.getElementById("comments").value.substring(0, comments_limit)})
         }));
       }
 
-      function approve() { are_equal(true, false); }
-      function reject() { are_equal(false, false); }
-      function skip() { are_equal(false, true); }
+      function approve() { areEqual(true, false); }
+      function reject() { areEqual(false, false); }
+      function skip() { areEqual(false, true); }
 
-      function toggle_show_more() {
-        var element = document.getElementsByTagName('body')[0];
-        element.classList.toggle("hidden");
+      function toggleShowMore() {
+        const body = document.getElementsByTagName('body')[0];
+        body.classList.toggle("hidden");
+      }
+
+      function togglePauseResume() {
+        const body = document.getElementsByTagName('body')[0];
+
+        // paused action is triggered when body doesn't have "paused" class
+        if (!body.classList.contains("paused")) {
+          body.classList.add("paused");
+          return;
+        }
+
+        // trigger resume action
+        const xhttp = new XMLHttpRequest();
+        xhttp.onload = function() {
+          if (/^[0-9]+$/.test(this.responseText)) {
+            start_time = BigInt(this.responseText);
+            body.classList.remove("paused");
+          } else {
+            alert("There was an error trying to resume");
+          }
+        };
+        xhttp.open("GET", "/qa/timestamp", true);
+        xhttp.send();
       }
     </script>
   </head>
   <body class="show_more hidden">
+    <!-- flash is used for messages like "Indexing..." -->
+    <div class="flash hidden"></div>
+    <div class="pause_blocker"></div>
+    <div class="actions">
+      <a class="pause" href="javascript:togglePauseResume();">
+        <span class="resume">Pause</span>
+        <span class="paused">Resume</span>
+      </a>
+    </div>
+
     <div class="main">
       <div class="wrapper">
         <div>
@@ -113,6 +149,10 @@
                   </div>
                 </div>
               </div>
+              <div class="comments">
+                <label for="comments">Comments</label>
+                <textarea id="comments" name="comments" rows="2" cols="50" maxlength="100"></textarea>
+              </div>
             </div>
           </div>
           <div class="options">
@@ -120,21 +160,23 @@
               YES
             </a>
             <span class="decision">
-              <a href="javascript:toggle_show_more();" class="show_more_trigger">
+              <a href="javascript:toggleShowMore();" class="show_more_trigger">
                 <span class="less">&uarr;show less;&uarr;</span>
                 <span class="more">&darr;show more&darr;</span>
               </a>
               Are the same?
             </span>
-            <a href="javascript:reject()" class="button no">
+            <a href="javascript:reject();" class="button no">
               NO
             </a>
-            <a href="javascript:skip()" class="button skip">
+            <a href="javascript:skip();" class="button skip">
               SKIP
             </a>
           </div>
         </div>
       </div>
     </div>
+
+    <script type="text/javascript" src="/public/js/check_indexing.js"></script>
   </body>
 </html>

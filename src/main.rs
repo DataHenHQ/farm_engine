@@ -7,6 +7,7 @@
 #![feature(proc_macro_hygiene, decl_macro)]
 #[macro_use] extern crate rocket;
 
+mod matchqa;
 mod utils;
 mod engine;
 
@@ -19,36 +20,42 @@ use clap::{clap_app, crate_version};
 use chrono::prelude::*;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use utils::*;
+use self::utils::*;
+use self::matchqa::{App, CONFIG_SAMPLE};
 //use engine::Engine;
 
 /// Handle homepage GET requests.
 /// 
 /// # Arguments
 /// 
-/// * `config` - Global application configuration.
+/// * `app` - Global app object.
 #[get("/")]
-fn index(config: State<AppConfig>) -> Template {
+fn index(app: State<App>) -> Template {
     let context = json!({
-        "pos": config.start_pos
+        "pos": app.start_pos
     });
     Template::render("home", &context)
+}
+
+#[get("/indexing")]
+fn indexing(app: State<App>) -> &'static str {
+    unimplemented!()
 }
 
 /// Handle compare page GET requests.
 /// 
 /// # Arguments
 /// 
-/// * `config` - Global application configuration.
+/// * `app` - Global app object.
 /// * `raw_start_pos` - Raw file position from which search the closest line.
 #[get("/compare/<raw_start_pos>")]
-fn compare(config: State<AppConfig>, raw_start_pos: &rocket::http::RawStr) -> Template {
+fn compare(app: State<App>, raw_start_pos: &rocket::http::RawStr) -> Template {
     let mut context = json!({
         "start_time": null,
         "pos": null,
         "next_pos": null,
         "data": null,
-        "ui_config": config.user_config.ui
+        "ui_config": app.user_config.ui
     });
 
     // parse start position value
@@ -67,7 +74,7 @@ fn compare(config: State<AppConfig>, raw_start_pos: &rocket::http::RawStr) -> Te
     };
 
     // get data from file
-    let (data, pos, next_pos) = match parse_line(&config.headers, &config.input, start_pos) {
+    let (data, pos, next_pos) = match parse_line(&app.headers, &app.input, start_pos) {
         Ok(v) => v,
         Err(e) => {
             println!("{}", e);
@@ -90,11 +97,11 @@ fn compare(config: State<AppConfig>, raw_start_pos: &rocket::http::RawStr) -> Te
 /// 
 /// # Arguments
 /// 
-/// * `config` - Global application configuration.
+/// * `app` - Global app object.
 /// * `raw_start_pos` - Raw file position from which search the closest line.
 /// * `raw_data` - Post match data as JSON.
 #[post("/compare/<raw_start_pos>/apply", format = "json", data = "<raw_data>")]
-fn apply(config: State<AppConfig>, raw_start_pos: &rocket::http::RawStr, raw_data: Json<ApplyData>) -> &'static str {
+fn apply(app: State<App>, raw_start_pos: &rocket::http::RawStr, raw_data: Json<ApplyData>) -> &'static str {
     // parse position
     let start_pos: u64 = match raw_start_pos.url_decode() {
         Ok(s) => match s.parse() {
@@ -118,11 +125,16 @@ fn apply(config: State<AppConfig>, raw_start_pos: &rocket::http::RawStr, raw_dat
 
     // join original line contents with match data and write to output file
     let text = format!("{},{},http://localhost:8000/qa/compare/{}", matched, track_time, data.pos);
-    if let Err(e) = write_line(&config, text, start_pos, true) {
+    if let Err(e) = app.write_output(text, start_pos, true) {
         println!("{}", e);
         return "Err";
     }
     "OK"
+}
+
+#[get("/qa/timestamp")]
+fn timestamp(_app: State<App>) -> String {
+    Utc::now().timestamp_nanos().to_string()
 }
 
 /// Tera filter that displays the difference between 2 texts and adds html tags to it.
@@ -194,41 +206,21 @@ fn main() {
         }
     };
 
-    // build app config
-    let input = cli_start.value_of("input_file").unwrap().to_string();
-    let (buf, _, start_pos) = match read_line(&input, 0) {
+    // build app
+    let input_path = cli_start.value_of("input_file").unwrap().to_string();
+    let output_path = cli_start.value_of("output_file").unwrap().to_string();
+    let config_path = cli_start.value_of("input_file").unwrap().to_string();
+    let app = match App::new(&input_path, &output_path, &config_path) {
         Ok(v) => v,
         Err(e) => {
-            println!("Error reading headers from input file \"{}\": {}", &input, e);
+            println!("{}", e);
             return;
         }
-    };
-    let headers = match String::from_utf8(buf) {
-        Ok(s) => s.to_string(),
-        Err(e) => {
-            println!("Error reading headers from input file \"{}\": {}", &input, e);
-            return;
-        }
-    };
-    let user_config_path = cli_start.value_of("config_file").unwrap().to_string();
-    let user_config = match UserConfig::from_file(&user_config_path) {
-        Ok(v) => v,
-        Err(e) => {
-            println!("Error parsing config file \"{}\": {}", &user_config_path, e);
-            return;
-        }
-    };
-    let config = AppConfig{
-        input,
-        output: cli_start.value_of("output_file").unwrap().to_string(),
-        headers: headers,
-        start_pos,
-        user_config
     };
 
     // write output headers
-    if let Err(e) = write_line(&config, "manual_match,manual_match_time_ms,compare_link".to_string(), 0, false) {
-        println!("Error writing headers on output file \"{}\": {}", config.output, e);
+    if let Err(e) = app.write_output("manual_match,manual_match_time_ms,compare_link".to_string(), 0, false) {
+        println!("Error writing headers on output file \"{}\": {}", app.output, e);
         return;
     }
 
@@ -237,7 +229,7 @@ fn main() {
         .attach(Template::custom(|engines: &mut RcktEngines| {
             engines.tera.register_filter("diff_single", filter_diff_single);
         }))
-        .manage(config)
+        .manage(app)
         .mount("/public", StaticFiles::from("static"))
         .mount("/", routes![index])
         .mount("/qa", routes![compare, apply])
