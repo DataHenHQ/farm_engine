@@ -9,10 +9,13 @@ use crate::engine::index::IndexStatus;
 use super::data::{
     HEADER_LINE_SIZE,
     VALUE_LINE_SIZE,
+    MatchFlag,
     IndexHeader,
     IndexValue,
     LoadFrom
 };
+
+const HEADER_EXTRA_FIELDS: &'static str = ",match,time,comments";
 
 /// Indexer engine.
 #[derive(Debug)]
@@ -20,19 +23,35 @@ pub struct Indexer<'index> {
     /// Input file path.
     pub input_path: &'index str,
 
+    /// Output file path.
+    pub output_path: &'index str,
+
     /// Index file path.
     pub index_path: String,
 
     /// Current index header.
-    pub header: IndexHeader
+    pub header: IndexHeader,
+
+    /// Empty extra fields line.
+    empty_extra_fields: Vec<u8>
 }
 
 impl<'index> Indexer<'index> {
-    pub fn new(input_path: &'index str, index_path: &str) -> Self {
+    pub fn new(input_path: &'index str, output_path: &'index str, index_path: &str) -> Self {
         Self{
             input_path,
+            output_path,
             index_path: index_path.to_string(),
-            header: IndexHeader::new()
+            header: IndexHeader::new(),
+            empty_extra_fields: format!(
+                ",{:match_flag$},{:time$},{:comments$}",
+                "",
+                "",
+                "",
+                match_flag=1,
+                time=20,
+                comments=200
+            ).as_bytes().to_vec()
         }
     }
 
@@ -120,12 +139,14 @@ impl<'index> Indexer<'index> {
     /// * `update_header` - If `true` then it updates index header attibute.
     pub fn healthcheck(&self) -> Result<IndexStatus, ParseError> {
         self.load_headers()?;
-        let hash = generate_hash(&self.input_path)?;
         
         // validate headers
         match self.header.hash {
-            Some(saved_hash) => if saved_hash != hash {
-                return Ok(IndexStatus::Corrupted);
+            Some(saved_hash) => {
+                let hash = generate_hash(&self.input_path)?;
+                if saved_hash != hash {
+                    return Ok(IndexStatus::Corrupted);
+                }
             },
             None => return Ok(IndexStatus::New)
         }
@@ -134,41 +155,112 @@ impl<'index> Indexer<'index> {
         }
 
         // validate file size
-        // TODO: Use header.indexed_count to check on file size
-        aaaaaaaaaaaa
-        let size = file_size(self.input_path, false)?;
-        let total = match self.count_indexed() {
-            Ok(v) => v,
-            Err(e) => match e {
-                ParseError::IO(_) => return Err(e),
-                _ => return Ok(IndexStatus::Corrupted)
-            }
-        };
-        if size != HEADER_LINE_SIZE as u64 + (total * VALUE_LINE_SIZE as u64) {
-            return Ok(IndexStatus::Corrupted);
+        match self.header.indexed_count {
+            Some(total) => {
+                let real_size = file_size(&self.index_path, false)?;
+                let size = Self::calc_record_index_pos(total + 1);
+                if real_size != size {
+                    return Ok(IndexStatus::Corrupted);
+                }
+            },
+            None => return Ok(IndexStatus::Corrupted)
         }
 
         Ok(IndexStatus::Indexed)
     }
+
+    /// Index a new or incomplete index.
+    fn index_internal(&self) -> Result<(), ParseError> {
+        // count indexed records to recover any incomplete index
+        let indexed_count = self.count_indexed()?;
+        self.header.indexed_count = Some(indexed_count);
+
+        // seek latest indexed
+        let mut last_input_pos = 0u64;
+        let mut output_pos = 0u64;
+        if indexed_count > 0 {
+            let value = self.get_record_index(indexed_count)?.unwrap();
+            last_input_pos = value.input_pos.unwrap();
+            output_pos = value.output_pos.unwrap();
+
+            if indexed_count > 1 {
+                let prev_value = self.get_record_index(indexed_count - 1)?.unwrap();
+                last_input_pos = prev_value.input_pos.unwrap();
+            }
+        }
+
+        // open files to create index
+        let input_file = File::open(self.input_path)?;
+        let output_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&self.output_path)?;
+        let index_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&self.index_path)?;
+
+        // create reader and writer buffers
+        let mut input_rdr = BufReader::new(input_file);
+        let mut output_wrt = BufWriter::new(index_file);
+        let mut index_wrt = BufWriter::new(index_file);
+
+        // read CSV and create index
+        let mut input_csv = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .flexible(true)
+            .from_reader(input_rdr);
+        for result in input_csv.byte_records() {
+            match result {
+                Ok(record) => {
+                    let buf = &record.as_slice();
+
+
+                    // copy input record into output and add extras
+                    output_wrt.write(buf);
+                    output_pos = output_wrt.stream_position()?;
+                    output_wrt.write(&self.empty_extra_fields);
+                },
+                Err(e) => return Err(ParseError::CSV(e))
+            }
+            
+            // write index value for this record
+            let value = IndexValue{
+                input_pos: Some(last_input_pos),
+                output_pos: Some(output_pos),
+                match_flag: MatchFlag::None
+            };
+            let buf: Vec<u8> = Vec::from(&value);
+            index_wrt.write(&buf[..]);
+        }
+
+        unimplemented!();
+    }
     
-    /// Analyze an input file to track new lines and record it's positions into an index file.
-    /// Returns total line count.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `input_path` - File path to analize.
-    /// * `index_path` - File path to write the index.
-    pub fn index(&self) -> Result<u64, ParseError> {
-        let total = 0;
+    /// Analyze an input file to track each record position
+    /// into an index file.
+    pub fn index(&self) -> Result<(), ParseError> {
+        let retry_count = 0;
+        let retry_limit = 3;
+
+        // initialize index file when required
         self.init_index(false)?;
         loop {
-            match self.healthcheck(true)? {
-                IndexStatus::Indexed => return self.indexed_count(),
-                IndexStatus::New => break,
-                IndexStatus::Incomplete => {
-                    total = self.indexed_count()?;
+            // retry a few times to fix corrupted index files
+            retry_count += 1;
+            if retry_count > retry_limit {
+                return Err(ParseError::RetryLimit);
+            }
+
+            // perform healthcheck over the index file
+            match self.healthcheck()? {
+                IndexStatus::Indexed => return Ok(()),
+                IndexStatus::New => {
+                    // create initial header
+                    self.header.hash = Some(generate_hash(&self.input_path)?);
                     break;
                 },
+                IndexStatus::Incomplete => break,
 
                 // recreate index file and retry healthcheck when corrupted
                 IndexStatus::Corrupted => {
@@ -178,28 +270,6 @@ impl<'index> Indexer<'index> {
             }
         }
 
-        self.header.record_count = total;
-    
-        let input_file = File::open(self.input_path)?;
-        let index_file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(index_path)?;
-        
-        // config reader and writer buffers
-        let mut rdr = BufReader::new(input_file);
-        let mut wrt = BufWriter::new(index_file);
-    
-        // generate index file
-        wrt.write
-        wrt.write_all()
-        wrt.write_all(&EMPTY_INDEX_LINE)?;
-        let next_pos = 0;
-        for line in rdr.lines() {
-            
-        }
-    
-        unimplemented!();
+        self.index_internal()
     }
 }

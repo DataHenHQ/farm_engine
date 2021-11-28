@@ -4,6 +4,7 @@ pub mod index;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write, BufReader, BufWriter};
 use index::indexer::Indexer;
+use error::ParseError;
 
 const BUF_SIZE: u64 = 4096;
 
@@ -29,30 +30,35 @@ pub struct Engine<'engine> {
 
 impl<'engine> Engine<'engine> {
     /// Creates a new engine and default index path as
-    /// `<input_path>.index` if not provided.
+    /// `<input_path>.matchqa.index` if not provided.
     /// 
     /// # Arguments
     /// 
     /// * `input_path` - Input file path.
-    /// * `output_path` - Output file path,
+    /// * `output_path` - Output file path.
     /// * `index_path` - Index path (Optional).
     pub fn new(input_path: &str, output_path: &str, index_path: Option<&str>) -> Self {
         let index_path = match index_path {
             Some(s) => s,
-            None => format!("{}.index", input_path)
+            None => format!("{}.matchqa.index", input_path)
         };
 
         let input_path = input_path.to_string();
+        let output_path = output_path.to_string();
         Self{
             input_path,
-            output_path: output_path.to_string(),
-            index: Indexer::new(&input_path, index_path)
+            output_path,
+            index: Indexer::new(
+                &input_path,
+                &output_path,
+                index_path
+            )
         }
     }
 
     /// Regenerates the index file based on the input file.
-    pub fn index(&self) -> std::io::Result<bool> {
-        unimplemented!()
+    pub fn index(&self) -> Result<bool, ParseError> {
+        self.index.index()
     }
 }
 

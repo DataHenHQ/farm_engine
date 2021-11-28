@@ -146,8 +146,8 @@ impl TryFrom<&[u8]> for IndexHeader {
     }
 }
 
-impl From<&IndexHeader> for [u8; HEADER_LINE_SIZE] {
-    fn from(header: &IndexHeader) -> [u8; HEADER_LINE_SIZE] {
+impl From<&IndexHeader> for Vec<u8> {
+    fn from(header: &IndexHeader) -> Vec<u8> {
         let mut buf = [0u8; HEADER_LINE_SIZE];
 
         buf[0] = header.indexed as u8;
@@ -160,7 +160,7 @@ impl From<&IndexHeader> for [u8; HEADER_LINE_SIZE] {
             hash_buf.copy_from_slice(&hash);
         }
         
-        buf
+        buf.to_vec()
     }
 }
 
@@ -217,8 +217,8 @@ impl TryFrom<&[u8]> for IndexValue {
     }
 }
 
-impl From<&IndexValue> for [u8; VALUE_LINE_SIZE] {
-    fn from(value: &IndexValue) -> [u8; VALUE_LINE_SIZE] {
+impl From<&IndexValue> for Vec<u8> {
+    fn from(value: &IndexValue) -> Vec<u8> {
         let mut buf = [0u8; VALUE_LINE_SIZE];
 
         // convert value attributes into bytes and save it on buf
@@ -226,7 +226,7 @@ impl From<&IndexValue> for [u8; VALUE_LINE_SIZE] {
         pos_into_bytes(value.output_pos, &mut buf[POSITION_U_SIZE..2*POSITION_U_SIZE]);
         buf[2*POSITION_U_SIZE+1] = value.match_flag as u8;
         
-        buf
+        buf.to_vec()
     }
 }
 
