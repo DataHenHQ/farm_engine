@@ -16,11 +16,11 @@
           <div>
             <img src="/public/images/logo.png" class="logo" alt="Datahen Canada Inc." />
           </div>
-          <h1>Welcome to Match QA</h1>
-          <div class="description">Press start to begin</div>
+          <h1>Paused</h1>
+          <div class="description">Press resume to continue...</div>
           <div class="options">
             <a href="/qa/compare/{{index}}" class="button">
-              START
+              RESUME
             </a>
           </div>
         </div>

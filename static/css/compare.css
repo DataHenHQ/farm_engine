@@ -242,6 +242,37 @@ h1 img {
     font-weight: 700;
 }
 
+.actions {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+}
+
+.button-pause {
+    color: #f2f2f2;
+    font-size: 20px;
+    font-weight: bold;
+    display: inline-block;
+    text-decoration: none;
+    border-radius: 5px;
+    padding: 5px 8px;
+    background-color: #4e96ca;
+}
+
+.button-pause:hover {
+    background-color: #62bbff;
+}
+
+.button-pause:active {
+    background-color: #3e78a2;
+}
+
+.button-pause * {
+    color: #f2f2f2;
+    font-size: 20px;
+    font-weight: bold;
+}
+
 @media only screen and (max-width: 399px) {
     h1 {
         margin: 10px 0 0 0;

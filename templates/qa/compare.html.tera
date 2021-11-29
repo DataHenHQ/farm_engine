@@ -3,31 +3,35 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="stylesheet" href="/public/css/base.css">
     <link rel="stylesheet" href="/public/css/compare.css">
 
     <script type="text/javascript">
-      const pos = {{pos}}n;
-      const next_pos = {{next_pos}}n;
-      const start_time = {{start_time}}n;
+      const index = {{index}};
+      const next_index = {{next_index}};
+      const start_time = {{start_time}};
       const comments_limit = {{comments_limit}};
 
       function areEqual(does_match, skip) {
         const xhttp = new XMLHttpRequest();
         xhttp.onload = function() {
           if (this.responseText === "OK") {
-            document.location = "/qa/compare/" + next_pos;
+            if (next_index < 0) {
+              document.location = "/";
+            } else {
+              document.location = "/qa/compare/" + next_index;
+            }
           } else {
             alert("There was an error trying to apply the match");
           }
         };
-        xhttp.open("POST", "/qa/compare/" + pos + "/apply", true);
+        xhttp.open("POST", "/qa/compare/" + index + "/apply", true);
         xhttp.setRequestHeader("Content-type", "application/json");
         xhttp.send(JSON.stringify({
           "approved": does_match,
           "skip": skip,
           "time": start_time,
-          "pos": pos,
-          "comments": document.getElementById("comments").value.substring(0, comments_limit)})
+          "comments": document.getElementById("comments").value.substring(0, comments_limit)
         }));
       }
 
@@ -69,9 +73,8 @@
     <div class="flash hidden"></div>
     <div class="pause_blocker"></div>
     <div class="actions">
-      <a class="pause" href="javascript:togglePauseResume();">
+      <a class="pause button-pause" href="/qa/compare/{{index}}/pause">
         <span class="resume">Pause</span>
-        <span class="paused">Resume</span>
       </a>
     </div>
 

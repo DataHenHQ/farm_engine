@@ -1,12 +1,9 @@
 //! Utils module containing several functions and structs.
 
-use serde::{Serialize, Deserialize};
-use std::fs::{File, OpenOptions};
-use std::io::{self, Seek, SeekFrom, Read, Write, BufRead, BufReader, BufWriter, Take};
+use serde::{Deserialize};
+use std::fs::{File};
+use std::io::{self, Seek, SeekFrom, BufRead, BufReader};
 use difference::{Changeset, Difference};
-
-/// Match fields size used to build output file
-const MATCH_FIELD_SIZE: u8 = 20;
 
 /// Data type describing an action to apply to the compare.
 #[derive(Debug, PartialEq, Eq, Deserialize)]
@@ -14,7 +11,7 @@ pub struct ApplyData {
     pub approved: bool,
     pub skip: bool,
     pub time: i64,
-    pub pos: u64
+    pub comments: String
 }
 
 pub fn read_csv_line(path: &String, pos: u64) -> io::Result<(Vec<u8>, u64)> {

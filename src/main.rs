@@ -11,6 +11,9 @@ mod matchqa;
 mod utils;
 mod engine;
 
+#[cfg(test)]
+pub mod test_helper;
+
 use rocket_contrib::serve::StaticFiles;
 use rocket_contrib::templates::{Engines as RcktEngines, Template};
 use rocket_contrib::templates::tera::Error as RcktError;
@@ -22,6 +25,8 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use self::utils::*;
 use self::matchqa::{App, CONFIG_SAMPLE};
+use self::engine::index::index_value::MatchFlag;
+use self::engine::parse_error::ParseError;
 //use engine::Engine;
 
 /// Handle homepage GET requests.
@@ -31,15 +36,14 @@ use self::matchqa::{App, CONFIG_SAMPLE};
 /// * `app` - Global app object.
 #[get("/")]
 fn index(app: State<App>) -> Template {
-    let context = json!({
-        "pos": app.start_pos
+    let mut context = json!({
+        "index": null
     });
+    context["index"] = match app.engine.find_to_process(0).unwrap() {
+        Some(v) => Value::Number(serde_json::Number::from(v)),
+        None => return Template::render("finish", &context)
+    };
     Template::render("home", &context)
-}
-
-#[get("/indexing")]
-fn indexing(app: State<App>) -> &'static str {
-    unimplemented!()
 }
 
 /// Handle compare page GET requests.
@@ -47,19 +51,20 @@ fn indexing(app: State<App>) -> &'static str {
 /// # Arguments
 /// 
 /// * `app` - Global app object.
-/// * `raw_start_pos` - Raw file position from which search the closest line.
-#[get("/compare/<raw_start_pos>")]
-fn compare(app: State<App>, raw_start_pos: &rocket::http::RawStr) -> Template {
+/// * `raw_index` - Raw file position from which search the closest line.
+#[get("/compare/<raw_index>")]
+fn compare(app: State<App>, raw_index: &rocket::http::RawStr) -> Template {
     let mut context = json!({
         "start_time": null,
-        "pos": null,
-        "next_pos": null,
+        "index": null,
+        "next_index": null,
+        "comments_limit": 200,
         "data": null,
         "ui_config": app.user_config.ui
     });
 
-    // parse start position value
-    let start_pos: u64 = match raw_start_pos.url_decode() {
+    // parse index value
+    let index: u64 = match raw_index.url_decode() {
         Ok(s) => match s.parse() {
             Ok(v) => v,
             Err(e) => {
@@ -74,18 +79,32 @@ fn compare(app: State<App>, raw_start_pos: &rocket::http::RawStr) -> Template {
     };
 
     // get data from file
-    let (data, pos, next_pos) = match parse_line(&app.headers, &app.input, start_pos) {
+    let data = match app.engine.get_data(index) {
         Ok(v) => v,
         Err(e) => {
-            println!("{}", e);
-            context["pos"] = Value::Number(serde_json::Number::from(start_pos));
+            match e {
+                ParseError::IO(eio) => println!("{}", eio),
+                ParseError::CSV(ecsv) => println!("error trying to parse the input file while extracting data: {}", ecsv),
+                _ => println!("an error happen trying to extract the record data")
+            }
             return Template::render("errors/bad_parse", &context)
         }
     };
 
-    context["start_time"] = Value::Number(serde_json::Number::from(Utc::now().timestamp_nanos()));
-    context["pos"] = Value::Number(serde_json::Number::from(pos));
-    context["next_pos"] = Value::Number(serde_json::Number::from(next_pos));
+    // finish when no more data
+    if let serde_json::Value::Null = data {
+        return Template::render("errors/bad_record", &context)
+    }
+
+    // build context
+    let next_index = match app.engine.find_to_process(index+1).unwrap() {
+        Some(v) => Value::Number(serde_json::Number::from(v)),
+        None => Value::Number(serde_json::Number::from(-1)),
+    };
+
+    context["start_time"] = Value::Number(serde_json::Number::from(Utc::now().timestamp_millis()));
+    context["next_index"] = next_index;
+    context["index"] = Value::Number(serde_json::Number::from(index));
     context["data"] = data;
     
 
@@ -98,12 +117,12 @@ fn compare(app: State<App>, raw_start_pos: &rocket::http::RawStr) -> Template {
 /// # Arguments
 /// 
 /// * `app` - Global app object.
-/// * `raw_start_pos` - Raw file position from which search the closest line.
+/// * `raw_index` - Raw file position from which search the closest line.
 /// * `raw_data` - Post match data as JSON.
-#[post("/compare/<raw_start_pos>/apply", format = "json", data = "<raw_data>")]
-fn apply(app: State<App>, raw_start_pos: &rocket::http::RawStr, raw_data: Json<ApplyData>) -> &'static str {
+#[post("/compare/<raw_index>/apply", format = "json", data = "<raw_data>")]
+fn apply(app: State<App>, raw_index: &rocket::http::RawStr, raw_data: Json<ApplyData>) -> &'static str {
     // parse position
-    let start_pos: u64 = match raw_start_pos.url_decode() {
+    let index: u64 = match raw_index.url_decode() {
         Ok(s) => match s.parse() {
             Ok(v) => v,
             Err(e) => {
@@ -119,22 +138,55 @@ fn apply(app: State<App>, raw_start_pos: &rocket::http::RawStr, raw_data: Json<A
     
     // calculate match data and track time
     let data = raw_data.into_inner();
-    let matched = if data.skip { "S" } else 
-        if data.approved { "Y" } else { "N" };
-    let track_time = (Utc::now().timestamp_nanos() - data.time) / 1000000;
+    let match_flag = if data.skip { MatchFlag::Skip } else 
+        if data.approved { MatchFlag::Yes } else { MatchFlag::No };
+    let track_time = Utc::now().timestamp_millis() - data.time;
 
-    // join original line contents with match data and write to output file
-    let text = format!("{},{},http://localhost:8000/qa/compare/{}", matched, track_time, data.pos);
-    if let Err(e) = app.write_output(text, start_pos, true) {
-        println!("{}", e);
-        return "Err";
+    // save output
+    let mut buf = data.comments.as_bytes().to_vec();
+    if buf.len() > 200 {
+        for _ in 0..buf.len()-200 {
+            buf.pop();
+        }
+    }
+    let comments = &String::from_utf8(buf).unwrap();
+    if let Err(e) = app.engine.record_output(index, match_flag, track_time as u64, comments) {
+        match e {
+            ParseError::IO(eio) => println!("{}", eio),
+            _ => println!("an error happen trying to save the output data")
+        }
     }
     "OK"
 }
 
-#[get("/qa/timestamp")]
+#[get("/timestamp")]
 fn timestamp(_app: State<App>) -> String {
-    Utc::now().timestamp_nanos().to_string()
+    Utc::now().timestamp_millis().to_string()
+}
+
+#[get("/compare/<raw_index>/pause")]
+fn pause(_app: State<App>, raw_index: &rocket::http::RawStr) -> Template {
+    let mut context = json!({
+        "index": null
+    });
+
+    // parse position
+    let index: u64 = match raw_index.url_decode() {
+        Ok(s) => match s.parse() {
+            Ok(v) => v,
+            Err(e) => {
+                println!("{}", e);
+                return Template::render("errors/bad_record", &context)
+            }
+        },
+        Err(e) => {
+            println!("{}", e);
+            return Template::render("errors/bad_record", &context)
+        }
+    };
+
+    context["index"] = Value::Number(serde_json::Number::from(index));
+    Template::render("qa/pause", &context)
 }
 
 /// Tera filter that displays the difference between 2 texts and adds html tags to it.
@@ -209,8 +261,8 @@ fn main() {
     // build app
     let input_path = cli_start.value_of("input_file").unwrap().to_string();
     let output_path = cli_start.value_of("output_file").unwrap().to_string();
-    let config_path = cli_start.value_of("input_file").unwrap().to_string();
-    let app = match App::new(&input_path, &output_path, &config_path) {
+    let config_path = cli_start.value_of("config_file").unwrap().to_string();
+    let mut app = match App::new(&input_path, &output_path, &config_path) {
         Ok(v) => v,
         Err(e) => {
             println!("{}", e);
@@ -218,11 +270,17 @@ fn main() {
         }
     };
 
-    // write output headers
-    if let Err(e) = app.write_output("manual_match,manual_match_time_ms,compare_link".to_string(), 0, false) {
-        println!("Error writing headers on output file \"{}\": {}", app.output, e);
+    // index input file
+    println!("Indexing into {}...", &app.engine.index.index_path);
+    if let Err(e) = app.engine.index() {
+        match e {
+            ParseError::IO(eio) => println!("{}", eio),
+            ParseError::CSV(ecsv) => println!("error trying to parse the input file while indexing: {}", ecsv),
+            _ => println!("an error happen trying to index the input file")
+        }
         return;
-    }
+    };
+    println!("Done indexing");
 
     // configure server and routes
     rocket::ignite()
@@ -232,6 +290,6 @@ fn main() {
         .manage(app)
         .mount("/public", StaticFiles::from("static"))
         .mount("/", routes![index])
-        .mount("/qa", routes![compare, apply])
+        .mount("/qa", routes![compare, apply, pause])
         .launch();
 }

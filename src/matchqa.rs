@@ -1,7 +1,6 @@
 use serde::{Serialize, Deserialize};
-use std::fs::{File, OpenOptions};
-use std::io::{self, Seek, SeekFrom, Write, BufRead, BufReader, BufWriter};
-use crate::utils::{read_line, read_csv_line};
+use std::fs::{File};
+use std::io::{BufReader};
 
 /// User config sample file.
 pub const CONFIG_SAMPLE: &str = r#"
@@ -94,14 +93,8 @@ impl UserConfig {
 /// Application.
 #[derive(Debug)]
 pub struct App {
-    /// Input file path.
-    pub input: String,
-    /// Output file path.
-    pub output: String,
-    /// CSV input file headers line string.
-    pub headers: String,
-    /// First data line from the input CSV file.
-    pub start_pos: u64,
+    /// App engine.
+    pub engine: crate::engine::Engine,
     /// User configuration object created from the provided JSON
     /// config file.
     pub user_config: UserConfig
@@ -119,66 +112,9 @@ impl App {
             ))
         };
 
-        let mut config = Self{
-            input: input_path.to_string(),
-            output: output_path.to_string(),
-            headers: "".to_string(),
-            start_pos: 0,
+        Ok(Self{
+            engine: crate::engine::Engine::new(input_path, output_path, None),
             user_config: user_config
-        };
-        config.extract_headers()?;
-        Ok(config)
-    }
-
-    /// Extracts the headers from the input file and saves it.
-    pub fn extract_headers(&mut self) -> Result<(), String> {
-        let (buf, _, start_pos) = match read_line(&self.input, 0) {
-            Ok(v) => v,
-            Err(e) => return Err(format!(
-                "Error reading headers from input file \"{}\": {}",
-                &self.input,
-                e
-            ))
-        };
-        self.headers = match String::from_utf8(buf) {
-            Ok(s) => s.to_string(),
-            Err(e) => return Err(
-                format!("Error reading headers from input file \"{}\": {}",
-                &self.input,
-                e
-            ))
-        };
-        self.start_pos = start_pos;
-
-        Ok(())
-    }
-
-    /// Write match data to the output file by using the closes line
-    /// data from the input file. Return io::Result.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `config` - Application configuration containing input, output and headers data.
-    /// * `start_pos` - File position from which search the closest line.
-    /// * `append` - Append flag to decide whenever append or override the output file.
-    pub fn write_output(&self, text: String, start_pos: u64, append: bool) -> io::Result<()> {
-        // get data from input file
-        let (buf, _) = read_csv_line(&self.input, start_pos)?;
-    
-        // decide on append or just override, then open file
-        let mut output_file = if append {
-            OpenOptions::new().create(true).append(true).open(&self.output)?
-        } else {
-            OpenOptions::new().create(true).write(true).truncate(true).open(&self.output)?
-        };
-    
-        // write new match data to output file
-        let text = match text.len() {
-            0 => format!("{}{}", String::from_utf8(buf).unwrap(), text),
-            _ => format!("{},{}", String::from_utf8(buf).unwrap(), text)
-        };
-        writeln!(output_file, "{}", text)?;
-    
-        Ok(())
+        })
     }
 }

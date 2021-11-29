@@ -22,4 +22,4 @@ function checkIndexing() {
     xhttp.send();
 }
 
-setTimeout(checkIndexing, checkInterval);
+//setTimeout(checkIndexing, checkInterval);
