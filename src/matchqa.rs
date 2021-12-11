@@ -91,7 +91,7 @@ impl UserConfig {
 }
 
 /// Application.
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 pub struct App {
     /// App engine.
     pub engine: crate::engine::Engine,
@@ -102,7 +102,7 @@ pub struct App {
 
 impl App {
     /// Initialize a new AppConfig object.
-    pub fn new(input_path: &str, output_path: &str, config_path: &str) -> Result<Self, String> {
+    pub fn new(input_path: &str, output_path: &str, index_path: Option<&str>, config_path: &str) -> Result<Self, String> {
         let user_config = match UserConfig::from_file(&config_path) {
             Ok(v) => v,
             Err(e) => return Err(
@@ -113,7 +113,7 @@ impl App {
         };
 
         Ok(Self{
-            engine: crate::engine::Engine::new(input_path, output_path, None),
+            engine: crate::engine::Engine::new(input_path, output_path, index_path),
             user_config: user_config
         })
     }

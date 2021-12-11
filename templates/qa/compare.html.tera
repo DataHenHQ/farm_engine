@@ -81,7 +81,10 @@
     <div class="main">
       <div class="wrapper">
         <div>
-          <h1><img src="/public/images/logo.png" />Compare</h1>
+          <h1>
+            <img src="/public/images/logo.png" />
+            <span class="text">Compare</span>
+          </h1>
           <div class="data">
             <div class="spacer a"></div>
             <div class="spacer b"></div>
@@ -96,10 +99,10 @@
               </div>
               <div class="name">
                 <h2 class="a" title="{{data[ui_config.product_name.a]}}">
-                  <span>{{data[ui_config.product_name.a]|diff_single(before = data[ui_config.product_name.b])}}</span>
+                  <span>{{data[ui_config.product_name.a]|diff_single(before = data[ui_config.product_name.b])|safe}}</span>
                 </h2>
                 <h2 class="b" title="{{data[ui_config.product_name.b]}}">
-                  <span>{{data[ui_config.product_name.b]|diff_single(before = data[ui_config.product_name.a])}}</span>
+                  <span>{{data[ui_config.product_name.b]|diff_single(before = data[ui_config.product_name.a])|safe}}</span>
                 </h2>
               </div>
               <div class="extra-data">
@@ -115,10 +118,10 @@
                             {% endif %}
                           {% else %}
                             {% if data_config.a and data_config.b %}
-                              {{data[data_config.a]|diff_single(before = data[data_config.b])}}
+                              {{data[data_config.a]|diff_single(before = data[data_config.b])|safe}}
                             {% else %}
                               {% if data_config.a %}
-                                {{data[data_config.a]|diff_single(before = "")}}
+                                {{data[data_config.a]|diff_single(before = "")|safe}}
                               {% endif %}
                             {% endif %}
                           {% endif %}
@@ -139,10 +142,10 @@
                             {% endif %}
                           {% else %}
                             {% if data_config.a and data_config.b %}
-                              {{data[data_config.b]|diff_single(before = data[data_config.a])}}
+                              {{data[data_config.b]|diff_single(before = data[data_config.a])|safe}}
                             {% else %}
                               {% if data_config.b %}
-                                {{data[data_config.b]|diff_single(before = "")}}
+                                {{data[data_config.b]|diff_single(before = "")|safe}}
                               {% endif %}
                             {% endif %}
                           {% endif %}
@@ -152,11 +155,11 @@
                   </div>
                 </div>
               </div>
-              <div class="comments">
-                <label for="comments">Comments</label>
-                <textarea id="comments" name="comments" rows="2" cols="50" maxlength="100"></textarea>
-              </div>
             </div>
+          </div>
+          <div class="comments">
+            <label for="comments">Comments</label>
+            <textarea id="comments" name="comments" rows="2" cols="50" maxlength="100"></textarea>
           </div>
           <div class="options">
             <a href="javascript:approve();" class="button yes">

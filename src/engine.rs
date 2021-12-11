@@ -1,6 +1,7 @@
 pub mod parse_error;
 pub mod index;
 
+use serde::Deserialize;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
 use index::indexer::Indexer;
@@ -20,7 +21,7 @@ pub enum FillAction {
 }
 
 /// Engine to manage index and navigation.
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 pub struct Engine {
     /// Indexer engine object.
     pub index: Indexer

@@ -1,3 +1,4 @@
+use serde::Deserialize;
 use std::convert::TryFrom;
 use super::{POSITION_SIZE, LoadFrom, pos_from_bytes, pos_into_bytes};
 use crate::engine::parse_error::ParseError;
@@ -17,7 +18,7 @@ pub const HASH_SIZE: usize = blake3::OUT_LEN;
 pub const HASH_U_SIZE: usize = HASH_SIZE + 1;
 
 /// Describes an Indexer file header.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Deserialize, PartialEq)]
 pub struct IndexHeader {
     /// `true` when the input file has been indexed successfully.
     pub indexed: bool,

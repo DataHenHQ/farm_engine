@@ -50,3 +50,15 @@ h1 {
 .button:active {
     background-color: #146c43;
 }
+
+@media only screen and (max-width: 460px) {
+    h1 {
+        font-size: 30px;
+    }
+}
+
+@media only screen and (max-width: 340px) {
+    h1 {
+        font-size: 28px;
+    }
+}

@@ -1,3 +1,4 @@
+use serde::Deserialize;
 use std::fs::{File, OpenOptions};
 use std::convert::TryFrom;
 use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
@@ -11,7 +12,7 @@ use super::index_value::{VALUE_LINE_SIZE, MatchFlag, IndexValue};
 const HEADER_EXTRA_FIELDS: &'static str = ",match,time,comments";
 
 /// Indexer engine.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Deserialize, PartialEq)]
 pub struct Indexer {
     /// Input file path.
     pub input_path: String,
@@ -141,12 +142,20 @@ impl Indexer {
     }
 
     /// Return the index and index value of the closest non matched record.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `from_index` - Index offset as search starting point.
     pub fn find_unmatched(&self, from_index: u64) -> Result<Option<(u64, IndexValue)>, ParseError> {
+        // validate index size
         if self.header.indexed_count < 1 {
             return Ok(None);
         }
+
+        // find index size
         let size = Self::calc_record_index_pos(self.header.indexed_count);
 
+        // seek start point by using the provided offset
         let file = File::open(&self.index_path)?;
         let mut reader = BufReader::new(file);
         let mut pos = HEADER_LINE_SIZE as u64;
@@ -154,6 +163,7 @@ impl Indexer {
         pos += VALUE_LINE_SIZE as u64 * index;
         reader.seek(SeekFrom::Start(pos))?;
 
+        // search next unmatched record
         let mut buf = [0u8; VALUE_LINE_SIZE];
         while pos < size {
             reader.read(&mut buf)?;
@@ -169,10 +179,6 @@ impl Indexer {
 
     /// Perform a healthckeck over the index file by reading
     /// the headers and checking the file size.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `update_header` - If `true` then it updates index header attibute.
     pub fn healthcheck(&mut self) -> Result<IndexStatus, ParseError> {
         self.load_headers()?;
         
@@ -279,12 +285,15 @@ impl Indexer {
             }
             match item.unwrap() {
                 Ok(record) => {
+                    // read CSV file line and store it on the buffer
                     input_start_pos = record.position().unwrap().byte();
                     input_end_pos = iter.reader().position().byte();
                     let length: usize = (input_end_pos - input_start_pos - 1) as usize;
                     let mut buf: Vec<u8> = vec![0u8; length];
                     input_rdr_nav.seek(SeekFrom::Start(input_start_pos))?;
                     input_rdr_nav.read(&mut buf)?;
+
+                    // remove new line at the end of buffer
                     if buf.len() > 0 && buf[buf.len()-1] == b'\n' {
                         buf.pop();
                         input_end_pos -= 1;
@@ -473,6 +482,10 @@ pub mod test_helper {
     }
 
     /// Return the fake index content as bytes.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `empty` - If `true` then build all records with MatchFlag::None.
     pub fn fake_index_bytes(empty: bool) -> Vec<u8> {
         let mut buf: Vec<u8> = vec!();
 
@@ -493,6 +506,7 @@ pub mod test_helper {
     /// # Arguments
     /// 
     /// * `path` - Index file path.
+    /// * `empty` - If `true` then build all records with MatchFlag::None.
     pub fn create_fake_index(path: &str, empty: bool) -> std::io::Result<()> {
         let file = OpenOptions::new()
             .create(true)

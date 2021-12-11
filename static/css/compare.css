@@ -1,10 +1,8 @@
 h1 {
     margin: 0;
-    padding: 0;
+    padding: 1px 0 0 0;
     text-align: center;
     font-size: 15px;
-    line-height: 35px;
-    vertical-align: middle;
 }
 
 h1 img {
@@ -14,7 +12,14 @@ h1 img {
     margin-right: 3px;
     vertical-align: middle;
     position: relative;
-    top: -5px;
+    top: -1px;
+}
+
+h1 .text {
+    position: relative;
+    top: 2px;
+    line-height: 34px;
+    vertical-align: middle;
 }
 
 .data {
@@ -126,6 +131,23 @@ h1 img {
     margin-top: 3px;
     line-height: 15px;
     font-size: 13px;
+}
+
+.comments {
+    padding: 10px 0 0 0;
+    text-align: center;
+}
+
+.comments label {
+    line-height: 50px;
+    vertical-align: top;
+    font-size: 14px;
+}
+
+.comments textarea {
+    height: 50px;
+    width: 370px;
+    text-align: left;
 }
 
 .options {
@@ -246,6 +268,7 @@ h1 img {
     position: fixed;
     top: 10px;
     right: 10px;
+    z-index: 2;
 }
 
 .button-pause {
@@ -255,7 +278,7 @@ h1 img {
     display: inline-block;
     text-decoration: none;
     border-radius: 5px;
-    padding: 5px 8px;
+    padding: 7px 8px 3px;
     background-color: #4e96ca;
 }
 
@@ -271,6 +294,12 @@ h1 img {
     color: #f2f2f2;
     font-size: 20px;
     font-weight: bold;
+}
+
+@media only screen and (max-width: 475px) {
+    .comments textarea {
+        width: 280px;
+    }
 }
 
 @media only screen and (max-width: 399px) {
@@ -317,6 +346,17 @@ h1 img {
         font-size: 12px;
     }
 
+    .comments label {
+        display: block;
+        line-height: 1em;
+        font-size: 12px;
+    }
+
+    .comments textarea {
+        height: 40px;
+        width: 320px;
+    }
+
     .decision {
         font-size: 17px;
     }
@@ -325,6 +365,15 @@ h1 img {
         font-size: 17px;
         width: 80px;
         padding: 18px 0 13px 0;
+    }
+
+    .button-pause {
+        font-size: 18px;
+        padding: 5px 6px 1px;
+    }
+    
+    .button-pause * {
+        font-size: 18px;
     }
 }
 
@@ -348,6 +397,11 @@ h1 img {
         font-size: 11px;
     }
 
+    .comments textarea {
+        height: 30px;
+        width: 250px;
+    }
+
     .options {
         margin-top: 20px;
     }
@@ -364,5 +418,14 @@ h1 img {
 
     .button.skip {
         margin-top: 15px;
+    }
+
+    .button-pause {
+        font-size: 16px;
+        padding: 5px 6px 2px;
+    }
+    
+    .button-pause * {
+        font-size: 16px;
     }
 }

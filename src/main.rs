@@ -4,7 +4,6 @@
 //! and match items from a CSV file by creating a web application
 //! over localhost for the user to easilly compare items.
 
-#![feature(proc_macro_hygiene, decl_macro)]
 #[macro_use] extern crate rocket;
 
 mod matchqa;
@@ -14,12 +13,12 @@ mod engine;
 #[cfg(test)]
 pub mod test_helper;
 
-use rocket_contrib::serve::StaticFiles;
-use rocket_contrib::templates::{Engines as RcktEngines, Template};
-use rocket_contrib::templates::tera::Error as RcktError;
-use rocket_contrib::json::Json;
 use rocket::State;
-use clap::{clap_app, crate_version};
+use rocket::fs::{FileServer, relative};
+use rocket::serde::json::Json;
+use rocket_dyn_templates::Template;
+use rocket_dyn_templates::tera::Error as RcktTmplError;
+use clap::{Arg, App as ClapApp, SubCommand, crate_version};
 use chrono::prelude::*;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -35,7 +34,7 @@ use self::engine::parse_error::ParseError;
 /// 
 /// * `app` - Global app object.
 #[get("/")]
-fn index(app: State<App>) -> Template {
+fn index(app: &State<App>) -> Template {
     let mut context = json!({
         "index": null
     });
@@ -53,7 +52,7 @@ fn index(app: State<App>) -> Template {
 /// * `app` - Global app object.
 /// * `raw_index` - Raw file position from which search the closest line.
 #[get("/compare/<raw_index>")]
-fn compare(app: State<App>, raw_index: &rocket::http::RawStr) -> Template {
+fn compare(app: &State<App>, raw_index: &str) -> Template {
     let mut context = json!({
         "start_time": null,
         "index": null,
@@ -64,14 +63,8 @@ fn compare(app: State<App>, raw_index: &rocket::http::RawStr) -> Template {
     });
 
     // parse index value
-    let index: u64 = match raw_index.url_decode() {
-        Ok(s) => match s.parse() {
-            Ok(v) => v,
-            Err(e) => {
-                println!("{}", e);
-                return Template::render("errors/bad_record", &context)
-            }
-        },
+    let index: u64 = match raw_index.parse() {
+        Ok(v) => v,
         Err(e) => {
             println!("{}", e);
             return Template::render("errors/bad_record", &context)
@@ -120,16 +113,10 @@ fn compare(app: State<App>, raw_index: &rocket::http::RawStr) -> Template {
 /// * `raw_index` - Raw file position from which search the closest line.
 /// * `raw_data` - Post match data as JSON.
 #[post("/compare/<raw_index>/apply", format = "json", data = "<raw_data>")]
-fn apply(app: State<App>, raw_index: &rocket::http::RawStr, raw_data: Json<ApplyData>) -> &'static str {
+fn apply(app: &State<App>, raw_index: &str, raw_data: Json<ApplyData>) -> &'static str {
     // parse position
-    let index: u64 = match raw_index.url_decode() {
-        Ok(s) => match s.parse() {
-            Ok(v) => v,
-            Err(e) => {
-                println!("{}", e);
-                return "Err"
-            }
-        },
+    let index: u64 = match raw_index.parse() {
+        Ok(v) => v,
         Err(e) => {
             println!("{}", e);
             return "Err"
@@ -160,25 +147,19 @@ fn apply(app: State<App>, raw_index: &rocket::http::RawStr, raw_data: Json<Apply
 }
 
 #[get("/timestamp")]
-fn timestamp(_app: State<App>) -> String {
+fn timestamp(_app: &State<App>) -> String {
     Utc::now().timestamp_millis().to_string()
 }
 
 #[get("/compare/<raw_index>/pause")]
-fn pause(_app: State<App>, raw_index: &rocket::http::RawStr) -> Template {
+fn pause(_app: &State<App>, raw_index: &str) -> Template {
     let mut context = json!({
         "index": null
     });
 
     // parse position
-    let index: u64 = match raw_index.url_decode() {
-        Ok(s) => match s.parse() {
-            Ok(v) => v,
-            Err(e) => {
-                println!("{}", e);
-                return Template::render("errors/bad_record", &context)
-            }
-        },
+    let index: u64 = match raw_index.parse() {
+        Ok(v) => v,
         Err(e) => {
             println!("{}", e);
             return Template::render("errors/bad_record", &context)
@@ -195,14 +176,14 @@ fn pause(_app: State<App>, raw_index: &rocket::http::RawStr) -> Template {
 /// 
 /// * `after` - Text after the changes.
 /// * `before` - Text before the changes.
-fn filter_diff_single(after: Value, args: HashMap<String, Value>) -> Result<Value, RcktError> {
+fn filter_diff_single(after: &Value, args: &HashMap<String, Value>) -> Result<Value, RcktTmplError> {
     let after = match after {
-        Value::String(s) => s,
+        Value::String(s) => s.to_string(),
         Value::Number(n) => n.to_string(),
-        Value::Bool(b) => if b { "Yes".to_string() } else { "No".to_string() },
+        Value::Bool(b) => if *b { "Yes".to_string() } else { "No".to_string() },
         Value::Null => "".to_string(),
         _ => {
-            return Err(RcktError::from("This filter doesn't works with objects nor arrays."));
+            return Err(RcktTmplError::from("This filter doesn't works with objects nor arrays."));
         }
     };
     let before = match &args["before"] {
@@ -211,7 +192,7 @@ fn filter_diff_single(after: Value, args: HashMap<String, Value>) -> Result<Valu
         Value::Bool(b) => if *b { "Yes".to_string() } else { "No".to_string() },
         Value::Null => "".to_string(),
         _ => {
-            return Err(RcktError::from("This filter doesn't works with objects nor arrays."));
+            return Err(RcktTmplError::from("This filter doesn't works with objects nor arrays."));
         }
     };
 
@@ -219,42 +200,57 @@ fn filter_diff_single(after: Value, args: HashMap<String, Value>) -> Result<Valu
     Ok(Value::String(text))
 }
 
-fn main() {
+/// Handles the CLI behavior.
+fn handle_cli() -> Result<App, String> {
     // CLI configuration
-    let cli = clap_app!(
-        matchqa =>
-            (version:crate_version!())
-            (author: "Datahen Canada Inc.")
-            (about: "Easily compare 2 products to approve or reject equality.")
-            (@subcommand start =>
-                (about: "Start matchqa web server.")
-                (@arg input_file: +required "Must provide an input CSV file path")
-                (@arg output_file: +required "Must provide an output CSV file path")
-                (@arg config_file: +required "Must provide a JSON config file path")
-            )
-            (@subcommand config_sample =>
-                (about: "Print a config file sample.")
-            )
-    );
+    let cli = ClapApp::new("MatchQA")
+        .version(crate_version!())
+        .author("Datahen Canada Inc.")
+        .about("Easily compare 2 products to approve or reject equality.")
+        .subcommand(SubCommand::with_name("start")
+            .about("Start matchqa web server.")
+            .arg(Arg::with_name("input_file")
+                .short("i")
+                .takes_value(true)
+                .value_name("INPUT_FILE")
+                .required(true)
+                .help("Must provide an input CSV file path"))
+            .arg(Arg::with_name("output_file")
+                .short("o")
+                .takes_value(true)
+                .value_name("OUTPUT_FILE")
+                .required(true)
+                .help("Must provide an output CSV file path"))
+            .arg(Arg::with_name("index_file")
+                .short("I")
+                .takes_value(true)
+                .value_name("INDEX_FILE")
+                .required(false)
+                .help("provide an index file path [<INPUT_FILE>.matchqa.index]"))
+            .arg(Arg::with_name("config_file")
+                .short("c")
+                .takes_value(true)
+                .value_name("CONFIG_FILE")
+                .required(true)
+                .help("Must provide a JSON config file path")))
+        .subcommand(SubCommand::with_name("config_sample")
+            .about("Print a config file sample."));
     let mut help_msg = Vec::new();
     if let Err(e) = cli.write_help(&mut help_msg) {
-        println!("Error generiting help message: {}", e);
-        return;
+        return Err(format!("Error generating help message: {}", e));
     }
     let cli_matches = cli.get_matches();
 
     // print config sample
     if let Some(_) = cli_matches.subcommand_matches("config_sample") {
-        println!("{}", CONFIG_SAMPLE);
-        return;
+        return Err(format!("{}", CONFIG_SAMPLE));
     }
 
     // print help
     let cli_start = match cli_matches.subcommand_matches("start") {
         Some(v) => v,
         None => {
-            println!("{}", String::from_utf8(help_msg).unwrap());
-            return;
+            return Err(format!("{}", String::from_utf8(help_msg).unwrap()));
         }
     };
 
@@ -262,11 +258,26 @@ fn main() {
     let input_path = cli_start.value_of("input_file").unwrap().to_string();
     let output_path = cli_start.value_of("output_file").unwrap().to_string();
     let config_path = cli_start.value_of("config_file").unwrap().to_string();
-    let mut app = match App::new(&input_path, &output_path, &config_path) {
+    let index_path = cli_start.value_of("index_file");
+    let app = match App::new(&input_path, &output_path, index_path, &config_path) {
+        Ok(v) => v,
+        Err(e) => {
+            return Err(format!("{}", e));
+        }
+    };
+
+    Ok(app)
+}
+
+#[rocket::main]
+async fn main() -> Result<(), rocket::Error> {
+    // use a different function to handle CLI behavior due to a "Future"
+    //  issue from rocket:main async behavior
+    let mut app = match handle_cli() {
         Ok(v) => v,
         Err(e) => {
             println!("{}", e);
-            return;
+            return Ok(())
         }
     };
 
@@ -278,18 +289,19 @@ fn main() {
             ParseError::CSV(ecsv) => println!("error trying to parse the input file while indexing: {}", ecsv),
             _ => println!("an error happen trying to index the input file")
         }
-        return;
+        return Ok(());
     };
     println!("Done indexing");
 
     // configure server and routes
-    rocket::ignite()
-        .attach(Template::custom(|engines: &mut RcktEngines| {
+    rocket::build()
+        .attach(Template::custom(|engines| {
             engines.tera.register_filter("diff_single", filter_diff_single);
         }))
         .manage(app)
-        .mount("/public", StaticFiles::from("static"))
+        .mount("/public", FileServer::from(relative!("static")))
         .mount("/", routes![index])
         .mount("/qa", routes![compare, apply, pause])
-        .launch();
+        .ignite().await?
+        .launch().await
 }
