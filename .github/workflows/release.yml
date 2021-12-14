@@ -1,12 +1,6 @@
 name: release
 
 on:
-  push:
-    tags:
-      - 'v*'
-  pull_request:
-    tags:
-      - 'v*'
   release:
     types: [created]
 
@@ -29,7 +23,7 @@ jobs:
       - name: Compile and release
         uses: rust-build/rust-build.action@latest
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUSTTARGET: ${{ matrix.target }}
           ARCHIVE_TYPES: ${{ matrix.archive }}
           EXTRA_FILES: "static"
