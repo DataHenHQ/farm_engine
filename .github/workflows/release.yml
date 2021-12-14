@@ -2,7 +2,9 @@ name: release
 
 on:
   release:
-    types: [created]
+    types:
+      - created
+      - unpublished
 
 jobs:
   release:
