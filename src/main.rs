@@ -262,7 +262,7 @@ fn handle_cli() -> Result<App, String> {
     let app = match App::new(&input_path, &output_path, index_path, &config_path) {
         Ok(v) => v,
         Err(e) => {
-            return Err(format!("{}", e));
+            return Err(e.to_string());
         }
     };
 

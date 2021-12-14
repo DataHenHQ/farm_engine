@@ -5,8 +5,10 @@ use serde::Deserialize;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
 use index::indexer::Indexer;
+use index::index_header::HASH_SIZE;
 use index::index_value::MatchFlag;
 use parse_error::ParseError;
+use sha3::{Digest, Sha3_256};
 
 const BUF_SIZE: u64 = 4096;
 
@@ -232,10 +234,10 @@ pub fn fill_file(path: &str, target_size: u64, truncate: bool) -> std::io::Resul
 /// # Arguments
 /// 
 /// * `path` - File path.
-pub fn generate_hash(path: &str) -> std::io::Result<[u8; blake3::OUT_LEN]> {
+pub fn generate_hash(path: &str) -> std::io::Result<[u8; HASH_SIZE]> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
-    let mut hasher = blake3::Hasher::new();
+    let mut hasher = Sha3_256::new();
 
     loop {
         let mut chunk = vec![0u8; BUF_SIZE as usize];
@@ -248,7 +250,8 @@ pub fn generate_hash(path: &str) -> std::io::Result<[u8; blake3::OUT_LEN]> {
             break;
         }
     }
-    Ok(*hasher.finalize().as_bytes())
+    let hash: [u8; HASH_SIZE] = hasher.finalize().try_into().expect("invalid HASH_SIZE value, adjust to your current hash algorightm");
+    Ok(hash)
 }
 
 #[cfg(test)]

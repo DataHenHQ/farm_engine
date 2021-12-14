@@ -11,8 +11,8 @@ use crate::engine::parse_error::ParseError;
 /// ```
 pub const HEADER_LINE_SIZE: usize = 42;
 
-// Unsigned hash value size.
-pub const HASH_SIZE: usize = blake3::OUT_LEN;
+// Unsigned hash value size. Currently using SHA3-256 = key 32 bytes
+pub const HASH_SIZE: usize = 32;
 
 // Signed hash value size.
 pub const HASH_U_SIZE: usize = HASH_SIZE + 1;

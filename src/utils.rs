@@ -105,7 +105,7 @@ pub fn parse_line(headers: &String, path: &String, start_pos: u64) -> Result<(se
     // get closest line bytes, position and next line position
     let (raw_data, pos, next_pos) = match read_line(path, start_pos) {
         Ok(v) => v,
-        Err(e) => return Err(format!("{}", e))
+        Err(e) => return Err(e.to_string())
     };
 
     // build CSV string using headers and line bytes

@@ -18,7 +18,7 @@ chrono = "0.4"
 csv = "1.1"
 difference = "2.0"
 html-escape = "0.2.9"
-blake3 = "1.2.0"
+sha3 = "0.10.0"
 
 [dependencies.rocket_dyn_templates]
 version = "0.1.0-rc.1"
