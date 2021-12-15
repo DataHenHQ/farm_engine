@@ -300,7 +300,7 @@ async fn main() -> Result<(), rocket::Error> {
         }
         return Ok(());
     };
-    println!("Done indexing");
+    println!("Finished indexing. Found {} records.", app.engine.index.header.indexed_count);
 
     // calculate static directory path
     let default_static_path = match env::var("CARGO_MANIFEST_DIR") {
@@ -309,7 +309,10 @@ async fn main() -> Result<(), rocket::Error> {
     };
     let static_path = match default_static_path {
         Some(s) => match PathBuf::from_str(&s) {
-            Ok(v) => v,
+            Ok(mut v) => {
+                v.push("static");
+                v
+            },
             Err(e) => {
                 println!("{}", e);
                 return Ok(());
@@ -327,6 +330,7 @@ async fn main() -> Result<(), rocket::Error> {
             }
         }
     };
+    println!("Watching \"{}\" for static directory...", static_path.to_string_lossy());
 
     // configure server and routes
     rocket::build()

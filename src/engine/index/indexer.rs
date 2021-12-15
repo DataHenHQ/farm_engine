@@ -204,8 +204,6 @@ impl Indexer {
         // validate file size
         let real_size = file_size(&self.index_path)?;
         let size = Self::calc_record_index_pos(self.header.indexed_count);
-        println!("RS: {}", real_size);
-        println!("S: {}", size);
         if real_size != size {
             return Ok(IndexStatus::Corrupted);
         }
@@ -296,22 +294,32 @@ impl Indexer {
                     input_rdr_nav.seek(SeekFrom::Start(input_start_pos))?;
                     input_rdr_nav.read_exact(&mut buf)?;
 
-                    // remove new line at the end of buffer
+                    // remove new line at the beginning and end of buffer
+
                     let mut limit = buf.len();
+                    let mut start_index = 0;
                     for _ in 0..2 {
-                        if !(limit > 0 && (buf[limit-1] == b'\n' || buf[limit-1] == b'\r')) {
-                            continue;
+                        if limit - start_index + 1 < 1 {
+                            break;
                         }
-                        buf.pop();
-                        input_end_pos -= 1;
-                        limit -= 1;
+                        if buf[limit-1] == b'\n' || buf[limit-1] == b'\r' {
+                            input_end_pos -= 1;
+                            limit -= 1;
+                        }
+                        if limit - start_index + 1 < 1 {
+                            break;
+                        }
+                        if buf[start_index] == b'\n' || buf[start_index] == b'\r' {
+                            input_start_pos += 1;
+                            start_index += 1;
+                        }
                     }
 
                     // copy input record into output and add extras
                     if !is_first {
                         output_wrt.write_all(&[b'\n'])?;
                     }
-                    output_wrt.write_all(buf.as_slice())?;
+                    output_wrt.write_all(&buf[start_index..limit])?;
                     output_pos = output_wrt.stream_position()?;
                     if is_first {
                         // write header extra fields when first row
