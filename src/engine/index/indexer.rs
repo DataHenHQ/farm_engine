@@ -9,7 +9,7 @@ use super::LoadFrom;
 use super::index_header::{HEADER_LINE_SIZE, IndexHeader};
 use super::index_value::{VALUE_LINE_SIZE, MatchFlag, IndexValue};
 
-const HEADER_EXTRA_FIELDS: &'static str = ",match,time,comments";
+const HEADER_EXTRA_FIELDS: &str = ",match,time,comments";
 
 /// Indexer engine.
 #[derive(Debug, Deserialize, PartialEq)]
@@ -38,13 +38,11 @@ impl Indexer {
             index_path: index_path.to_string(),
             header: IndexHeader::new(),
             empty_extra_fields: format!(
-                ",{:match_flag$},{:time$},\"{:comments$}\"",
+                // ',{match_flag:1},{time:20},"{comments:200}"'
+                ",{: >1},{:0>20},\"{: <200}\"",
                 "",
-                "0",
                 "",
-                match_flag=1,
-                time=20,
-                comments=200
+                ""
             ).as_bytes().to_vec()
         }
     }
@@ -135,7 +133,7 @@ impl Indexer {
         let pos = Self::calc_record_index_pos(index);
         writer.seek(SeekFrom::Start(pos))?;
         let buf: Vec<u8> = value.into();
-        writer.write(buf.as_slice())?;
+        writer.write_all(buf.as_slice())?;
         writer.flush()?;
 
         Ok(())
@@ -166,7 +164,7 @@ impl Indexer {
         // search next unmatched record
         let mut buf = [0u8; VALUE_LINE_SIZE];
         while pos < size {
-            reader.read(&mut buf)?;
+            reader.read_exact(&mut buf)?;
             if buf[VALUE_LINE_SIZE - 1] < 1u8 {
                 return Ok(Some((index, IndexValue::try_from(&buf[..])?)));
             }
@@ -250,6 +248,9 @@ impl Indexer {
         let mut output_wrt = BufWriter::new(output_file);
         let mut index_wrt = BufWriter::new(index_file);
 
+        // find input file size
+        input_rdr_nav.seek(SeekFrom::End(0))?;
+
         // seek latest record when exists
         let mut is_first = true;
         if let Some(value) = last_index {
@@ -263,7 +264,7 @@ impl Indexer {
         if is_first {
             let header = &self.header;
             let buf_header: Vec<u8> = header.into();
-            index_wrt.write(buf_header.as_slice())?;
+            index_wrt.write_all(buf_header.as_slice())?;
             index_wrt.flush()?;
         }
         
@@ -285,34 +286,40 @@ impl Indexer {
             }
             match item.unwrap() {
                 Ok(record) => {
-                    // read CSV file line and store it on the buffer
+                    // calculate input positions
                     input_start_pos = record.position().unwrap().byte();
                     input_end_pos = iter.reader().position().byte();
-                    let length: usize = (input_end_pos - input_start_pos - 1) as usize;
+                    let length: usize = (input_end_pos - input_start_pos) as usize;
+
+                    // read CSV file line and store it on the buffer
                     let mut buf: Vec<u8> = vec![0u8; length];
                     input_rdr_nav.seek(SeekFrom::Start(input_start_pos))?;
-                    input_rdr_nav.read(&mut buf)?;
+                    input_rdr_nav.read_exact(&mut buf)?;
 
                     // remove new line at the end of buffer
-                    if buf.len() > 0 && buf[buf.len()-1] == b'\n' {
+                    let mut limit = buf.len();
+                    for _ in 0..2 {
+                        if !(limit > 0 && (buf[limit-1] == b'\n' || buf[limit-1] == b'\r')) {
+                            continue;
+                        }
                         buf.pop();
                         input_end_pos -= 1;
-                        if buf.len() > 0 && buf[buf.len()-1] == b'\r' {
-                            buf.pop();
-                            input_end_pos -= 1;
-                        }
+                        limit -= 1;
                     }
 
                     // copy input record into output and add extras
-                    output_wrt.write(buf.as_slice())?;
+                    if !is_first {
+                        output_wrt.write_all(&[b'\n'])?;
+                    }
+                    output_wrt.write_all(buf.as_slice())?;
                     output_pos = output_wrt.stream_position()?;
                     if is_first {
                         // write header extra fields when first row
-                        output_wrt.write(header_extra_fields_bytes)?;
+                        output_wrt.write_all(header_extra_fields_bytes)?;
                     } else {
                         // write value extra fields when non first row
                         values_indexed = 1;
-                        output_wrt.write(&self.empty_extra_fields)?;
+                        output_wrt.write_all(&self.empty_extra_fields)?;
                     }
                 },
                 Err(e) => return Err(ParseError::CSV(e))
@@ -326,14 +333,14 @@ impl Indexer {
 
             // write index value for this record
             let value = IndexValue{
-                input_start_pos: input_start_pos,
-                input_end_pos: input_end_pos,
-                output_pos: output_pos,
+                input_start_pos,
+                input_end_pos,
+                output_pos,
                 match_flag: MatchFlag::None
             };
             //println!("{:?}", value);
             let buf: Vec<u8> = Vec::from(&value);
-            index_wrt.write(&buf[..])?;
+            index_wrt.write_all(&buf[..])?;
             self.header.indexed_count += values_indexed;
         }
 
@@ -342,7 +349,7 @@ impl Indexer {
         self.header.indexed = true;
         let header = &self.header;
         let buf_header: Vec<u8> = header.into();
-        index_wrt.write(buf_header.as_slice())?;
+        index_wrt.write_all(buf_header.as_slice())?;
         index_wrt.flush()?;
 
         Ok(())
@@ -409,9 +416,9 @@ pub mod test_helper {
 
     /// Returns the fake input hash value.
     pub fn fake_input_hash() -> [u8; HASH_SIZE] {
-        [133, 84, 163, 133, 145, 42, 66, 220, 182, 106, 209, 123, 252, 174, 44,
-            200, 22, 85, 223, 69, 121, 150, 11, 124, 246, 40, 231, 239, 154, 5,
-            210, 242]
+        [ 47, 130, 231, 73, 14, 84, 144, 114, 198, 155, 94, 35, 15,
+          101, 71, 156, 48, 113, 13, 217, 129, 108, 130, 240, 24, 19,
+          159, 141, 205, 59, 71, 227]
     }
 
     /// Create a fake input file.
@@ -426,7 +433,7 @@ pub mod test_helper {
             .write(true)
             .open(path)?;
         let mut writer = BufWriter::new(file);
-        writer.write(&fake_input_bytes())?;
+        writer.write_all(&fake_input_bytes())?;
         writer.flush()?;
 
         Ok(())
@@ -442,7 +449,7 @@ pub mod test_helper {
         buf[24] = 34;
         buf[225] = 34;
         for i in 0..20 {
-            buf[3+i] = 32;
+            buf[3+i] = 48;
         }
         for i in 0..200 {
             buf[25+i] = 32;
@@ -475,7 +482,7 @@ pub mod test_helper {
             .write(true)
             .open(path)?;
         let mut writer = BufWriter::new(file);
-        writer.write(&fake_output_bytes())?;
+        writer.write_all(&fake_output_bytes())?;
         writer.flush()?;
 
         Ok(())
@@ -514,7 +521,7 @@ pub mod test_helper {
             .write(true)
             .open(path)?;
         let mut writer = BufWriter::new(file);
-        writer.write(fake_index_bytes(empty).as_slice())?;
+        writer.write_all(fake_index_bytes(empty).as_slice())?;
         writer.flush()?;
 
         Ok(())

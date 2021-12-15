@@ -103,7 +103,7 @@ pub struct App {
 impl App {
     /// Initialize a new AppConfig object.
     pub fn new(input_path: &str, output_path: &str, index_path: Option<&str>, config_path: &str) -> Result<Self, String> {
-        let user_config = match UserConfig::from_file(&config_path) {
+        let user_config = match UserConfig::from_file(config_path) {
             Ok(v) => v,
             Err(e) => return Err(
                 format!("Error parsing config file \"{}\": {}",
@@ -114,7 +114,7 @@ impl App {
 
         Ok(Self{
             engine: crate::engine::Engine::new(input_path, output_path, index_path),
-            user_config: user_config
+            user_config
         })
     }
 }

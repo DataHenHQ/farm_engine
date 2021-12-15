@@ -14,7 +14,7 @@ mod engine;
 pub mod test_helper;
 
 use rocket::State;
-use rocket::fs::{FileServer, relative};
+use rocket::fs::FileServer;
 use rocket::serde::json::Json;
 use rocket_dyn_templates::Template;
 use rocket_dyn_templates::tera::Error as RcktTmplError;
@@ -22,10 +22,14 @@ use clap::{Arg, App as ClapApp, SubCommand, crate_version};
 use chrono::prelude::*;
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::env;
+use std::path::PathBuf;
+use std::str::FromStr;
 use self::utils::*;
 use self::matchqa::{App, CONFIG_SAMPLE};
 use self::engine::index::index_value::MatchFlag;
 use self::engine::parse_error::ParseError;
+
 //use engine::Engine;
 
 /// Handle homepage GET requests.
@@ -125,8 +129,13 @@ fn apply(app: &State<App>, raw_index: &str, raw_data: Json<ApplyData>) -> &'stat
     
     // calculate match data and track time
     let data = raw_data.into_inner();
-    let match_flag = if data.skip { MatchFlag::Skip } else 
-        if data.approved { MatchFlag::Yes } else { MatchFlag::No };
+    let match_flag = if data.skip {
+        MatchFlag::Skip
+    } else if data.approved {
+        MatchFlag::Yes
+    } else {
+        MatchFlag::No
+    };
     let track_time = Utc::now().timestamp_millis() - data.time;
 
     // save output
@@ -242,15 +251,15 @@ fn handle_cli() -> Result<App, String> {
     let cli_matches = cli.get_matches();
 
     // print config sample
-    if let Some(_) = cli_matches.subcommand_matches("config_sample") {
-        return Err(format!("{}", CONFIG_SAMPLE));
+    if cli_matches.subcommand_matches("config_sample").is_some() {
+        return Err(CONFIG_SAMPLE.to_string());
     }
 
     // print help
     let cli_start = match cli_matches.subcommand_matches("start") {
         Some(v) => v,
         None => {
-            return Err(format!("{}", String::from_utf8(help_msg).unwrap()));
+            return Err(String::from_utf8(help_msg).unwrap());
         }
     };
 
@@ -262,7 +271,7 @@ fn handle_cli() -> Result<App, String> {
     let app = match App::new(&input_path, &output_path, index_path, &config_path) {
         Ok(v) => v,
         Err(e) => {
-            return Err(e.to_string());
+            return Err(e);
         }
     };
 
@@ -293,13 +302,39 @@ async fn main() -> Result<(), rocket::Error> {
     };
     println!("Done indexing");
 
+    // calculate static directory path
+    let default_static_path = match env::var("CARGO_MANIFEST_DIR") {
+        Ok(s) => Some(s),
+        Err(_) => None
+    };
+    let static_path = match default_static_path {
+        Some(s) => match PathBuf::from_str(&s) {
+            Ok(v) => v,
+            Err(e) => {
+                println!("{}", e);
+                return Ok(());
+            }
+        },
+        None => match env::current_exe() {
+            Ok(mut v) => {
+                v.pop();
+                v.push("static");
+                v
+            },
+            Err(e) => {
+                println!("{}", e);
+                return Ok(());
+            }
+        }
+    };
+
     // configure server and routes
     rocket::build()
         .attach(Template::custom(|engines| {
             engines.tera.register_filter("diff_single", filter_diff_single);
         }))
         .manage(app)
-        .mount("/public", FileServer::from(relative!("static")))
+        .mount("/public", FileServer::from(static_path))
         .mount("/", routes![index])
         .mount("/qa", routes![compare, apply, pause])
         .ignite().await?

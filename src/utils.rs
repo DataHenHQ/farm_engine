@@ -14,7 +14,7 @@ pub struct ApplyData {
     pub comments: String
 }
 
-pub fn read_csv_line(path: &String, pos: u64) -> io::Result<(Vec<u8>, u64)> {
+pub fn read_csv_line(path: &str, pos: u64) -> io::Result<(Vec<u8>, u64)> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
     reader.seek(SeekFrom::Start(pos))?;
@@ -27,9 +27,8 @@ pub fn read_csv_line(path: &String, pos: u64) -> io::Result<(Vec<u8>, u64)> {
 
     // read one line
     let mut buf: Vec<u8> = vec!();
-    for result in rdr.deserialize() {
+    if let Some(result) = rdr.deserialize().next() {
         buf = result?;
-        break;
     }
 
     // return line and next position
@@ -54,7 +53,7 @@ pub fn read_csv_line(path: &String, pos: u64) -> io::Result<(Vec<u8>, u64)> {
 /// let (buf, pos, next_pos) = read_line(&file_path, start_pos).unwrap();
 /// println!(String::from_utf8(buf).unwrap());
 /// ```
-pub fn read_line(path: &String, start_pos: u64) -> io::Result<(Vec<u8>, u64, u64)> {
+pub fn read_line(path: &str, start_pos: u64) -> io::Result<(Vec<u8>, u64, u64)> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
     let pos = start_pos;
@@ -101,7 +100,7 @@ pub fn read_line(path: &String, start_pos: u64) -> io::Result<(Vec<u8>, u64, u64
 /// * `headers` - Headers line string.
 /// * `path` - CSV file path to read.
 /// * `start_pos` - File position from which search the closest line.
-pub fn parse_line(headers: &String, path: &String, start_pos: u64) -> Result<(serde_json::Value, u64, u64), String> {
+pub fn parse_line(headers: &str, path: &str, start_pos: u64) -> Result<(serde_json::Value, u64, u64), String> {
     // get closest line bytes, position and next line position
     let (raw_data, pos, next_pos) = match read_line(path, start_pos) {
         Ok(v) => v,

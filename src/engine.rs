@@ -41,7 +41,7 @@ impl Engine {
     pub fn new(input_path: &str, output_path: &str, index_path: Option<&str>) -> Self {
         let index_path = match index_path {
             Some(s) => s.to_string(),
-            None => format!("{}.matchqa.index", input_path)
+            None => format!("{}.matchqa.index", output_path)
         };
         let input_path = input_path.to_string();
         let output_path = output_path.to_string();
@@ -84,10 +84,10 @@ impl Engine {
             .open(&self.index.output_path)?;
         let mut writer = BufWriter::new(file);
         writer.seek(SeekFrom::Start(value.output_pos))?;
-        writer.write(&[b',', (&match_flag).into(), b','])?;
-        writer.write(Self::format_time(time_milis).as_bytes())?;
-        writer.write(&[b','])?;
-        writer.write(Self::format_comments(comments).as_bytes())?;
+        writer.write_all(&[b',', (&match_flag).into(), b','])?;
+        writer.write_all(Self::format_time(time_milis).as_bytes())?;
+        writer.write_all(&[b','])?;
+        writer.write_all(Self::format_comments(comments).as_bytes())?;
         writer.flush()?;
 
         value.match_flag = match_flag.clone();
@@ -118,11 +118,11 @@ impl Engine {
         let file = File::open(&self.index.input_path)?;
         let mut reader = BufReader::new(file);
         let mut buf: Vec<u8> = vec![0u8; first_value.input_start_pos as usize];
-        reader.read(&mut buf)?;
+        reader.read_exact(&mut buf)?;
         buf.push(b'\n');
         reader.seek(SeekFrom::Start(value.input_start_pos))?;
         let mut buf_value: Vec<u8> = vec![0u8; (value.input_end_pos - value.input_start_pos + 1) as usize];
-        reader.read(&mut buf_value)?;
+        reader.read_exact(&mut buf_value)?;
         buf.append(&mut buf_value);
 
         // read data
@@ -132,7 +132,7 @@ impl Engine {
             .from_reader(buf.as_slice());
 
         // deserialize CSV string object into a JSON object
-        for result in reader.deserialize::<serde_json::Map<String, serde_json::Value>>() {
+        if let Some(result) = reader.deserialize::<serde_json::Map<String, serde_json::Value>>().next() {
             match result {
                 Ok(record) => {
                     // return data after the first successful record
@@ -302,9 +302,9 @@ mod tests {
             let buf: &[u8] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
             create_file_with_bytes(&path_str, buf)?;
             
-            let expected: &[u8] = &[64, 119, 46, 20, 183, 102, 90, 142, 127, 9,
-                222, 65, 218, 9, 196, 25, 26, 202, 193, 50, 165, 152, 228, 227,
-                99, 208, 118, 225, 144, 119, 5, 122];
+            let expected: &[u8] = &[12, 213, 40, 91, 168, 82, 79, 228, 42, 200,
+              240, 7, 109, 233, 19, 93, 5, 97, 50, 169, 153, 98, 19, 174, 28,
+              15, 20, 32, 201, 8, 65, 139];
             let value = generate_hash(&path_str)?;
             assert_eq!(HASH_SIZE, value.len());
             assert_eq!(expected, value);

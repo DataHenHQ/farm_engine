@@ -15,7 +15,7 @@ pub fn create_file_with_bytes(path: &str, buf: &[u8]) -> std::io::Result<()> {
         .truncate(true)
         .open(&path)?;
     let mut writer = BufWriter::new(file);
-    writer.write(buf)?;
+    writer.write_all(buf)?;
     writer.flush()?;
     Ok(())
 }
