@@ -4,7 +4,6 @@ on:
   release:
     types:
       - created
-      - unpublished
 
 jobs:
   release:
@@ -23,9 +22,9 @@ jobs:
     steps:
       - uses: actions/checkout@master
       - name: Compile and release
-        uses: colorfulsing/rust-build.action@latest
+        uses: rust-build/rust-build.action@latest
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RUSTTARGET: ${{ matrix.target }}
           ARCHIVE_TYPES: ${{ matrix.archive }}
-          EXTRA_FILES: "static"
+          #EXTRA_FILES: "static"
