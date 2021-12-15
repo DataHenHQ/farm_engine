@@ -121,8 +121,9 @@ impl Engine {
         reader.read_exact(&mut buf)?;
         buf.push(b'\n');
         reader.seek(SeekFrom::Start(value.input_start_pos))?;
-        let mut buf_value: Vec<u8> = vec![0u8; (value.input_end_pos - value.input_start_pos + 1) as usize];
+        let mut buf_value: Vec<u8> = vec![0u8; (value.input_end_pos - value.input_start_pos) as usize];
         reader.read_exact(&mut buf_value)?;
+        // dbg!(String::from_utf8(buf_value.clone()).unwrap());
         buf.append(&mut buf_value);
 
         // read data

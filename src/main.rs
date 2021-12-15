@@ -74,38 +74,38 @@ fn compare(app: &State<App>, raw_index: &str) -> Template {
             return Template::render("errors/bad_record", &context)
         }
     };
+    context["index"] = Value::Number(serde_json::Number::from(index));
 
     // get data from file
     let data = match app.engine.get_data(index) {
         Ok(v) => v,
         Err(e) => {
-            match e {
-                ParseError::IO(eio) => println!("{}", eio),
-                ParseError::CSV(ecsv) => println!("error trying to parse the input file while extracting data: {}", ecsv),
-                _ => println!("an error happen trying to extract the record data")
-            }
-            return Template::render("errors/bad_parse", &context)
+            let err_msg = match e {
+                ParseError::IO(eio) => eio.to_string(),
+                ParseError::CSV(ecsv) => format!("error trying to parse the input file while extracting data: {}", ecsv),
+                _ => "an error happen trying to extract the record data".to_string()
+            };
+            return Template::render("errors/bad_parse", json!({
+                "error_msg": err_msg
+            }));
         }
     };
-
-    // finish when no more data
-    if let serde_json::Value::Null = data {
-        return Template::render("errors/bad_record", &context)
-    }
 
     // build context
     let next_index = match app.engine.find_to_process(index+1).unwrap() {
         Some(v) => Value::Number(serde_json::Number::from(v)),
         None => Value::Number(serde_json::Number::from(-1)),
     };
-
-    context["start_time"] = Value::Number(serde_json::Number::from(Utc::now().timestamp_millis()));
     context["next_index"] = next_index;
-    context["index"] = Value::Number(serde_json::Number::from(index));
-    context["data"] = data;
-    
 
-    // add diff filter
+    // finish when no more data
+    if let serde_json::Value::Null = data {
+        return Template::render("qa/no_record", &context);
+    }
+
+    // send compare data to 
+    context["start_time"] = Value::Number(serde_json::Number::from(Utc::now().timestamp_millis()));
+    context["data"] = data;
     Template::render("qa/compare", &context)
 }
 
@@ -171,7 +171,9 @@ fn pause(_app: &State<App>, raw_index: &str) -> Template {
         Ok(v) => v,
         Err(e) => {
             println!("{}", e);
-            return Template::render("errors/bad_record", &context)
+            return Template::render("errors/bad_record", json!({
+                "error_msg": e.to_string()
+            }))
         }
     };
 
