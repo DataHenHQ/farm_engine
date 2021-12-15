@@ -2,13 +2,18 @@ pub mod parse_error;
 pub mod index;
 
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
-use index::indexer::Indexer;
-use index::index_header::HASH_SIZE;
-use index::index_value::MatchFlag;
-use parse_error::ParseError;
+use std::path::PathBuf;
+use std::str::FromStr;
 use sha3::{Digest, Sha3_256};
+use path_absolutize::*;
+use regex::Regex;
+use index::indexer::Indexer;
+use index::index_header::{IndexHeader, HASH_SIZE};
+use index::index_value::{IndexValue, MatchFlag};
+use parse_error::ParseError;
 
 const BUF_SIZE: u64 = 4096;
 
@@ -55,47 +60,169 @@ impl Engine {
         }
     }
 
-    /// Regenerates the index file based on the input file.
-    pub fn index(&mut self) -> Result<(), ParseError> {
-        self.index.index()
+    /// Generates a regex expression to validate the index file extension.
+    pub fn index_extension_regex() -> Regex {
+        Regex::new(r"(?i)\.matchqa\.index$").unwrap()
     }
 
-    pub fn format_time(time_milis: u64) -> String {
-        format!("{:0>20}", (time_milis as f32) / 1000f32)
+    /// Validate an index path extension.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `path` - Path to validate.
+    pub fn validate_index_extension(path: &PathBuf, extension_regex: &Regex) -> bool {
+        let file_name = match path.file_name() {
+            Some(v) => match v.to_str() {
+                Some(s) => s,
+                None => return false
+            },
+            None => return false
+        };
+        extension_regex.is_match(file_name)
     }
 
-    pub fn format_comments(comments: &str) -> String {
-        format!("\"{: <200}\"", comments)
+    /// Expands a path and add any index found into the path list.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `raw_path` - Path to expand.
+    /// * `path_list` - Path list to add the found paths into.
+    fn expand_index_path(raw_path: &PathBuf, path_list: &mut Vec<PathBuf>, raw_excludes: &Vec<PathBuf>) -> std::io::Result<()> {
+        // canonalize the excluded paths
+        let mut excludes: Vec<PathBuf> = vec!();
+        for raw_exclude in raw_excludes {
+            excludes.push(raw_exclude.absolutize()?.to_path_buf());
+        }
+
+        // resolve symlink and relative paths
+        let path = raw_path.absolutize()?.to_path_buf();
+
+        // check for exclusion
+        for exclude in &excludes {
+            if path.eq(exclude) {
+                return Ok(())
+            }
+        }
+
+        // check if single file
+        if path.is_file() {
+            // don't validate the file extension for explicit files,
+            // just add the index file
+            path_list.push(path);
+            return Ok(());
+        }
+        
+        // asume dir since the path is already canonizalized
+        let extension_regex = Self::index_extension_regex();
+        'dir_iter: for entry in path.read_dir()? {
+            let entry = entry?;
+            let file_path = entry.path();
+
+            // check for exclusion
+            for exclude in &excludes {
+                if file_path.eq(exclude) {
+                    continue 'dir_iter;
+                }
+            }
+
+            // skip subdirectories
+            if file_path.is_dir() {
+                continue;
+            }
+
+            // skip non index files
+            if !Self::validate_index_extension(&file_path, &extension_regex) {
+                continue;
+            }
+
+            // add index file
+            path_list.push(file_path);
+        }
+
+        Ok(())
     }
 
-    pub fn record_output(&self, index: u64, match_flag: MatchFlag, time_milis: u64, comments: &str) -> Result<(), ParseError> {
+    /// Writes an output record value into a file writer.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `writer` - Output file writer to write into.
+    /// * `value` - Record index value.
+    /// * `match_flag` - Match flag value to save.
+    /// * `track_time` - Tracked time value to save.
+    /// * `comments` - Comments value to save.
+    fn write_output(writer: &mut (impl Write + Seek), value: &IndexValue, match_flag: MatchFlag, time_milis: u64, comments: &str) -> Result<(), ParseError> {
         if comments.len() > 200 {
             return Err(ParseError::InvalidSize);
         }
 
-        let mut value = match self.index.get_record_index(index)? {
-            Some(v) => v,
-            None => return Err(ParseError::InvalidValue)
-        };
-
-        // write output match data
-        let file = OpenOptions::new()
-            .write(true)
-            .open(&self.index.output_path)?;
-        let mut writer = BufWriter::new(file);
         writer.seek(SeekFrom::Start(value.output_pos))?;
-        writer.write_all(&[b',', (&match_flag).into(), b','])?;
+        writer.write_all(&[b',', match_flag.into(), b','])?;
         writer.write_all(Self::format_time(time_milis).as_bytes())?;
         writer.write_all(&[b','])?;
         writer.write_all(Self::format_comments(comments).as_bytes())?;
         writer.flush()?;
 
+        Ok(())
+    }
+
+    /// Regenerates the index file based on the input file.
+    pub fn index(&mut self) -> Result<(), ParseError> {
+        self.index.index()
+    }
+
+    /// Format a track time value to a 20 chars fixed size.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `track_time` - Track time value.
+    pub fn format_time(track_time: u64) -> String {
+        format!("{:0>20}", (track_time as f32) / 1000f32)
+    }
+
+    /// Format a comments value to a 200 chars fixed size.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `comments` - Comments  value.
+    pub fn format_comments(comments: &str) -> String {
+        format!("\"{: <200}\"", comments)
+    }
+
+    /// Record an output into the output file.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `index` - Record index to update.
+    /// * `match_flag` - Match flag value to save.
+    /// * `track_time` - Tracked time value to save.
+    /// * `comments` - Comments value to save.
+    pub fn record_output(&self, index: u64, match_flag: MatchFlag, track_time: u64, comments: &str) -> Result<(), ParseError> {
+        // write output match data
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&self.index.output_path)?;
+        let mut writer = BufWriter::new(file);
+
+        // write output data
+        let mut value = match self.index.get_record_index(index)? {
+            Some(v) => v,
+            None => return Err(ParseError::InvalidValue)
+        };
+        Self::write_output(&mut writer, &value, match_flag, track_time, comments)?;
+
+        // update index value
         value.match_flag = match_flag.clone();
         self.index.update_index_value(index, &value)?;
 
         Ok(())
     }
 
+    /// Search the next unprocessed record if any.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `from_index` - Index offset from which start searching.
     pub fn find_to_process(&self, from_index: u64) -> Result<Option<u64>, ParseError> {
         let (index, _) = match self.index.find_unmatched(from_index)? {
             Some(v) => v,
@@ -104,6 +231,11 @@ impl Engine {
         Ok(Some(index))
     }
 
+    /// Retrive a record input data from a specific index.
+    /// 
+    /// $ Arguments
+    /// 
+    /// * `index` - Record index.
     pub fn get_data(&self, index: u64) -> Result<serde_json::Value, ParseError> {
         let first_value = match self.index.get_record_index(0)? {
             Some(v) => v,
@@ -147,6 +279,152 @@ impl Engine {
         }
 
         Ok(serde_json::Value::Null)
+    }
+
+    /// Build a source index file list from an expanded path list.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `expanded_path_list` - Expanded path list to build from.
+    fn build_index_source_list(&self, expanded_path_list: Vec<PathBuf>) -> Result<Vec<BufReader<File>>, ParseError> {
+        let base_size = file_size(&self.index.index_path)?;
+        let mut source_list: Vec<BufReader<File>> = vec!();
+        for path in expanded_path_list {
+            let file = File::open(&path)?;
+            let mut reader = BufReader::new(file);
+            println!("Open file \"{}\"", path.to_string_lossy());
+
+            // validate index file size
+            reader.seek(SeekFrom::End(0))?;
+            let size = reader.stream_position()?;
+            if size != base_size {
+                return Err(ParseError::Other(format!(
+                    "Index file size mismatch on file \"{}\"",
+                    path.to_string_lossy()
+                )));
+            }
+
+            // validate index header match
+            let mut header = IndexHeader::new();
+            Indexer::header_from_file(&mut reader, &mut header)?;
+            if header != self.index.header {
+                return Err(ParseError::Other(format!(
+                    "Index header mismatch on file \"{}\"",
+                    path.to_string_lossy()
+                )));
+            }
+
+            // add to valid file source list
+            source_list.push(reader);
+        }
+        Ok(source_list)
+    }
+
+    /// Join index files into a single one using a >50% rule to decide on match flags.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `raw_path_list` - Index file path list to join.
+    pub fn join(&self, raw_path_list: &Vec<PathBuf>) -> Result<(), ParseError> {
+        // skip if no indexed records found
+        if !self.index.header.indexed || self.index.header.indexed_count < 1 {
+            return Ok(());
+        }
+
+        // expand paths
+        let mut path_list: Vec<PathBuf> = vec!();
+        let index_path = match PathBuf::from_str(&self.index.index_path) {
+            Ok(v) => v,
+            Err(e) => return Err(ParseError::Other(e.to_string()))
+        };
+        let exclusions = [index_path].to_vec();
+        for path in raw_path_list {
+            Self::expand_index_path(path, &mut path_list, &exclusions)?;
+        }
+
+        // open and validate source index files
+        let mut source_list = self.build_index_source_list(path_list)?;
+
+        // iterate and join index files
+        let index_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.index.index_path)?;
+        let mut index_reader = BufReader::new(&index_file);
+        let mut index_writer = BufWriter::new(&index_file);
+        let output_file = OpenOptions::new()
+            .write(true)
+            .open(&self.index.output_path)?;
+        let mut output_writer = BufWriter::new(output_file);
+        let match_values = MatchFlag::as_array();
+        let total_sources = source_list.len() as f64;
+        for index in 0..self.index.header.indexed_count {
+            // initialize matches hash
+            let mut matches: HashMap<u8, f64> = HashMap::new();
+            for k in match_values {
+                matches.insert(k.into(), 0f64);
+            }
+
+            // get base index value
+            let mut index_value = match Indexer::value_from_file(&mut index_reader, true, index)? {
+                Some(v) => v,
+                None => return Err(ParseError::Other(format!(
+                    "couldn't retrieve index record on index {} from base index file",
+                    index
+                )))
+            };
+
+            // iterate source index files and count match flag values
+            for reader in source_list.iter_mut() {
+                // get and validate source index value
+                let value = match Indexer::value_from_file(reader, true, index)? {
+                    Some(v) => v,
+                    None => return Err(ParseError::Other(format!(
+                        "couldn't retrieve index record on index {}",
+                        index
+                    )))
+                };
+                if index_value.input_start_pos != value.input_start_pos || index_value.input_end_pos != value.input_end_pos {
+                    return Err(ParseError::Other("Source index value doesn't match base value".to_string()));
+                }
+
+                // record match flag counter
+                let count = match matches.get_mut(&value.match_flag.into()) {
+                    Some(v) => v,
+                    None => return Err(ParseError::InvalidValue)
+                };
+                *count += 1f64;
+            }
+
+            // calculate match_flag value
+            let mut match_flag = MatchFlag::None;
+            for k in match_values {
+                if *matches.get(&k.into()).unwrap() / total_sources > 0.5 {
+                    match_flag = k;
+                    break;
+                }
+            }
+            if match_flag == MatchFlag::Skip {
+                match_flag = MatchFlag::None
+            }
+            index_value.match_flag = match_flag;
+
+            // record index and output values
+            Self::write_output(
+                &mut output_writer,
+                &index_value,
+                match_flag,
+                0,
+                ""
+            )?;
+            Indexer::update_index_file_value(
+                &mut index_writer,
+                index,
+                &index_value
+            )?;
+        }
+
+        Ok(())
     }
 }
 

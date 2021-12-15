@@ -31,6 +31,13 @@ pub struct Indexer {
 }
 
 impl Indexer {
+    /// Create a new indexer object with default empety extra fields.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `input_path` - Source Input file path.
+    /// * `output_path` - Target output file path.
+    /// * `index_path` - Target index file path.
     pub fn new(input_path: &str, output_path: &str, index_path: &str) -> Self {
         Self{
             input_path: input_path.to_string(),
@@ -45,6 +52,72 @@ impl Indexer {
                 ""
             ).as_bytes().to_vec()
         }
+    }
+
+    /// Calculate the target record's index data position at the index file.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `index` - Record index.
+    pub fn calc_record_index_pos(index: u64) -> u64 {
+        HEADER_LINE_SIZE as u64 + index * VALUE_LINE_SIZE as u64
+    }
+
+    /// Get the record's index headers.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `reader` - File reader to read from.
+    /// * `header` - Object to load headers into.
+    pub fn header_from_file(reader: &mut (impl Read + Seek), header: &mut IndexHeader) -> Result<(), ParseError> {
+        let mut buf = [0u8; HEADER_LINE_SIZE];
+        reader.seek(SeekFrom::Start(0))?;
+        reader.read_exact(&mut buf[..])?;
+        header.load_from(&buf[..])?;
+        Ok(())
+    }
+    
+    /// Get the record's index data.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `reader` - File reader to read from.
+    /// * `index` - Record index.
+    pub fn value_from_file(reader: &mut (impl Read + Seek), indexed: bool, index: u64) -> Result<Option<IndexValue>, ParseError> {
+        let index_pos = Self::calc_record_index_pos(index);
+    
+        // validate record index position
+        reader.seek(SeekFrom::End(0))?;
+        let size = reader.stream_position()?;
+        if size < index_pos {
+            if indexed {
+                return Ok(None);
+            }
+            return Err(ParseError::Unavailable(IndexStatus::Indexing))
+        }
+
+        // retrive input pos
+        reader.seek(SeekFrom::Start(index_pos))?;
+        let mut buf = [0u8; VALUE_LINE_SIZE];
+        reader.read_exact(&mut buf)?;
+        Ok(Some(IndexValue::try_from(&buf[..])?))
+    }
+
+    /// Updates an index value.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `writer` - File writer to save data into.
+    /// * `index` - Index value index.
+    /// * `value` - Index value to save.
+    pub fn update_index_file_value(writer: &mut (impl Write + Seek), index: u64, value: &IndexValue) -> Result<(), ParseError> {
+        let pos = Self::calc_record_index_pos(index);
+        writer.seek(SeekFrom::Start(pos))?;
+        let buf: Vec<u8> = value.into();
+        writer.write_all(buf.as_slice())?;
+        writer.flush()?;
+
+        Ok(())
     }
 
     /// Initialize index file.
@@ -62,9 +135,7 @@ impl Indexer {
         let file = File::open(&self.index_path)?;
         let mut reader = BufReader::new(file);
 
-        let mut buf = [0u8; HEADER_LINE_SIZE];
-        reader.read_exact(&mut buf[..])?;
-        self.header.load_from(&buf[..])?;
+        Self::header_from_file(&mut reader, &mut self.header)?;
 
         Ok(())
     }
@@ -83,40 +154,16 @@ impl Indexer {
         Ok(record_count)
     }
 
-    /// Calculate the target record's index data position at the index file.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `index` - Record index.
-    pub fn calc_record_index_pos(index: u64) -> u64 {
-        HEADER_LINE_SIZE as u64 + index * VALUE_LINE_SIZE as u64
-    }
-
     /// Get the record's index data.
     /// 
     /// # Arguments
     /// 
     /// * `index` - Record index.
     pub fn get_record_index(&self, index: u64) -> Result<Option<IndexValue>, ParseError> {
-        let index_pos = Self::calc_record_index_pos(index);
         let index_file = File::open(&self.index_path)?;
         let mut reader = BufReader::new(index_file);
         
-        // validate record index position
-        reader.seek(SeekFrom::End(0))?;
-        let size = reader.stream_position()?;
-        if size < index_pos {
-            if self.header.indexed {
-                return Ok(None);
-            }
-            return Err(ParseError::Unavailable(IndexStatus::Indexing))
-        }
-
-        // retrive input pos
-        reader.seek(SeekFrom::Start(index_pos))?;
-        let mut buf = [0u8; VALUE_LINE_SIZE];
-        reader.read_exact(&mut buf)?;
-        Ok(Some(IndexValue::try_from(&buf[..])?))
+        Self::value_from_file(&mut reader, self.header.indexed, index)
     }
 
     /// Updates an index value.
@@ -130,13 +177,7 @@ impl Indexer {
             .write(true)
             .open(&self.index_path)?;
         let mut writer = BufWriter::new(file);
-        let pos = Self::calc_record_index_pos(index);
-        writer.seek(SeekFrom::Start(pos))?;
-        let buf: Vec<u8> = value.into();
-        writer.write_all(buf.as_slice())?;
-        writer.flush()?;
-
-        Ok(())
+        Self::update_index_file_value(&mut writer, index, value)
     }
 
     /// Return the index and index value of the closest non matched record.

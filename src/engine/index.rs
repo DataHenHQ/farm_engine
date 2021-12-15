@@ -2,6 +2,7 @@ pub mod indexer;
 pub mod index_header;
 pub mod index_value;
 
+use std::fmt::{Display, Formatter, Result as FmtResult};
 use crate::engine::parse_error::ParseError;
 
 /// Position value size.
@@ -15,6 +16,18 @@ pub enum IndexStatus {
     Incomplete,
     Corrupted,
     Indexing
+}
+
+impl Display for IndexStatus{
+    fn fmt(&self, f: &mut Formatter) -> FmtResult { 
+        write!(f, "{}", match self {
+            Self::New => "new",
+            Self::Indexed => "indexed",
+            Self::Incomplete => "incomplete",
+            Self::Corrupted => "corrupted",
+            Self::Indexing => "indexing"
+        })
+    }
 }
 
 pub trait LoadFrom<T> {

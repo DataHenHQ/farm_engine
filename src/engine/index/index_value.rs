@@ -11,12 +11,34 @@ use crate::engine::parse_error::ParseError;
 pub const VALUE_LINE_SIZE: usize = 25;
 
 /// Match flag enumerator.
-#[derive(Debug, PartialEq, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum MatchFlag {
     Yes = b'Y' as isize,
     No = b'N' as isize,
     Skip = b'S' as isize,
     None = 0
+}
+
+impl MatchFlag {
+    /// Return an array with all possible values.
+    pub fn as_array() -> [Self; 4] {
+        [
+            MatchFlag::Yes,
+            MatchFlag::No,
+            MatchFlag::Skip,
+            MatchFlag::None
+        ]
+    }
+
+    /// Returns an array with all possible values as bytes.
+    pub fn as_bytes() -> [u8; 4] {
+        [
+            MatchFlag::Yes.into(),
+            MatchFlag::No.into(),
+            MatchFlag::Skip.into(),
+            MatchFlag::None.into()
+        ]
+    }
 }
 
 impl TryFrom<u8> for MatchFlag {
@@ -35,8 +57,8 @@ impl TryFrom<u8> for MatchFlag {
     }
 }
 
-impl From<&MatchFlag> for u8 {
-    fn from(v: &MatchFlag) -> Self {
+impl From<MatchFlag> for u8 {
+    fn from(v: MatchFlag) -> Self {
         match v {
             MatchFlag::Yes => b'Y',
             MatchFlag::No => b'N',
@@ -113,7 +135,7 @@ impl From<&IndexValue> for Vec<u8> {
         pos_into_bytes(value.input_start_pos, &mut buf[..POSITION_SIZE]).unwrap();
         pos_into_bytes(value.input_end_pos, &mut buf[POSITION_SIZE..2*POSITION_SIZE]).unwrap();
         pos_into_bytes(value.output_pos, &mut buf[2*POSITION_SIZE..3*POSITION_SIZE]).unwrap();
-        buf[3*POSITION_SIZE] = u8::from(&value.match_flag);
+        buf[3*POSITION_SIZE] = u8::from(value.match_flag);
         
         buf.to_vec()
     }
@@ -332,10 +354,10 @@ mod tests {
 
         #[test]
         fn into_u8() {
-            assert_eq!(b'Y', u8::from(&MatchFlag::Yes));
-            assert_eq!(b'N', u8::from(&MatchFlag::No));
-            assert_eq!(b'S', u8::from(&MatchFlag::Skip));
-            assert_eq!(0u8, u8::from(&MatchFlag::None));
+            assert_eq!(b'Y', u8::from(MatchFlag::Yes));
+            assert_eq!(b'N', u8::from(MatchFlag::No));
+            assert_eq!(b'S', u8::from(MatchFlag::Skip));
+            assert_eq!(0u8, u8::from(MatchFlag::None));
         }
     }
 }

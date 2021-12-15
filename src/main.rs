@@ -18,8 +18,9 @@ use rocket::fs::FileServer;
 use rocket::serde::json::Json;
 use rocket_dyn_templates::Template;
 use rocket_dyn_templates::tera::Error as RcktTmplError;
-use clap::{Arg, App as ClapApp, SubCommand, crate_version};
+use clap::{Arg, ArgMatches, App as ClapApp, SubCommand, crate_version};
 use chrono::prelude::*;
+use engine::Engine;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::env;
@@ -211,8 +212,50 @@ fn filter_diff_single(after: &Value, args: &HashMap<String, Value>) -> Result<Va
     Ok(Value::String(text))
 }
 
+fn handle_cli_join(cli_join: &ArgMatches) -> Result<(), String> {
+    // build app
+    let input_path = cli_join.value_of("input_file").unwrap().to_string();
+    let output_path = cli_join.value_of("output_file").unwrap().to_string();
+    let index_path = cli_join.value_of("index_file");
+    let path_list = cli_join.values_of("INDEX_PATH_TO_ANALYZE").unwrap();
+
+    // retrieve index path list
+    let mut raw_path_list: Vec<PathBuf> = vec!();
+    for raw_path in path_list {
+        let path = match PathBuf::from_str(raw_path) {
+            Ok(s) => s,
+            Err(e) => return Err(e.to_string())
+        };
+        raw_path_list.push(path);
+    }
+
+    // create new index and output
+    let mut engine = Engine::new(&input_path, &output_path, index_path);
+    println!("Indexing into {}...", &engine.index.index_path);
+    if let Err(e) = engine.index() {
+        match e {
+            ParseError::IO(eio) => return Err(eio.to_string()),
+            ParseError::CSV(ecsv) => return Err(format!(
+                "error trying to parse the input file while indexing: {}",
+                ecsv
+            )),
+            _ => return Err("an error happen trying to index the input file".to_string())
+        }
+    };
+    println!("Finished indexing. Found {} records.", engine.index.header.indexed_count);
+
+    // join files
+    println!("Joining files...");
+    if let Err(e) = engine.join(&raw_path_list) {
+        return Err(e.to_string());
+    }
+    println!("Finished joining files");
+
+    Ok(())
+}
+
 /// Handles the CLI behavior.
-fn handle_cli() -> Result<App, String> {
+fn handle_cli() -> Result<Option<App>, String> {
     // CLI configuration
     let cli = ClapApp::new("MatchQA")
         .version(crate_version!())
@@ -237,13 +280,40 @@ fn handle_cli() -> Result<App, String> {
                 .takes_value(true)
                 .value_name("INDEX_FILE")
                 .required(false)
-                .help("provide an index file path [<INPUT_FILE>.matchqa.index]"))
+                .help("provide an index file path [<OUTPUT_FILE>.matchqa.index]"))
             .arg(Arg::with_name("config_file")
                 .short("c")
                 .takes_value(true)
                 .value_name("CONFIG_FILE")
                 .required(true)
                 .help("Must provide a JSON config file path")))
+        .subcommand(SubCommand::with_name("consolidate")
+            .about("Start matchqa web server.")
+            .arg(Arg::with_name("input_file")
+                .short("i")
+                .takes_value(true)
+                .value_name("INPUT_FILE")
+                .required(true)
+                .help("Must provide an input CSV file path"))
+            .arg(Arg::with_name("output_file")
+                .short("o")
+                .takes_value(true)
+                .value_name("OUTPUT_FILE")
+                .required(true)
+                .help("Must provide an output CSV file path"))
+            .arg(Arg::with_name("index_file")
+                .short("I")
+                .takes_value(true)
+                .value_name("INDEX_FILE")
+                .required(false)
+                .help("provide an index file path [<OUTPUT_FILE>.matchqa.index]"))
+            .arg(Arg::with_name("INDEX_PATH_TO_ANALYZE")
+                .multiple(true)
+                .required(true)
+                .help("\
+                    Must provide all index files to analyze or any \
+                    directory containing index files.\
+                ")))
         .subcommand(SubCommand::with_name("config_sample")
             .about("Print a config file sample."));
     let mut help_msg = Vec::new();
@@ -253,15 +323,25 @@ fn handle_cli() -> Result<App, String> {
     let cli_matches = cli.get_matches();
 
     // print config sample
+    if let Some(cli_join) = cli_matches.subcommand_matches("consolidate") {
+        if let Err(e) = handle_cli_join(cli_join) {
+            return Err(e);
+        }
+        return Ok(None);
+    }
+
+    // print config sample
     if cli_matches.subcommand_matches("config_sample").is_some() {
-        return Err(CONFIG_SAMPLE.to_string());
+        println!("{}", CONFIG_SAMPLE.to_string());
+        return Ok(None);
     }
 
     // print help
     let cli_start = match cli_matches.subcommand_matches("start") {
         Some(v) => v,
         None => {
-            return Err(String::from_utf8(help_msg).unwrap());
+            println!("{}", String::from_utf8(help_msg).unwrap());
+            return Ok(None);
         }
     };
 
@@ -277,7 +357,7 @@ fn handle_cli() -> Result<App, String> {
         }
     };
 
-    Ok(app)
+    Ok(Some(app))
 }
 
 #[rocket::main]
@@ -285,7 +365,10 @@ async fn main() -> Result<(), rocket::Error> {
     // use a different function to handle CLI behavior due to a "Future"
     //  issue from rocket:main async behavior
     let mut app = match handle_cli() {
-        Ok(v) => v,
+        Ok(o) => match o {
+            Some(v) => v,
+            None => return Ok(())
+        },
         Err(e) => {
             println!("{}", e);
             return Ok(())

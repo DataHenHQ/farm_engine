@@ -19,6 +19,8 @@ csv = "1.1"
 difference = "2.0"
 html-escape = "0.2.9"
 sha3 = "0.10.0"
+path-absolutize = "3.0.11"
+regex = "1.5.4"
 
 [dependencies.rocket_dyn_templates]
 version = "0.1.0-rc.1"
