@@ -534,6 +534,9 @@ pub fn generate_hash(path: &str) -> std::io::Result<[u8; HASH_SIZE]> {
 }
 
 #[cfg(test)]
+pub mod test_helper;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use index::index_header::HASH_SIZE;

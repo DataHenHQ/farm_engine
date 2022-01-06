@@ -3,7 +3,7 @@ pub mod index_header;
 pub mod index_value;
 
 use std::fmt::{Display, Formatter, Result as FmtResult};
-use crate::engine::parse_error::ParseError;
+use crate::parse_error::ParseError;
 
 /// Position value size.
 const POSITION_SIZE: usize = 8;

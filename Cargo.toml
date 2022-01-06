@@ -1,5 +1,5 @@
 [package]
-name = "matchqa"
+name = "matchqa_engine"
 version = "0.4.0"
 edition = "2021"
 
@@ -10,18 +10,9 @@ rand = "0.8.4"
 tempfile = "3"
 
 [dependencies]
-rocket = { version = "0.5.0-rc.1", features = ["json"] }
-clap = "2.34.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"
-chrono = "0.4"
 csv = "1.1"
-difference = "2.0"
-html-escape = "0.2.9"
 sha3 = "0.10.0"
 path-absolutize = "3.0.11"
 regex = "1.5.4"
-
-[dependencies.rocket_dyn_templates]
-version = "0.1.0-rc.1"
-features = ["tera"]

@@ -1,14 +1,12 @@
 use serde::Deserialize;
 use std::convert::TryFrom;
 use super::{POSITION_SIZE, LoadFrom, pos_from_bytes, pos_into_bytes};
-use crate::engine::parse_error::ParseError;
+use crate::parse_error::ParseError;
 
 /// Index header line size.
 /// 
-/// Format:
-/// ```
-/// <indexed:1><indexed_count:8><hash_valid:1><hash:32>
-/// ```
+/// Each record has the following format:
+/// `<indexed:1><indexed_count:8><hash_valid:1><hash:32>`
 pub const HEADER_LINE_SIZE: usize = 42;
 
 // Unsigned hash value size. Currently using SHA3-256 = key 32 bytes

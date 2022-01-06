@@ -2,9 +2,9 @@ use serde::Deserialize;
 use std::fs::{File, OpenOptions};
 use std::convert::TryFrom;
 use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
-use crate::engine::parse_error::ParseError;
-use crate::engine::{file_size, fill_file, generate_hash};
-use crate::engine::index::IndexStatus;
+use crate::parse_error::ParseError;
+use crate::{file_size, fill_file, generate_hash};
+use crate::index::IndexStatus;
 use super::LoadFrom;
 use super::index_header::{HEADER_LINE_SIZE, IndexHeader};
 use super::index_value::{VALUE_LINE_SIZE, MatchFlag, IndexValue};
@@ -446,9 +446,9 @@ impl Indexer {
 pub mod test_helper {
     use super::*;
     use crate::test_helper::*;
-    use crate::engine::index::index_header::test_helper::build_header_bytes;
-    use crate::engine::index::index_value::test_helper::build_value_bytes;
-    use crate::engine::index::index_header::HASH_SIZE;
+    use crate::index::index_header::test_helper::build_header_bytes;
+    use crate::index::index_value::test_helper::build_value_bytes;
+    use crate::index::index_header::HASH_SIZE;
     use tempfile::TempDir;
     use std::io::{Write, BufWriter};
 
@@ -614,11 +614,11 @@ mod tests {
     use super::*;
     use test_helper::*;
     use crate::test_helper::*;
-    use crate::engine::index::index_header::test_helper::{random_hash, build_header_bytes};
-    use crate::engine::index::index_value::test_helper::{build_value_bytes};
-    use crate::engine::index::index_header::{HEADER_LINE_SIZE, HASH_SIZE};
-    use crate::engine::index::index_value::VALUE_LINE_SIZE;
-    use crate::engine::index::POSITION_SIZE;
+    use crate::index::index_header::test_helper::{random_hash, build_header_bytes};
+    use crate::index::index_value::test_helper::{build_value_bytes};
+    use crate::index::index_header::{HEADER_LINE_SIZE, HASH_SIZE};
+    use crate::index::index_value::VALUE_LINE_SIZE;
+    use crate::index::POSITION_SIZE;
     use tempfile::TempDir;
 
     #[test]

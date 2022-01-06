@@ -1,13 +1,11 @@
 use std::convert::TryFrom;
 use super::{POSITION_SIZE, LoadFrom, pos_from_bytes, pos_into_bytes};
-use crate::engine::parse_error::ParseError;
+use crate::parse_error::ParseError;
 
 /// Index value line size.
 /// 
-/// Format:
-/// ```
-/// <input_start_pos:8><input_end_pos:8><output_pos:8><match:1>
-/// ```
+/// Each record has the following format:
+/// `<input_start_pos:8><input_end_pos:8><output_pos:8><match:1>`
 pub const VALUE_LINE_SIZE: usize = 25;
 
 /// Match flag enumerator.
