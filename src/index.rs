@@ -1,12 +1,13 @@
 pub mod indexer;
-pub mod index_header;
-pub mod index_value;
+pub mod header;
+pub mod value;
 
 use std::fmt::{Display, Formatter, Result as FmtResult};
-use crate::parse_error::ParseError;
+use crate::error::ParseError;
+use crate::utils::ByteSized;
 
 /// Position value size.
-const POSITION_SIZE: usize = 8;
+const POSITION_SIZE: usize = u64::BYTES;
 
 /// index healthcheck status.
 #[derive(Debug, PartialEq)]
@@ -37,37 +38,4 @@ pub trait LoadFrom<T> {
     /// 
     /// * `source` - Source to load values from.
     fn load_from(&mut self, source: T) -> Result<(), ParseError>;
-}
-
-/// Extract a valid position value from a byte buffer.
-/// 
-/// # Arguments
-/// 
-/// * `buf` - Byte buffer.
-fn pos_from_bytes(buf: &[u8]) -> Result<u64, ParseError> {
-    // validate value size
-    if buf.len() != POSITION_SIZE {
-        return Err(ParseError::InvalidSize);
-    }
-
-    let mut pos_bytes = [0u8; POSITION_SIZE];
-    pos_bytes.copy_from_slice(buf);
-    Ok(u64::from_be_bytes(pos_bytes))
-}
-
-/// Extract a valid position value from a byte buffer.
-/// 
-/// # Arguments
-/// 
-/// * `buf` - Byte buffer.
-fn pos_into_bytes(pos: u64, buf: &mut [u8]) -> Result<(), ParseError> {
-    // validate value size
-    if buf.len() != POSITION_SIZE {
-        return Err(ParseError::InvalidSize);
-    }
-
-    // save position into bytes
-    buf.copy_from_slice(&pos.to_be_bytes());
-
-    Ok(())
 }

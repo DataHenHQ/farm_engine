@@ -1,33 +1,31 @@
-use serde::Deserialize;
+use anyhow::{bail, Result};
 use std::fs::{File, OpenOptions};
 use std::convert::TryFrom;
 use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
-use crate::parse_error::ParseError;
+use crate::error::ParseError;
 use crate::{file_size, fill_file, generate_hash};
 use crate::index::IndexStatus;
 use super::LoadFrom;
-use super::index_header::{HEADER_LINE_SIZE, IndexHeader};
-use super::index_value::{VALUE_LINE_SIZE, MatchFlag, IndexValue};
+use crate::record::Header as RecordHeader;
+use super::header::{BYTES as INDEX_HEADER_BYTES, Header as IndexHeader};
+use super::value::{BYTES as INDEX_VALUE_BYTES, MatchFlag, Value as IndexValue};
 
 const HEADER_EXTRA_FIELDS: &str = ",match,time,comments";
 
 /// Indexer engine.
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct Indexer {
     /// Input file path.
     pub input_path: String,
 
-    /// Output file path.
-    pub output_path: String,
-
     /// Index file path.
     pub index_path: String,
 
-    /// Current index header.
-    pub header: IndexHeader,
+    /// Index header data.
+    pub index_header: IndexHeader,
 
-    /// Empty extra fields line.
-    empty_extra_fields: Vec<u8>
+    /// Record header data. It contains information about the custom fields.
+    pub record_header: RecordHeader
 }
 
 impl Indexer {
@@ -36,31 +34,24 @@ impl Indexer {
     /// # Arguments
     /// 
     /// * `input_path` - Source Input file path.
-    /// * `output_path` - Target output file path.
     /// * `index_path` - Target index file path.
-    pub fn new(input_path: &str, output_path: &str, index_path: &str) -> Self {
+    pub fn new(input_path: &str, index_path: &str) -> Self {
         Self{
             input_path: input_path.to_string(),
-            output_path: output_path.to_string(),
             index_path: index_path.to_string(),
-            header: IndexHeader::new(),
-            empty_extra_fields: format!(
-                // ',{match_flag:1},{time:20},"{comments:200}"'
-                ",{: >1},{:0>20},\"{: <200}\"",
-                "",
-                "",
-                ""
-            ).as_bytes().to_vec()
+            index_header: IndexHeader::new(),
+            record_header: RecordHeader::new()
         }
     }
 
-    /// Calculate the target record's index data position at the index file.
+    /// Calculate the target record position at the index file.
     /// 
     /// # Arguments
     /// 
     /// * `index` - Record index.
-    pub fn calc_record_index_pos(index: u64) -> u64 {
-        HEADER_LINE_SIZE as u64 + index * VALUE_LINE_SIZE as u64
+    pub fn calc_record_pos(&self, index: u64) -> u64 {
+        let data_size = INDEX_VALUE_BYTES as u64 + self.record_header.size_as_bytes();
+        INDEX_HEADER_BYTES as u64 + index * data_size
     }
 
     /// Get the record's index headers.
@@ -69,8 +60,8 @@ impl Indexer {
     /// 
     /// * `reader` - File reader to read from.
     /// * `header` - Object to load headers into.
-    pub fn header_from_file(reader: &mut (impl Read + Seek), header: &mut IndexHeader) -> Result<(), ParseError> {
-        let mut buf = [0u8; HEADER_LINE_SIZE];
+    pub fn header_from_file(reader: &mut (impl Read + Seek), header: &mut IndexHeader) -> Result<()> {
+        let mut buf = [0u8; INDEX_HEADER_BYTES];
         reader.seek(SeekFrom::Start(0))?;
         reader.read_exact(&mut buf[..])?;
         header.load_from(&buf[..])?;
@@ -83,14 +74,14 @@ impl Indexer {
     /// 
     /// * `reader` - File reader to read from.
     /// * `index` - Record index.
-    pub fn value_from_file(reader: &mut (impl Read + Seek), indexed: bool, index: u64) -> Result<Option<IndexValue>, ParseError> {
-        let index_pos = Self::calc_record_index_pos(index);
+    pub fn value_from_file(&self, reader: &mut (impl Read + Seek), index: u64) -> Result<Option<IndexValue>, ParseError> {
+        let index_pos = self.calc_record_pos(index);
     
         // validate record index position
         reader.seek(SeekFrom::End(0))?;
         let size = reader.stream_position()?;
         if size < index_pos {
-            if indexed {
+            if self.index_header.indexed {
                 return Ok(None);
             }
             return Err(ParseError::Unavailable(IndexStatus::Indexing))
@@ -98,7 +89,7 @@ impl Indexer {
 
         // retrive input pos
         reader.seek(SeekFrom::Start(index_pos))?;
-        let mut buf = [0u8; VALUE_LINE_SIZE];
+        let mut buf = [0u8; INDEX_VALUE_BYTES];
         reader.read_exact(&mut buf)?;
         Ok(Some(IndexValue::try_from(&buf[..])?))
     }
@@ -110,8 +101,8 @@ impl Indexer {
     /// * `writer` - File writer to save data into.
     /// * `index` - Index value index.
     /// * `value` - Index value to save.
-    pub fn update_index_file_value(writer: &mut (impl Write + Seek), index: u64, value: &IndexValue) -> Result<(), ParseError> {
-        let pos = Self::calc_record_index_pos(index);
+    pub fn update_index_file_value(writer: &mut (impl Write + Seek), index: u64, value: &IndexValue) -> Result<()> {
+        let pos = self.calc_record_pos(index);
         writer.seek(SeekFrom::Start(pos))?;
         let buf: Vec<u8> = value.into();
         writer.write_all(buf.as_slice())?;
@@ -126,16 +117,16 @@ impl Indexer {
     /// 
     /// * `truncate` - If `true` then it truncates de file and initialize it.
     pub fn init_index(&self, truncate: bool) -> std::io::Result<()> {
-        fill_file(&self.index_path, HEADER_LINE_SIZE as u64, truncate)?;
+        fill_file(&self.index_path, INDEX_HEADER_BYTES as u64, truncate)?;
         Ok(())
     }
 
     /// Load index headers.
-    pub fn load_headers(&mut self) -> Result<(), ParseError> {
+    pub fn load_headers(&mut self) -> Result<()> {
         let file = File::open(&self.index_path)?;
         let mut reader = BufReader::new(file);
 
-        Self::header_from_file(&mut reader, &mut self.header)?;
+        Self::header_from_file(&mut reader, &mut self.index_header)?;
 
         Ok(())
     }
@@ -145,12 +136,12 @@ impl Indexer {
         let size = file_size(&self.index_path)?;
 
         // get and validate file size
-        if HEADER_LINE_SIZE as u64 > size {
+        if INDEX_HEADER_BYTES as u64 > size {
             return Err(ParseError::InvalidSize);
         }
 
         // calculate record count
-        let record_count = (size - HEADER_LINE_SIZE as u64) / VALUE_LINE_SIZE as u64;
+        let record_count = (size - INDEX_HEADER_BYTES as u64) / INDEX_VALUE_BYTES as u64;
         Ok(record_count)
     }
 
@@ -163,7 +154,7 @@ impl Indexer {
         let index_file = File::open(&self.index_path)?;
         let mut reader = BufReader::new(index_file);
         
-        Self::value_from_file(&mut reader, self.header.indexed, index)
+        Self::value_from_file(&mut reader, self.index_header.indexed, index)
     }
 
     /// Updates an index value.
@@ -172,7 +163,7 @@ impl Indexer {
     /// 
     /// * `index` - Index value index.
     /// * `value` - Index value to save.
-    pub fn update_index_value(&self, index: u64, value: &IndexValue) -> Result<(), ParseError> {
+    pub fn update_index_value(&self, index: u64, value: &IndexValue) -> Result<()> {
         let file = OpenOptions::new()
             .write(true)
             .open(&self.index_path)?;
@@ -187,30 +178,30 @@ impl Indexer {
     /// * `from_index` - Index offset as search starting point.
     pub fn find_unmatched(&self, from_index: u64) -> Result<Option<(u64, IndexValue)>, ParseError> {
         // validate index size
-        if self.header.indexed_count < 1 {
+        if self.index_header.indexed_count < 1 {
             return Ok(None);
         }
 
         // find index size
-        let size = Self::calc_record_index_pos(self.header.indexed_count);
+        let size = self.calc_record_pos(self.index_header.indexed_count);
 
         // seek start point by using the provided offset
         let file = File::open(&self.index_path)?;
         let mut reader = BufReader::new(file);
-        let mut pos = HEADER_LINE_SIZE as u64;
+        let mut pos = INDEX_HEADER_BYTES as u64;
         let mut index = from_index;
-        pos += VALUE_LINE_SIZE as u64 * index;
+        pos += INDEX_VALUE_BYTES as u64 * index;
         reader.seek(SeekFrom::Start(pos))?;
 
         // search next unmatched record
-        let mut buf = [0u8; VALUE_LINE_SIZE];
+        let mut buf = [0u8; INDEX_VALUE_BYTES];
         while pos < size {
             reader.read_exact(&mut buf)?;
-            if buf[VALUE_LINE_SIZE - 1] < 1u8 {
+            if buf[INDEX_VALUE_BYTES - 1] < 1u8 {
                 return Ok(Some((index, IndexValue::try_from(&buf[..])?)));
             }
             index += 1;
-            pos += VALUE_LINE_SIZE as u64;
+            pos += INDEX_VALUE_BYTES as u64;
         }
 
         Ok(None)
@@ -218,11 +209,11 @@ impl Indexer {
 
     /// Perform a healthckeck over the index file by reading
     /// the headers and checking the file size.
-    pub fn healthcheck(&mut self) -> Result<IndexStatus, ParseError> {
+    pub fn healthcheck(&mut self) -> Result<IndexStatus> {
         self.load_headers()?;
         
         // validate headers
-        match self.header.hash {
+        match self.index_header.hash {
             Some(saved_hash) => {
                 let hash = generate_hash(&self.input_path)?;
                 if saved_hash != hash {
@@ -233,7 +224,7 @@ impl Indexer {
         }
 
         // validate incomplete
-        if !self.header.indexed {
+        if !self.index_header.indexed {
             // count indexed records to make sure at least 1 record was indexed
             if self.count_indexed()? < 1 {
                 // if not a single record was indexed, then treat it as corrupted
@@ -244,7 +235,7 @@ impl Indexer {
 
         // validate file size
         let real_size = file_size(&self.index_path)?;
-        let size = Self::calc_record_index_pos(self.header.indexed_count);
+        let size = self.calc_record_pos(self.index_header.indexed_count);
         if real_size != size {
             return Ok(IndexStatus::Corrupted);
         }
@@ -254,28 +245,24 @@ impl Indexer {
 
     /// Get the last index position.
     fn last_index_pos(&self) -> u64 {
-        Self::calc_record_index_pos(self.header.indexed_count - 1)
+        self.calc_record_pos(self.index_header.indexed_count - 1)
     }
 
     /// Get the latest indexed record.
     fn last_indexed_record(&self) -> Result<Option<IndexValue>, ParseError> {
-        if self.header.indexed_count < 1 {
+        if self.index_header.indexed_count < 1 {
             return Ok(None);
         }
-        self.get_record_index(self.header.indexed_count - 1)
+        self.get_record_index(self.index_header.indexed_count - 1)
     }
 
     /// Index a new or incomplete index.
-    fn index_records(&mut self) -> Result<(), ParseError> {
+    fn index_records(&mut self) -> Result<()> {
         let last_index = self.last_indexed_record()?;
 
         // open files to create index
         let input_file = File::open(&self.input_path)?;
         let input_file_nav = File::open(&self.input_path)?;
-        let output_file = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open(&self.output_path)?;
         let index_file = OpenOptions::new()
             .create(true)
             .write(true)
@@ -284,7 +271,6 @@ impl Indexer {
         // create reader and writer buffers
         let mut input_rdr = BufReader::new(input_file);
         let mut input_rdr_nav = BufReader::new(input_file_nav);
-        let mut output_wrt = BufWriter::new(output_file);
         let mut index_wrt = BufWriter::new(index_file);
 
         // find input file size
@@ -295,13 +281,12 @@ impl Indexer {
         if let Some(value) = last_index {
             is_first = false;
             input_rdr.seek(SeekFrom::Start(value.input_end_pos + 1))?;
-            index_wrt.seek(SeekFrom::Start(self.last_index_pos() + VALUE_LINE_SIZE as u64))?;
-            output_wrt.seek(SeekFrom::Start(value.output_pos + self.empty_extra_fields.len() as u64))?;
+            index_wrt.seek(SeekFrom::Start(self.last_index_pos() + INDEX_VALUE_BYTES as u64))?;
         }
 
         // create index headers
         if is_first {
-            let header = &self.header;
+            let header = &self.index_header;
             let buf_header: Vec<u8> = header.into();
             index_wrt.write_all(buf_header.as_slice())?;
             index_wrt.flush()?;
@@ -317,7 +302,6 @@ impl Indexer {
         let mut values_indexed = 0u64;
         let mut input_start_pos: u64;
         let mut input_end_pos: u64;
-        let mut output_pos: u64;
         loop {
             let item = iter.next();
             if item.is_none() {
@@ -371,7 +355,7 @@ impl Indexer {
                         output_wrt.write_all(&self.empty_extra_fields)?;
                     }
                 },
-                Err(e) => return Err(ParseError::CSV(e))
+                Err(e) => bail!(ParseError::from(e))
             }
 
             // skip index write when input headers
@@ -384,19 +368,19 @@ impl Indexer {
             let value = IndexValue{
                 input_start_pos,
                 input_end_pos,
-                output_pos,
+                spent_time: 0,
                 match_flag: MatchFlag::None
             };
             //println!("{:?}", value);
             let buf: Vec<u8> = Vec::from(&value);
             index_wrt.write_all(&buf[..])?;
-            self.header.indexed_count += values_indexed;
+            self.index_header.indexed_count += values_indexed;
         }
 
         // write headers
         index_wrt.rewind()?;
-        self.header.indexed = true;
-        let header = &self.header;
+        self.index_header.indexed = true;
+        let header = &self.index_header;
         let buf_header: Vec<u8> = header.into();
         index_wrt.write_all(buf_header.as_slice())?;
         index_wrt.flush()?;
@@ -406,7 +390,7 @@ impl Indexer {
     
     /// Analyze an input file to track each record position
     /// into an index file.
-    pub fn index(&mut self) -> Result<(), ParseError> {
+    pub fn index(&mut self) -> Result<()> {
         let mut retry_count = 0;
         let retry_limit = 3;
 
@@ -416,7 +400,7 @@ impl Indexer {
             // retry a few times to fix corrupted index files
             retry_count += 1;
             if retry_count > retry_limit {
-                return Err(ParseError::RetryLimit);
+                bail!(ParseError::RetryLimit);
             }
 
             // perform healthcheck over the index file
@@ -424,11 +408,11 @@ impl Indexer {
                 IndexStatus::Indexed => return Ok(()),
                 IndexStatus::New => {
                     // create initial header
-                    self.header.hash = Some(generate_hash(&self.input_path)?);
+                    self.index_header.hash = Some(generate_hash(&self.input_path)?);
                     break;
                 },
                 IndexStatus::Incomplete => break,
-                IndexStatus::Indexing => return Err(ParseError::Unavailable(IndexStatus::Indexing)),
+                IndexStatus::Indexing => bail!(ParseError::Unavailable(IndexStatus::Indexing)),
 
                 // recreate index file and retry healthcheck when corrupted
                 IndexStatus::Corrupted => {
@@ -446,7 +430,7 @@ impl Indexer {
 pub mod test_helper {
     use super::*;
     use crate::test_helper::*;
-    use crate::index::index_header::test_helper::build_header_bytes;
+    use crate::index::index_header::test_helper::build_INDEX_HEADER_BYTES;
     use crate::index::index_value::test_helper::build_value_bytes;
     use crate::index::index_header::HASH_SIZE;
     use tempfile::TempDir;
@@ -475,7 +459,7 @@ pub mod test_helper {
     /// # Arguments
     /// 
     /// * `path` - Input file path.
-    pub fn create_fake_input(path: &str) -> std::io::Result<()> {
+    pub fn create_fake_input(path: &str) -> Result<()> {
         let file = OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -524,7 +508,7 @@ pub mod test_helper {
     /// # Arguments
     /// 
     /// * `path` - Output file path.
-    pub fn create_fake_output(path: &str) -> std::io::Result<()> {
+    pub fn create_fake_output(path: &str) -> Result<()> {
         let file = OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -546,7 +530,7 @@ pub mod test_helper {
         let mut buf: Vec<u8> = vec!();
 
         // write header
-        append_bytes(&mut buf, &build_header_bytes(true, &fake_input_hash(), true, 4));
+        append_bytes(&mut buf, &build_INDEX_HEADER_BYTES(true, &fake_input_hash(), true, 4));
 
         // write values
         append_bytes(&mut buf, &build_value_bytes(22, 45, 65, if empty { 0 } else { b'Y' }));
@@ -563,7 +547,7 @@ pub mod test_helper {
     /// 
     /// * `path` - Index file path.
     /// * `empty` - If `true` then build all records with MatchFlag::None.
-    pub fn create_fake_index(path: &str, empty: bool) -> std::io::Result<()> {
+    pub fn create_fake_index(path: &str, empty: bool) -> Result<()> {
         let file = OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -581,8 +565,8 @@ pub mod test_helper {
     /// # Arguments
     /// 
     /// * `f` - Function to execute.
-    pub fn with_tmpdir_and_indexer(f: &impl Fn(&TempDir, &mut Indexer) -> Result<(), ParseError>) {
-        let sub = |dir: &TempDir| -> std::io::Result<()> {
+    pub fn with_tmpdir_and_indexer(f: &impl Fn(&TempDir, &mut Indexer) -> Result<()>) {
+        let sub = |dir: &TempDir| -> Result<()> {
             // generate default file names for files
             let input_path = dir.path().join("i.csv");
             let output_path = dir.path().join("o.csv");
@@ -599,10 +583,7 @@ pub mod test_helper {
             // execute function
             match f(&dir, &mut indexer) {
                 Ok(_) => Ok(()),
-                Err(e) => match e {
-                    ParseError::IO(eio) => return Err(eio),
-                    _ => panic!("{:?}", e)
-                }
+                Err(e) => bail!(e)
             }
         };
         with_tmpdir(&sub)
@@ -614,10 +595,11 @@ mod tests {
     use super::*;
     use test_helper::*;
     use crate::test_helper::*;
-    use crate::index::index_header::test_helper::{random_hash, build_header_bytes};
+    use crate::index::field::FieldTypeHeader;
+    use crate::index::index_header::test_helper::{random_hash, build_INDEX_HEADER_BYTES};
     use crate::index::index_value::test_helper::{build_value_bytes};
-    use crate::index::index_header::{HEADER_LINE_SIZE, HASH_SIZE};
-    use crate::index::index_value::VALUE_LINE_SIZE;
+    use crate::index::index_header::{INDEX_HEADER_BYTES, HASH_SIZE};
+    use crate::index::index_value::INDEX_VALUE_BYTES;
     use crate::index::POSITION_SIZE;
     use tempfile::TempDir;
 
@@ -638,16 +620,16 @@ mod tests {
 
     #[test]
     fn init_index_non_trucate() {
-        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<(), ParseError> {
+        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
             let buf: &[u8] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
             create_file_with_bytes(&indexer.index_path, &buf)?;
 
             // create expected file contents
-            let mut expected = [0u8; HEADER_LINE_SIZE];
+            let mut expected = [0u8; INDEX_HEADER_BYTES];
             for i in 0..buf.len() {
                 expected[i] = buf[i];
             }
-            for i in buf.len()..HEADER_LINE_SIZE {
+            for i in buf.len()..INDEX_HEADER_BYTES {
                 expected[i] = 0;
             }
 
@@ -665,12 +647,12 @@ mod tests {
 
     #[test]
     fn load_headers() {
-        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<(), ParseError> {
+        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
             // build fake index file
             let hash = random_hash();
-            let buf_header = build_header_bytes(true, &hash, true, 3554645435937);
-            let mut buf = [0u8; HEADER_LINE_SIZE + 20];
-            let buf_frag = &mut buf[..HEADER_LINE_SIZE];
+            let buf_header = build_INDEX_HEADER_BYTES(true, &hash, true, 3554645435937);
+            let mut buf = [0u8; INDEX_HEADER_BYTES + 20];
+            let buf_frag = &mut buf[..INDEX_HEADER_BYTES];
             buf_frag.copy_from_slice(&buf_header);
             create_file_with_bytes(&indexer.index_path, &buf)?;
 
@@ -678,7 +660,8 @@ mod tests {
             let expected = IndexHeader{
                 indexed: true,
                 hash: Some(hash),
-                indexed_count: 3554645435937
+                indexed_count: 3554645435937,
+                fields: FieldTypeHeader::new()
             };
 
             indexer.load_headers()?;
@@ -691,7 +674,7 @@ mod tests {
 
     #[test]
     fn count_indexed() {
-        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<(), ParseError> {
+        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
             create_fake_index(&indexer.index_path, false)?;
             assert_eq!(4u64, indexer.count_indexed()?);
             Ok(())
@@ -699,13 +682,13 @@ mod tests {
     }
 
     #[test]
-    fn calc_record_index_pos() {
-        assert_eq!(92u64, Indexer::calc_record_index_pos(2));
+    fn calc_record_pos() {
+        assert_eq!(92u64, Indexer::calc_record_pos(2));
     }
 
     #[test]
     fn get_record_index() {
-        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<(), ParseError> {
+        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
             create_fake_input(&indexer.input_path)?;
             create_fake_index(&indexer.index_path, false)?;
 
@@ -751,8 +734,8 @@ mod tests {
 
     #[test]
     fn healthcheck_new_index() {
-        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<(), ParseError> {
-            create_file_with_bytes(&indexer.index_path, &[0u8; HEADER_LINE_SIZE])?;
+        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
+            create_file_with_bytes(&indexer.index_path, &[0u8; INDEX_HEADER_BYTES])?;
             assert_eq!(IndexStatus::New, indexer.healthcheck()?);
             Ok(())
         });
@@ -760,8 +743,8 @@ mod tests {
 
     #[test]
     fn healthcheck_hash_mismatch() {
-        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<(), ParseError> {
-            let mut buf = [0u8; HEADER_LINE_SIZE];
+        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
+            let mut buf = [0u8; INDEX_HEADER_BYTES];
 
             // set valid_hash flag as true
             buf[9] = 1u8;
@@ -778,8 +761,8 @@ mod tests {
     
     #[test]
     fn healthcheck_incomplete_corrupted() {
-        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<(), ParseError> {
-            let mut buf = [0u8; HEADER_LINE_SIZE+5];
+        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
+            let mut buf = [0u8; INDEX_HEADER_BYTES+5];
 
             // set indexed flag as false
             buf[0] = 0u8;
@@ -800,8 +783,8 @@ mod tests {
     
     #[test]
     fn healthcheck_incomplete_valid() {
-        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<(), ParseError> {
-            let mut buf = [0u8; HEADER_LINE_SIZE+VALUE_LINE_SIZE];
+        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
+            let mut buf = [0u8; INDEX_HEADER_BYTES+INDEX_VALUE_BYTES];
 
             // set indexed flag as false
             buf[0] = 0u8;
@@ -814,7 +797,7 @@ mod tests {
             buf_hash.copy_from_slice(fake_input_hash().as_slice());
 
             // set fake index value
-            let buf_value = &mut buf[10+HASH_SIZE..10+HASH_SIZE+VALUE_LINE_SIZE];
+            let buf_value = &mut buf[10+HASH_SIZE..10+HASH_SIZE+INDEX_VALUE_BYTES];
             buf_value.copy_from_slice(&build_value_bytes(10, 20, 21, b'Y'));
 
             create_file_with_bytes(&indexer.index_path, &buf)?;
@@ -826,8 +809,8 @@ mod tests {
     
     #[test]
     fn healthcheck_indexed_corrupted() {
-        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<(), ParseError> {
-            let mut buf = [0u8; HEADER_LINE_SIZE];
+        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
+            let mut buf = [0u8; INDEX_HEADER_BYTES];
 
             // set indexed flag as true
             buf[0] = 1u8;
@@ -852,7 +835,7 @@ mod tests {
     
     #[test]
     fn healthcheck_indexed_valid() {
-        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<(), ParseError> {
+        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
             create_fake_index(&indexer.index_path, false)?;
             create_fake_input(&indexer.input_path)?;
             assert_eq!(IndexStatus::Indexed, indexer.healthcheck()?);
@@ -862,7 +845,7 @@ mod tests {
 
     #[test]
     fn last_indexed_record() {
-        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<(), ParseError> {
+        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
             create_fake_index(&indexer.index_path, false)?;
             let expected = Some(IndexValue{
                 input_start_pos: 108,
@@ -880,7 +863,7 @@ mod tests {
 
     #[test]
     fn last_indexed_record_with_zero_indexed() {
-        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<(), ParseError> {
+        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
             create_fake_index(&indexer.index_path, false)?;
             indexer.header.indexed_count = 0;
             assert_eq!(None, indexer.last_indexed_record()?);
@@ -891,7 +874,7 @@ mod tests {
 
     #[test]
     fn index_records() {
-        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<(), ParseError> {
+        with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
             create_fake_input(&indexer.input_path)?;
 
             // index records

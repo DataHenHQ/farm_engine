@@ -1,13 +1,14 @@
 use serde::Deserialize;
 use std::convert::TryFrom;
-use super::{POSITION_SIZE, LoadFrom, pos_from_bytes, pos_into_bytes};
-use crate::parse_error::ParseError;
+use super::{POSITION_SIZE, LoadFrom};
+use crate::error::ParseError;
+use crate::utils::{FromByteSlice, WriteAsBytes};
 
-/// Index header line size.
+/// Index header size in bytes.
 /// 
 /// Each record has the following format:
-/// `<indexed:1><indexed_count:8><hash_valid:1><hash:32>`
-pub const HEADER_LINE_SIZE: usize = 42;
+/// `<indexed:1><indexed_count:8><hash_valid:1><hash:32><extra_field_count:8>`
+pub const BYTES: usize = 42;
 
 // Unsigned hash value size. Currently using SHA3-256 = key 32 bytes
 pub const HASH_SIZE: usize = 32;
@@ -17,18 +18,18 @@ pub const HASH_U_SIZE: usize = HASH_SIZE + 1;
 
 /// Describes an Indexer file header.
 #[derive(Debug, Deserialize, PartialEq)]
-pub struct IndexHeader {
+pub struct Header {
     /// `true` when the input file has been indexed successfully.
     pub indexed: bool,
 
-    // Input file hash
+    /// Input file hash
     pub hash: Option<[u8; HASH_SIZE]>,
 
-    // Indexed records count.
+    /// Indexed records count.
     pub indexed_count: u64
 }
 
-impl IndexHeader {
+impl Header {
     pub fn new() -> Self {
         Self{
             indexed: false,
@@ -53,10 +54,10 @@ impl IndexHeader {
     }
 }
 
-impl LoadFrom<&[u8]> for IndexHeader {
+impl LoadFrom<&[u8]> for Header {
     fn load_from(&mut self, buf: &[u8]) -> Result<(), ParseError> {
         // validate string size
-        if buf.len() != HEADER_LINE_SIZE {
+        if buf.len() != BYTES {
             return Err(ParseError::InvalidSize);
         }
 
@@ -68,7 +69,7 @@ impl LoadFrom<&[u8]> for IndexHeader {
         };
 
         // extract indexed record count
-        let indexed_count = pos_from_bytes(&buf[1..1+POSITION_SIZE])?;
+        let indexed_count = u64::from_byte_slice(&buf[1..1+POSITION_SIZE])?;
 
         // extract hash
         let hash = if buf[1+POSITION_SIZE] > 0 {
@@ -86,7 +87,7 @@ impl LoadFrom<&[u8]> for IndexHeader {
     }
 }
 
-impl TryFrom<&[u8]> for IndexHeader {
+impl TryFrom<&[u8]> for Header {
     type Error = ParseError;
 
     fn try_from(buf: &[u8]) -> Result<Self, Self::Error> {
@@ -96,12 +97,12 @@ impl TryFrom<&[u8]> for IndexHeader {
     }
 }
 
-impl From<&IndexHeader> for Vec<u8> {
-    fn from(header: &IndexHeader) -> Vec<u8> {
-        let mut buf = [0u8; HEADER_LINE_SIZE];
+impl From<&Header> for Vec<u8> {
+    fn from(header: &Header) -> Vec<u8> {
+        let mut buf = [0u8; BYTES];
 
-        buf[0] = header.indexed as u8;
-        pos_into_bytes(header.indexed_count, &mut buf[1..1+POSITION_SIZE]).unwrap();
+        buf[0] = header.indexed.into();
+        header.indexed_count.write_as_bytes(&mut buf[1..1+POSITION_SIZE]).unwrap();
 
         // copy hash as bytes
         if let Some(hash) = header.hash {
@@ -138,8 +139,8 @@ pub mod test_helper {
     /// * `hash` - Hash byte slice.
     /// * `indexed` - `true` if indexed flag should be true.
     /// * `indexed_count` - Total indexed records.
-    pub fn build_header_bytes(hash_valid: bool, hash: &[u8], indexed: bool, indexed_count: u64) -> [u8; HEADER_LINE_SIZE] {
-        let mut buf = [0u8; HEADER_LINE_SIZE];
+    pub fn build_header_bytes(hash_valid: bool, hash: &[u8], indexed: bool, indexed_count: u64) -> [u8; BYTES] {
+        let mut buf = [0u8; BYTES];
         if indexed {
             buf[0] = 1u8;
         }
@@ -163,18 +164,18 @@ mod tests {
     #[test]
     fn new() {
         assert_eq!(
-            IndexHeader{
+            Header{
                 indexed: false,
                 hash: None,
                 indexed_count: 0
             },
-            IndexHeader::new()
+            Header::new()
         );
     }
 
     #[test]
     fn load_from_u8_slice() {
-        let mut value = IndexHeader{
+        let mut value = Header{
             indexed: false,
             hash: None,
             indexed_count: 0
@@ -182,7 +183,7 @@ mod tests {
 
         // first random try
         let hash = random_hash();
-        let expected = IndexHeader{
+        let expected = Header{
             indexed: true,
             hash: Some(hash),
             indexed_count: 4535435
@@ -196,7 +197,7 @@ mod tests {
 
         // second random try
         let hash = random_hash();
-        let expected = IndexHeader{
+        let expected = Header{
             indexed: false,
             hash: None,
             indexed_count: 6572646535124
@@ -213,13 +214,13 @@ mod tests {
     fn try_from_u8_slice() {
         // first random try
         let hash = random_hash();
-        let expected = IndexHeader{
+        let expected = Header{
             indexed: false,
             hash: Some(hash),
             indexed_count: 32412342134234
         };
         let buf = build_header_bytes(true, &hash, false, 32412342134234);
-        let value = match IndexHeader::try_from(&buf[..]) {
+        let value = match Header::try_from(&buf[..]) {
             Ok(v) => v,
             Err(_) => {
                 assert!(false, "shouldn't error out");
@@ -230,13 +231,13 @@ mod tests {
 
         // second random try
         let hash = random_hash();
-        let expected = IndexHeader{
+        let expected = Header{
             indexed: true,
             hash: None,
             indexed_count: 56535423143214
         };
         let buf = build_header_bytes(false, &hash, true, 56535423143214);
-        let value = match IndexHeader::try_from(&buf[..]) {
+        let value = match Header::try_from(&buf[..]) {
             Ok(v) => v,
             Err(_) => {
                 assert!(false, "shouldn't error out");
@@ -251,7 +252,7 @@ mod tests {
         // first random try
         let buf = build_header_bytes(false, &[0u8; HASH_SIZE], false, 674565465345);
         let expected = buf.to_vec();
-        let header = &IndexHeader{
+        let header = &Header{
             indexed: false,
             hash: None,
             indexed_count: 674565465345
@@ -263,7 +264,7 @@ mod tests {
         let hash = random_hash();
         let buf = build_header_bytes(true, &hash, true, 87687867546345);
         let expected = buf.to_vec();
-        let header = &IndexHeader{
+        let header = &Header{
             indexed: true,
             hash: Some(hash),
             indexed_count: 87687867546345

@@ -1,7 +1,8 @@
-pub mod parse_error;
+pub mod error;
+pub mod utils;
+pub mod record;
 pub mod index;
 
-use serde::Deserialize;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
@@ -11,9 +12,10 @@ use sha3::{Digest, Sha3_256};
 use path_absolutize::*;
 use regex::Regex;
 use index::indexer::Indexer;
-use index::index_header::{IndexHeader, HASH_SIZE};
-use index::index_value::{IndexValue, MatchFlag};
-use parse_error::ParseError;
+use index::header::{Header as IndexHeader, HASH_SIZE};
+use index::value::{Value as IndexValue, MatchFlag};
+use anyhow::{bail, Result};
+use self::error::ParseError;
 
 const BUF_SIZE: u64 = 4096;
 
@@ -28,7 +30,7 @@ pub enum FillAction {
 }
 
 /// Engine to manage index and navigation.
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 pub struct Engine {
     /// Indexer engine object.
     pub index: Indexer
@@ -41,18 +43,15 @@ impl Engine {
     /// # Arguments
     /// 
     /// * `input_path` - Input file path.
-    /// * `output_path` - Output file path.
     /// * `index_path` - Index path (Optional).
-    pub fn new(input_path: &str, output_path: &str, index_path: Option<&str>) -> Self {
+    pub fn new(input_path: &str, index_path: Option<&str>) -> Self {
         let index_path = match index_path {
             Some(s) => s.to_string(),
-            None => format!("{}.matchqa.index", output_path)
+            None => format!("{}.matchqa.index", input_path)
         };
         let input_path = input_path.to_string();
-        let output_path = output_path.to_string();
         let indexer_obj = Indexer::new(
             &input_path,
-            &output_path,
             &index_path
         );
         Self{
@@ -87,7 +86,7 @@ impl Engine {
     /// 
     /// * `raw_path` - Path to expand.
     /// * `path_list` - Path list to add the found paths into.
-    fn expand_index_path(raw_path: &PathBuf, path_list: &mut Vec<PathBuf>, raw_excludes: &Vec<PathBuf>) -> std::io::Result<()> {
+    fn expand_index_path(raw_path: &PathBuf, path_list: &mut Vec<PathBuf>, raw_excludes: &Vec<PathBuf>) -> Result<()> {
         // canonalize the excluded paths
         let mut excludes: Vec<PathBuf> = vec!();
         for raw_exclude in raw_excludes {
@@ -151,9 +150,9 @@ impl Engine {
     /// * `match_flag` - Match flag value to save.
     /// * `track_time` - Tracked time value to save.
     /// * `comments` - Comments value to save.
-    fn write_output(writer: &mut (impl Write + Seek), value: &IndexValue, match_flag: MatchFlag, time_milis: u64, comments: &str) -> Result<(), ParseError> {
+    fn write_output(writer: &mut (impl Write + Seek), value: &IndexValue, match_flag: MatchFlag, time_milis: u64, comments: &str) -> Result<()> {
         if comments.len() > 200 {
-            return Err(ParseError::InvalidSize);
+            bail!(ParseError::InvalidSize);
         }
 
         writer.seek(SeekFrom::Start(value.output_pos))?;
@@ -167,7 +166,7 @@ impl Engine {
     }
 
     /// Regenerates the index file based on the input file.
-    pub fn index(&mut self) -> Result<(), ParseError> {
+    pub fn index(&mut self) -> Result<()> {
         self.index.index()
     }
 
@@ -197,7 +196,7 @@ impl Engine {
     /// * `match_flag` - Match flag value to save.
     /// * `track_time` - Tracked time value to save.
     /// * `comments` - Comments value to save.
-    pub fn record_output(&self, index: u64, match_flag: MatchFlag, track_time: u64, comments: &str) -> Result<(), ParseError> {
+    pub fn record_output(&self, index: u64, match_flag: MatchFlag, track_time: u64, comments: &str) -> Result<()> {
         // write output match data
         let file = OpenOptions::new()
             .write(true)
@@ -207,7 +206,7 @@ impl Engine {
         // write output data
         let mut value = match self.index.get_record_index(index)? {
             Some(v) => v,
-            None => return Err(ParseError::InvalidValue)
+            None => bail!(ParseError::InvalidValue)
         };
         Self::write_output(&mut writer, &value, match_flag, track_time, comments)?;
 
@@ -223,7 +222,7 @@ impl Engine {
     /// # Arguments
     /// 
     /// * `from_index` - Index offset from which start searching.
-    pub fn find_to_process(&self, from_index: u64) -> Result<Option<u64>, ParseError> {
+    pub fn find_to_process(&self, from_index: u64) -> Result<Option<u64>> {
         let (index, _) = match self.index.find_unmatched(from_index)? {
             Some(v) => v,
             None => return Ok(None)
@@ -236,7 +235,7 @@ impl Engine {
     /// $ Arguments
     /// 
     /// * `index` - Record index.
-    pub fn get_data(&self, index: u64) -> Result<serde_json::Value, ParseError> {
+    pub fn get_data(&self, index: u64) -> Result<serde_json::Value> {
         let first_value = match self.index.get_record_index(0)? {
             Some(v) => v,
             None => return Ok(serde_json::Value::Null)
@@ -273,7 +272,7 @@ impl Engine {
                 }
                 Err(e) => {
                     println!("Couldn't parse record at position {}: {}", value.input_start_pos, e);
-                    return Err(ParseError::InvalidFormat)
+                    bail!(ParseError::InvalidFormat)
                 }
             }
         }
@@ -281,12 +280,16 @@ impl Engine {
         Ok(serde_json::Value::Null)
     }
 
+    pub fn export(&self, output_path: PathBuf) -> Result<()> {
+        
+    }
+
     /// Build a source index file list from an expanded path list.
     /// 
     /// # Arguments
     /// 
     /// * `expanded_path_list` - Expanded path list to build from.
-    fn build_index_source_list(&self, expanded_path_list: Vec<PathBuf>) -> Result<Vec<BufReader<File>>, ParseError> {
+    fn build_index_source_list(&self, expanded_path_list: Vec<PathBuf>) -> Result<Vec<BufReader<File>>> {
         let base_size = file_size(&self.index.index_path)?;
         let mut source_list: Vec<BufReader<File>> = vec!();
         for path in expanded_path_list {
@@ -298,7 +301,7 @@ impl Engine {
             reader.seek(SeekFrom::End(0))?;
             let size = reader.stream_position()?;
             if size != base_size {
-                return Err(ParseError::Other(format!(
+                bail!(ParseError::Other(format!(
                     "Index file size mismatch on file \"{}\"",
                     path.to_string_lossy()
                 )));
@@ -308,7 +311,7 @@ impl Engine {
             let mut header = IndexHeader::new();
             Indexer::header_from_file(&mut reader, &mut header)?;
             if header != self.index.header {
-                return Err(ParseError::Other(format!(
+                bail!(ParseError::Other(format!(
                     "Index header mismatch on file \"{}\"",
                     path.to_string_lossy()
                 )));
@@ -325,7 +328,7 @@ impl Engine {
     /// # Arguments
     /// 
     /// * `raw_path_list` - Index file path list to join.
-    pub fn join(&self, raw_path_list: &Vec<PathBuf>) -> Result<(), ParseError> {
+    pub fn join(&self, raw_path_list: &Vec<PathBuf>) -> Result<()> {
         // skip if no indexed records found
         if !self.index.header.indexed || self.index.header.indexed_count < 1 {
             return Ok(());
@@ -335,7 +338,7 @@ impl Engine {
         let mut path_list: Vec<PathBuf> = vec!();
         let index_path = match PathBuf::from_str(&self.index.index_path) {
             Ok(v) => v,
-            Err(e) => return Err(ParseError::Other(e.to_string()))
+            Err(e) => bail!(e)
         };
         let exclusions = [index_path].to_vec();
         for path in raw_path_list {
@@ -368,7 +371,7 @@ impl Engine {
             // get base index value
             let mut index_value = match Indexer::value_from_file(&mut index_reader, true, index)? {
                 Some(v) => v,
-                None => return Err(ParseError::Other(format!(
+                None => bail!(ParseError::Other(format!(
                     "couldn't retrieve index record on index {} from base index file",
                     index
                 )))
@@ -379,19 +382,19 @@ impl Engine {
                 // get and validate source index value
                 let value = match Indexer::value_from_file(reader, true, index)? {
                     Some(v) => v,
-                    None => return Err(ParseError::Other(format!(
+                    None => bail!(ParseError::Other(format!(
                         "couldn't retrieve index record on index {}",
                         index
                     )))
                 };
                 if index_value.input_start_pos != value.input_start_pos || index_value.input_end_pos != value.input_end_pos {
-                    return Err(ParseError::Other("Source index value doesn't match base value".to_string()));
+                    bail!(ParseError::Other("Source index value doesn't match base value".to_string()));
                 }
 
                 // record match flag counter
                 let count = match matches.get_mut(&value.match_flag.into()) {
                     Some(v) => v,
-                    None => return Err(ParseError::InvalidValue)
+                    None => bail!(ParseError::InvalidValue)
                 };
                 *count += 1f64;
             }
@@ -539,14 +542,14 @@ pub mod test_helper;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use index::index_header::HASH_SIZE;
+    use index::header::HASH_SIZE;
     use crate::test_helper::*;
     use tempfile::TempDir;
     use std::io::{Read, BufReader};
 
     #[test]
     fn file_size_with_file() {
-        with_tmpdir(&|dir: &TempDir| -> std::io::Result<()> {
+        with_tmpdir(&|dir: &TempDir| -> Result<()> {
             // test one
             let path = dir.path().join("my_file_a");
             let path_str = path.to_str().unwrap().to_string();
@@ -565,7 +568,7 @@ mod tests {
 
     #[test]
     fn file_size_without_file() {
-        with_tmpdir(&|dir: &TempDir| -> std::io::Result<()> {
+        with_tmpdir(&|dir: &TempDir| -> Result<()> {
             let path = dir.path().join("my_file_non_exists");
             let path_str = path.to_str().unwrap().to_string();
             assert_eq!(0, file_size(&path_str)?);
@@ -578,7 +581,7 @@ mod tests {
 
     #[test]
     fn gen_hash() {
-        with_tmpdir(&|dir: &TempDir| -> std::io::Result<()> {
+        with_tmpdir(&|dir: &TempDir| -> Result<()> {
             let path = dir.path().join("my_file");
             let path_str = path.to_str().unwrap().to_string();
             let buf: &[u8] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
@@ -597,14 +600,14 @@ mod tests {
 
     #[test]
     fn fill_file_non_exists() {
-        with_tmpdir(&|dir: &TempDir| -> std::io::Result<()> {
+        with_tmpdir(&|dir: &TempDir| -> Result<()> {
             let path = dir.path().join("my_file");
             let path_str = path.to_str().unwrap().to_string();
             
             // fill file
             match fill_file(&path_str, 20, false) {
                 Ok(action) => assert_eq!(FillAction::Created, action),
-                Err(e) => return Err(e)
+                Err(e) => bail!(e)
             }
 
             // read file after fill
@@ -625,7 +628,7 @@ mod tests {
 
     #[test]
     fn fill_file_smaller() {
-        with_tmpdir(&|dir: &TempDir| -> std::io::Result<()> {
+        with_tmpdir(&|dir: &TempDir| -> Result<()> {
             // create test file
             let path = dir.path().join("my_file");
             let path_str = path.to_str().unwrap().to_string();
@@ -635,7 +638,7 @@ mod tests {
             // fill file
             match fill_file(&path_str, 15, false) {
                 Ok(action) => assert_eq!(FillAction::Fill, action),
-                Err(e) => return Err(e)
+                Err(e) => bail!(e)
             }
 
             // read file after fill
@@ -656,7 +659,7 @@ mod tests {
 
     #[test]
     fn fill_file_bigger() {
-        with_tmpdir(&|dir: &TempDir| -> std::io::Result<()> {
+        with_tmpdir(&|dir: &TempDir| -> Result<()> {
             // create test file
             let path = dir.path().join("my_file");
             let path_str = path.to_str().unwrap().to_string();
@@ -666,7 +669,7 @@ mod tests {
             // fill file
             match fill_file(&path_str, 10, false) {
                 Ok(action) => assert_eq!(FillAction::Bigger, action),
-                Err(e) => return Err(e)
+                Err(e) => bail!(e)
             }
 
             // read file afer fill
@@ -687,7 +690,7 @@ mod tests {
 
     #[test]
     fn fill_file_equal() {
-        with_tmpdir(&|dir: &TempDir| -> std::io::Result<()> {
+        with_tmpdir(&|dir: &TempDir| -> Result<()> {
             // create test file
             let path = dir.path().join("my_file");
             let path_str = path.to_str().unwrap().to_string();
@@ -697,7 +700,7 @@ mod tests {
             // fill file
             match fill_file(&path_str, 15, false) {
                 Ok(action) => assert_eq!(FillAction::Skip, action),
-                Err(e) => return Err(e)
+                Err(e) => bail!(e)
             }
 
             // read file after fill
@@ -718,7 +721,7 @@ mod tests {
 
     #[test]
     fn fill_file_truncate() {
-        with_tmpdir(&|dir: &TempDir| -> std::io::Result<()> {
+        with_tmpdir(&|dir: &TempDir| -> Result<()> {
             // create test file
             let path = dir.path().join("my_file");
             let path_str = path.to_str().unwrap().to_string();
@@ -728,7 +731,7 @@ mod tests {
             // fill file
             match fill_file(&path_str, 10, true) {
                 Ok(action) => assert_eq!(FillAction::Truncated, action),
-                Err(e) => return Err(e)
+                Err(e) => bail!(e)
             }
 
             // read file after fill

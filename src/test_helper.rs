@@ -1,6 +1,7 @@
 use tempfile::{TempDir, tempdir};
 use std::fs::{OpenOptions};
 use std::io::{Write, BufWriter};
+use anyhow::Result;
 
 /// Create a file with the buffer as content.
 /// 
@@ -8,7 +9,7 @@ use std::io::{Write, BufWriter};
 /// 
 /// * `path` - File path.
 /// * `buf` - File content.
-pub fn create_file_with_bytes(path: &str, buf: &[u8]) -> std::io::Result<()> {
+pub fn create_file_with_bytes(path: &str, buf: &[u8]) -> Result<()> {
     let file = OpenOptions::new()
         .write(true)
         .create(true)
@@ -25,7 +26,7 @@ pub fn create_file_with_bytes(path: &str, buf: &[u8]) -> std::io::Result<()> {
 /// # Arguments
 /// 
 /// * `f` - Function to execute.
-pub fn with_tmpdir(f: &dyn Fn(&TempDir) -> std::io::Result<()>) {
+pub fn with_tmpdir(f: &dyn Fn(&TempDir) -> Result<()>) {
     let dir = tempdir().unwrap();
     let dir_path = dir.path().to_str().unwrap().to_string();
 

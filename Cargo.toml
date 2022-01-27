@@ -1,6 +1,6 @@
 [package]
 name = "matchqa_engine"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -13,6 +13,8 @@ tempfile = "3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1"
 csv = "1.1"
-sha3 = "0.10.0"
+sha3 = "0.9.1"
 path-absolutize = "3.0.11"
 regex = "1.5.4"
+anyhow = "1.0"
+thiserror = "1.0.30"
