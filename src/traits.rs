@@ -16,7 +16,7 @@ macro_rules! impl_byte_sized {
 }
 
 // implement `BYTES` constant on numeric types and boolean
-impl_byte_sized!(bool, 1);
+impl_byte_sized!(bool, 8);
 impl_byte_sized!(u64, u64::BITS);
 impl_byte_sized!(u32, u32::BITS);
 impl_byte_sized!(u16, u16::BITS);
@@ -34,7 +34,7 @@ pub trait FromByteSlice: ByteSized {
     /// # Arguments
     /// 
     /// * `buf` - Byte buffer.
-    fn from_byte_slice(buf: &[u8]) -> Result<Self, ParseError>;
+    fn from_byte_slice(buf: &[u8]) -> Result<Self>;
 }
 
 pub trait ReadFrom: Sized {
@@ -47,24 +47,24 @@ pub trait ReadFrom: Sized {
 }
 
 impl FromByteSlice for bool {
-    fn from_byte_slice(buf: &[u8]) -> Result<Self, ParseError> {
+    fn from_byte_slice(buf: &[u8]) -> Result<Self> {
         // validate value size
         if buf.len() != Self::BYTES {
-            return Err(ParseError::InvalidSize);
+            bail!(ParseError::InvalidSize);
         }
 
-        return match buf[0] {
-            0 => Ok(false),
-            1 => Ok(true),
-            _ => Err(ParseError::InvalidValue)
-        };
+        Ok(match buf[0] {
+            0 => false,
+            1 => true,
+            _ => bail!(ParseError::InvalidValue)
+        })
     }
 }
 
 impl ReadFrom for bool {
     fn read_from(reader: &mut impl Read) -> Result<Self> {
         // read and convert bytes into the type value
-        let buf = [0u8; Self::BYTES];
+        let mut buf = [0u8; Self::BYTES];
         reader.read_exact(&mut buf)?;
         return match buf[0] {
             0 => Ok(false),
@@ -77,10 +77,10 @@ impl ReadFrom for bool {
 macro_rules! impl_from_byte_reader {
     ($type:ty, $fn:ident) => {
         impl FromByteSlice for $type {
-            fn from_byte_slice(buf: &[u8]) -> Result<Self, ParseError> {
+            fn from_byte_slice(buf: &[u8]) -> Result<Self> {
                 // validate buf size
                 if buf.len() != Self::BYTES {
-                    return Err(ParseError::InvalidSize);
+                    bail!(ParseError::InvalidSize);
                 }
 
                 // convert bytes into the type value
@@ -93,7 +93,7 @@ macro_rules! impl_from_byte_reader {
         impl ReadFrom for $type {
             fn read_from(reader: &mut impl Read) -> Result<Self> {
                 // read and convert bytes into the type value
-                let buf = [0u8; Self::BYTES];
+                let mut buf = [0u8; Self::BYTES];
                 reader.read_exact(&mut buf)?;
                 Ok(<$type>::$fn(buf))
             }
@@ -119,7 +119,7 @@ pub trait WriteAsBytes: ByteSized {
     /// # Arguments
     /// 
     /// * `buf` - Byte buffer.
-    fn write_as_bytes(&self, buf: &mut [u8]) -> Result<(), ParseError>;
+    fn write_as_bytes(&self, buf: &mut [u8]) -> Result<()>;
 }
 
 pub trait WriteTo {
@@ -132,10 +132,10 @@ pub trait WriteTo {
 }
 
 impl WriteAsBytes for bool {
-    fn write_as_bytes(&self, buf: &mut [u8]) -> Result<(), ParseError> {
+    fn write_as_bytes(&self, buf: &mut [u8]) -> Result<()> {
         // validate value size
         if buf.len() != Self::BYTES {
-            return Err(ParseError::InvalidSize);
+            bail!(ParseError::InvalidSize);
         }
 
         // save value as bytes
@@ -155,10 +155,10 @@ impl WriteTo for bool {
 macro_rules! impl_write_as_bytes {
     ($t:ty, $fn:ident) => {
         impl WriteAsBytes for $t {
-            fn write_as_bytes(&self, buf: &mut [u8]) -> Result<(), ParseError> {
+            fn write_as_bytes(&self, buf: &mut [u8]) -> Result<()> {
                 // validate value size
                 if buf.len() != Self::BYTES {
-                    return Err(ParseError::InvalidSize);
+                    bail!(ParseError::InvalidSize);
                 }
 
                 // save value as bytes
@@ -188,6 +188,15 @@ impl_write_as_bytes!(i16, to_be_bytes);
 impl_write_as_bytes!(i8, to_be_bytes);
 impl_write_as_bytes!(f64, to_be_bytes);
 impl_write_as_bytes!(f32, to_be_bytes);
+
+pub trait LoadFrom<T> {
+    /// Loads data into the instance from a source.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `source` - Source to load data from.
+    fn load_from(&mut self, source: T) -> Result<()>;
+}
 
 #[cfg(test)]
 mod tests {
@@ -240,8 +249,41 @@ mod tests {
 
     #[test]
     fn bool_from_byte_slice() {
-        assert_eq!(Ok(false), bool::from_byte_slice(&[0u8]));
-        assert_eq!(Ok(true), bool::from_byte_slice(&[1u8]));
-        assert_eq!(Err(ParseError::InvalidValue), bool::from_byte_slice(&[3u8]));
+        assert!(
+            match bool::from_byte_slice(&[0u8]) {
+                Ok(v) => v == false,
+                Err(_) => false
+            }, "[0] should have been false"
+        );
+        assert!(
+            match bool::from_byte_slice(&[1u8]) {
+                Ok(v) => v == true,
+                Err(_) => false
+            }, "[1] should have been true"
+        );
+        assert!(
+            match bool::from_byte_slice(&[3u8]) {
+                Ok(_) => false,
+                Err(e) => match e.downcast() {
+                    Ok(ex) => match ex {
+                        ParseError::InvalidValue => true,
+                        _ => false
+                    },
+                    Err(_) => false
+                }
+            }, "[3] should have been ParseError::InvalidValue"
+        );
+        assert!(
+            match bool::from_byte_slice(&[0u8, 0u8]) {
+                Ok(_) => false,
+                Err(e) => match e.downcast() {
+                    Ok(ex) => match ex {
+                        ParseError::InvalidSize => true,
+                        _ => false
+                    },
+                    Err(_) => false
+                }
+            }, "[3] should have been ParseError::InvalidSize"
+        );
     }
 }

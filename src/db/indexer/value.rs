@@ -1,13 +1,7 @@
 use std::convert::TryFrom;
-use super::{POSITION_SIZE, LoadFrom};
+use anyhow::{bail, Result};
 use crate::error::ParseError;
-use crate::utils::{FromByteSlice, WriteAsBytes};
-
-/// Index value size in bytes.
-/// 
-/// Each record has the following format:
-/// `<input_start_pos:8><input_end_pos:8><spent_time:8><match:1>`
-pub const BYTES: usize = 25;
+use crate::traits::{ByteSized, FromByteSlice, WriteAsBytes, LoadFrom};
 
 /// Match flag enumerator.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -84,6 +78,7 @@ pub struct Value {
 }
 
 impl Value {
+    /// Creates a new value.
     pub fn new() -> Self {
         Self{
             input_start_pos: 0,
@@ -94,19 +89,38 @@ impl Value {
     }
 }
 
+impl ByteSized for Value {
+    /// Index value size in bytes.
+    /// 
+    /// Byte format
+    /// `<input_start_pos:8><input_end_pos:8><spent_time:8><match:1>`
+    const BYTES: usize = 25;
+}
+
 impl LoadFrom<&[u8]> for Value {
-    fn load_from(&mut self, buf: &[u8]) -> Result<(), ParseError> {
+    fn load_from(&mut self, buf: &[u8]) -> Result<()> {
         // validate line size
-        if buf.len() != BYTES {
-            return Err(ParseError::InvalidSize);
+        if buf.len() != Self::BYTES {
+            bail!(ParseError::InvalidSize);
         }
 
-        // validate format and values
-        let input_start_pos = u64::from_byte_slice(&buf[..POSITION_SIZE])?;
-        let input_end_pos = u64::from_byte_slice(&buf[POSITION_SIZE..2*POSITION_SIZE])?;
-        let spent_time = u64::from_byte_slice(&buf[2*POSITION_SIZE..3*POSITION_SIZE])?;
-        let match_flag = buf[3*POSITION_SIZE].try_into()?;
+        // read input start pos
+        let mut carry = 0;
+        let input_start_pos = u64::from_byte_slice(&buf[carry..carry+u64::BYTES])?;
+        carry += u64::BYTES;
 
+        // read input end pos
+        let input_end_pos = u64::from_byte_slice(&buf[carry..carry+u64::BYTES])?;
+        carry += u64::BYTES;
+
+        // read spent type
+        let spent_time = u64::from_byte_slice(&buf[carry..carry+u64::BYTES])?;
+        carry += u64::BYTES;
+
+        // read match flag
+        let match_flag = buf[carry].try_into()?;
+
+        // record index value data
         self.input_start_pos = input_start_pos;
         self.input_end_pos = input_end_pos;
         self.spent_time = spent_time;
@@ -117,7 +131,7 @@ impl LoadFrom<&[u8]> for Value {
 }
 
 impl TryFrom<&[u8]> for Value {
-    type Error = ParseError;
+    type Error = anyhow::Error;
 
     fn try_from(buf: &[u8]) -> Result<Self, Self::Error> {
         let mut value = Self::new();
@@ -128,13 +142,23 @@ impl TryFrom<&[u8]> for Value {
 
 impl From<&Value> for Vec<u8> {
     fn from(value: &Value) -> Vec<u8> {
-        let mut buf = [0u8; BYTES];
+        let mut buf = [0u8; Value::BYTES];
+        let mut carry = 0;
 
-        // convert value attributes into bytes and save it on buf
-        value.input_start_pos.write_as_bytes(&mut buf[..POSITION_SIZE]).unwrap();
-        value.input_end_pos.write_as_bytes(&mut buf[POSITION_SIZE..2*POSITION_SIZE]).unwrap();
-        value.spent_time.write_as_bytes(&mut buf[2*POSITION_SIZE..3*POSITION_SIZE]).unwrap();
-        buf[3*POSITION_SIZE] = u8::from(value.match_flag);
+        // write input start pos
+        value.input_start_pos.write_as_bytes(&mut buf[carry..carry+u64::BYTES]).unwrap();
+        carry += u64::BYTES;
+
+        // write input end pos
+        value.input_end_pos.write_as_bytes(&mut buf[carry..carry+u64::BYTES]).unwrap();
+        carry += u64::BYTES;
+
+        // write spent time
+        value.spent_time.write_as_bytes(&mut buf[carry..carry+u64::BYTES]).unwrap();
+        carry += u64::BYTES;
+
+        // write match flag
+        buf[carry] = u8::from(value.match_flag);
         
         buf.to_vec()
     }
@@ -144,15 +168,15 @@ impl From<&Value> for Vec<u8> {
 pub mod test_helper {
     use super::*;
 
-    pub fn build_value_bytes(input_start_pos: u64, input_end_pos: u64, spent_time: u64, match_flag: u8) -> [u8; BYTES] {
-        let mut buf = [0u8; BYTES];
-        let buf_input_start_pos = &mut buf[..POSITION_SIZE];
+    pub fn build_value_bytes(input_start_pos: u64, input_end_pos: u64, spent_time: u64, match_flag: u8) -> [u8; Value::BYTES] {
+        let mut buf = [0u8; Value::BYTES];
+        let buf_input_start_pos = &mut buf[..u64::BYTES];
         buf_input_start_pos.copy_from_slice(&input_start_pos.to_be_bytes());
-        let buf_input_end_pos = &mut buf[POSITION_SIZE..2*POSITION_SIZE];
+        let buf_input_end_pos = &mut buf[u64::BYTES..2*u64::BYTES];
         buf_input_end_pos.copy_from_slice(&input_end_pos.to_be_bytes());
-        let buf_spent_time = &mut buf[2*POSITION_SIZE..3*POSITION_SIZE];
+        let buf_spent_time = &mut buf[2*u64::BYTES..3*u64::BYTES];
         buf_spent_time.copy_from_slice(&spent_time.to_be_bytes());
-        buf[3*POSITION_SIZE] = match_flag;
+        buf[3*u64::BYTES] = match_flag;
         buf
     }
 }
@@ -223,13 +247,19 @@ mod tests {
         };
 
         let mut buf: Vec<u8> = vec!();
-        for _i in 0..BYTES+1 {
+        for _i in 0..Value::BYTES+1 {
             buf.push(0u8);
         }
         match value.load_from(&buf[..]) {
             Ok(_) => assert!(false, "should have error with ParseError::InvalidSize"),
             Err(e) => assert!(
-                if let ParseError::InvalidSize = e { true } else { false },
+                match e.downcast() {
+                    Ok(ex) => match ex {
+                        ParseError::InvalidSize => true,
+                        _ => false
+                    },
+                    Err(_) => false
+                },
                 "should have be Parser::InvalidSize"
             )
         }
@@ -245,13 +275,19 @@ mod tests {
         };
 
         let mut buf: Vec<u8> = vec!();
-        for _i in 0..BYTES-1 {
+        for _i in 0..Value::BYTES-1 {
             buf.push(0u8);
         }
         match value.load_from(&buf[..]) {
             Ok(_) => assert!(false, "should have error with ParseError::InvalidSize"),
             Err(e) => assert!(
-                if let ParseError::InvalidSize = e { true } else { false },
+                match e.downcast() {
+                    Ok(ex) => match ex {
+                        ParseError::InvalidSize => true,
+                        _ => false
+                    },
+                    Err(_) => false
+                },
                 "should have be Parser::InvalidSize"
             )
         }

@@ -1,4 +1,3 @@
-use anyhow::anyhow;
 use thiserror::Error;
 
 /// Parsing error.
@@ -11,7 +10,7 @@ pub enum ParseError {
     #[error("invalid byte slice value")]
     InvalidValue,
     #[error("unavailable due status \"{}\"", .0)]
-    Unavailable(super::index::IndexStatus),
+    Unavailable(crate::db::indexer::IndexStatus),
     #[error("retry limit reached")]
     RetryLimit,
     #[error(transparent)]
@@ -30,7 +29,7 @@ pub enum ParseError {
 
 impl From<String> for ParseError {
     fn from(msg: String) -> Self {
-        Self::Other(anyhow!(msg))
+        Self::Other(msg)
     }
 }
 

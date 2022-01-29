@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use anyhow::{bail, Result};
 use crate::error::ParseError;
-use crate::utils::{ByteSized, FromByteSlice, WriteAsBytes, ReadFrom, WriteTo};
-use super::{Value, Record};
+use crate::traits::{ByteSized, FromByteSlice, WriteAsBytes, ReadFrom, WriteTo};
+use super::value::Value;
+use super::Record;
 
 /// Represents a field type. Byte format: `<type:1><value:4>`.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -130,20 +131,20 @@ impl FieldType {
     /// * `reader` - Byte reader.
     pub fn read_value(&self, reader: &mut impl Read) -> Result<Value> {
         let value: Value = match self {
-            Self::Bool => bool::read_from(&mut reader)?.into(),
-            Self::I8 => i8::read_from(&mut reader)?.into(),
-            Self::I16 => i16::read_from(&mut reader)?.into(),
-            Self::I32 => i32::read_from(&mut reader)?.into(),
-            Self::I64 => i64::read_from(&mut reader)?.into(),
-            Self::U8 => u8::read_from(&mut reader)?.into(),
-            Self::U16 => u16::read_from(&mut reader)?.into(),
-            Self::U32 => u32::read_from(&mut reader)?.into(),
-            Self::U64 => u64::read_from(&mut reader)?.into(),
-            Self::F32 => f32::read_from(&mut reader)?.into(),
-            Self::F64 => f64::read_from(&mut reader)?.into(),
+            Self::Bool => bool::read_from(reader)?.into(),
+            Self::I8 => i8::read_from(reader)?.into(),
+            Self::I16 => i16::read_from(reader)?.into(),
+            Self::I32 => i32::read_from(reader)?.into(),
+            Self::I64 => i64::read_from(reader)?.into(),
+            Self::U8 => u8::read_from(reader)?.into(),
+            Self::U16 => u16::read_from(reader)?.into(),
+            Self::U32 => u32::read_from(reader)?.into(),
+            Self::U64 => u64::read_from(reader)?.into(),
+            Self::F32 => f32::read_from(reader)?.into(),
+            Self::F64 => f64::read_from(reader)?.into(),
             Self::Str(size) => {
                 // read the real string size
-                let value_size = u32::read_from(&mut reader)? as usize;
+                let value_size = u32::read_from(reader)? as usize;
 
                 // read the string value
                 let mut buf = vec![0u8; *size as usize];
@@ -162,58 +163,58 @@ impl FieldType {
     pub fn write_value(&self, writer: &mut impl Write, value: &Value) -> Result<()> {
         match self {
             Self::Bool => match value {
-                Value::Bool(v) => (*v).write_to(&mut writer)?,
-                Value::Default => false.write_to(&mut writer)?,
+                Value::Bool(v) => (*v).write_to(writer)?,
+                Value::Default => false.write_to(writer)?,
                 _ => bail!("value must be a Value::Bool")
             },
             Self::I8 => match value {
-                Value::I8(v) => v.write_to(&mut writer)?,
-                Value::Default => 0i8.write_to(&mut writer)?,
+                Value::I8(v) => v.write_to(writer)?,
+                Value::Default => 0i8.write_to(writer)?,
                 _ => bail!("value must be a Value::I8")
             },
             Self::I16 => match value {
-                Value::I16(v) => v.write_to(&mut writer)?,
-                Value::Default => 0i16.write_to(&mut writer)?,
+                Value::I16(v) => v.write_to(writer)?,
+                Value::Default => 0i16.write_to(writer)?,
                 _ => bail!("value must be a Value::I16")
             },
             Self::I32 => match value {
-                Value::I32(v) => v.write_to(&mut writer)?,
-                Value::Default => 0i32.write_to(&mut writer)?,
+                Value::I32(v) => v.write_to(writer)?,
+                Value::Default => 0i32.write_to(writer)?,
                 _ => bail!("value must be a Value::I32")
             },
             Self::I64 => match value {
-                Value::I64(v) => v.write_to(&mut writer)?,
-                Value::Default => 0i64.write_to(&mut writer)?,
+                Value::I64(v) => v.write_to(writer)?,
+                Value::Default => 0i64.write_to(writer)?,
                 _ => bail!("value must be a Value::I64")
             },
             Self::U8 => match value {
-                Value::U8(v) => v.write_to(&mut writer)?,
-                Value::Default => 0u8.write_to(&mut writer)?,
+                Value::U8(v) => v.write_to(writer)?,
+                Value::Default => 0u8.write_to(writer)?,
                 _ => bail!("value must be a Value::U8")
             },
             Self::U16 => match value {
-                Value::U16(v) => v.write_to(&mut writer)?,
-                Value::Default => 0u16.write_to(&mut writer)?,
+                Value::U16(v) => v.write_to(writer)?,
+                Value::Default => 0u16.write_to(writer)?,
                 _ => bail!("value must be a Value::U16")
             },
             Self::U32 => match value {
-                Value::U32(v) => v.write_to(&mut writer)?,
-                Value::Default => 0u32.write_to(&mut writer)?,
+                Value::U32(v) => v.write_to(writer)?,
+                Value::Default => 0u32.write_to(writer)?,
                 _ => bail!("value must be a Value::U32")
             },
             Self::U64 => match value {
-                Value::U64(v) => v.write_to(&mut writer)?,
-                Value::Default => 0u64.write_to(&mut writer)?,
+                Value::U64(v) => v.write_to(writer)?,
+                Value::Default => 0u64.write_to(writer)?,
                 _ => bail!("value must be a Value::U64")
             },
             Self::F32 => match value {
-                Value::F32(v) => v.write_to(&mut writer)?,
-                Value::Default => 0f32.write_to(&mut writer)?,
+                Value::F32(v) => v.write_to(writer)?,
+                Value::Default => 0f32.write_to(writer)?,
                 _ => bail!("value must be a Value::F32")
             },
             Self::F64 => match value {
-                Value::F64(v) => v.write_to(&mut writer)?,
-                Value::Default => 064.write_to(&mut writer)?,
+                Value::F64(v) => v.write_to(writer)?,
+                Value::Default => 064.write_to(writer)?,
                 _ => bail!("value must be a Value::F64")
             },
             Self::Str(size) => match value {
@@ -227,7 +228,7 @@ impl FieldType {
                     }
 
                     // write value
-                    value_size.write_to(&mut writer)?;
+                    value_size.write_to(writer)?;
                     writer.write_all(&value_buf)?;
                     if value_size < size {
                         // fill with zeros
@@ -236,7 +237,7 @@ impl FieldType {
                 },
                 Value::Default => {
                     // write default value size and string value
-                    0u32.write_to(&mut writer)?;
+                    0u32.write_to(writer)?;
                     writer.write_all(&vec![0u8; (*size) as usize])?;
                 },
                 _ => bail!("value must be a Value::Str")
@@ -253,8 +254,8 @@ impl ByteSized for FieldType {
 impl ReadFrom for FieldType {
     fn read_from(reader: &mut impl Read) -> Result<Self> {
         // read data
-        let buf = [0u8; Self::BYTES];
-        reader.read_exact(&mut buf);
+        let mut buf = [0u8; Self::BYTES];
+        reader.read_exact(&mut buf)?;
         
         // build field type
         let field_type = match buf[0] {
@@ -346,12 +347,12 @@ impl ByteSized for Field {
 impl ReadFrom for Field {
     fn read_from(reader: &mut impl Read) -> Result<Self> {
         // read the field name
-        let buf = [0u8; Self::MAX_NAME_SIZE];
+        let mut buf = [0u8; Self::MAX_NAME_SIZE];
         reader.read_exact(&mut buf)?;
         let name = String::from_utf8(buf.to_vec())?;
 
         // read field value type
-        let value_type = FieldType::read_from(&mut reader)?;
+        let value_type = FieldType::read_from(reader)?;
 
         // build field and provide read byte count
         let field = Field::new(&name, value_type)?;
@@ -366,12 +367,12 @@ impl WriteTo for Field {
         if name_bytes.len() > Self::MAX_NAME_SIZE {
             bail!("field name size must be less than {} bytes length", Self::MAX_NAME_SIZE);
         }
-        let buf = [0u8; Self::MAX_NAME_SIZE];
+        let mut buf = [0u8; Self::MAX_NAME_SIZE];
         buf.copy_from_slice(name_bytes);
         writer.write_all(&buf)?;
 
         // write field value type
-        self._value_type.write_to(&mut writer)?;
+        self._value_type.write_to(writer)?;
         Ok(())
     }
 }
@@ -408,16 +409,16 @@ impl Header {
 
         // add field
         self._list.push(field);
-        self._map.insert(field._name, self._list.len()-1);
+        self._map.insert(name.to_string(), self._list.len()-1);
         
         Ok(self)
     }
 
     /// Rebuilds the index hashmap.
-    fn rebuild_hashmap(&self) {
+    fn rebuild_hashmap(&mut self) {
         let mut field_map = HashMap::new();
         for (index, field) in self._list.iter().enumerate() {
-            field_map.insert(field._name, index);
+            field_map.insert(field._name.clone(), index);
         }
         self._map = field_map;
     }
@@ -469,7 +470,7 @@ impl Header {
     /// # Arguments
     /// 
     /// * `name` - Field name.
-    pub fn get_mut(&self, name: &str) -> Option<&mut Field> {
+    pub fn get_mut(&mut self, name: &str) -> Option<&mut Field> {
         let index = match self._map.get(name) {
             Some(v) => *v,
             None => return None
@@ -494,7 +495,7 @@ impl Header {
     /// # Arguments
     /// 
     /// * `index` - Field index.
-    pub fn get_mut_by_index(&self, index: usize) -> Option<&mut Field> {
+    pub fn get_mut_by_index(&mut self, index: usize) -> Option<&mut Field> {
         if self._list.len() > index {
             return Some(&mut self._list[index]);
         }
@@ -558,7 +559,7 @@ impl Header {
                 None => bail!("invalid value index! this should never happen, please check \
                     the record \"len()\" function")
             };
-            field._value_type.write_value(&mut writer, value)?;
+            field._value_type.write_value(writer, value)?;
         }
         Ok(())
     }
@@ -568,15 +569,15 @@ impl Header {
     /// # Arguments
     /// 
     /// * `reader` - Reader to read from.
-    fn read_from(&self, reader: &mut impl Read) -> Result<()> {
+    fn read_from(&mut self, reader: &mut impl Read) -> Result<()> {
         // read field count
-        let field_count = u8::read_from(&mut reader)?;
+        let field_count = u8::read_from(reader)?;
 
         // read fields
-        let fields = Vec::new();
+        let mut fields = Vec::new();
         for _ in 0..field_count {
             // read field data and push into the field list
-            let field = Field::read_from(&mut reader)?;
+            let field = Field::read_from(reader)?;
             fields.push(field);
         }
 
@@ -590,10 +591,10 @@ impl WriteTo for Header {
     fn write_to(&self, writer: &mut impl Write) -> Result<()> {
         // write field count
         let field_count = self._list.len() as u32;
-        field_count.write_to(&mut writer)?;
+        field_count.write_to(writer)?;
 
         // write fields data
-        for field in self._list {
+        for field in self._list.iter() {
             field.write_to(writer)?;
         }
         Ok(())
