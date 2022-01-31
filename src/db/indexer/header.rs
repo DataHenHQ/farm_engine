@@ -55,9 +55,9 @@ impl Header {
         Ok(hash)
     }
 
-    /// Serialize the header to a fixed byte slice.
+    /// Serialize the instance to a fixed byte slice.
     pub fn as_bytes(&self) -> [u8; Self::BYTES] {
-        let mut buf = [0u8; Header::BYTES];
+        let mut buf = [0u8; Self::BYTES];
         let mut carry = 0;
 
         // save magic number
@@ -194,7 +194,7 @@ pub mod test_helper {
         buf
     }
 
-    /// Builds a header byte slice from the values provided.
+    /// Builds an index header as byte slice from the values provided.
     /// 
     /// # Arguments
     /// 
@@ -257,6 +257,7 @@ mod tests {
 
     #[test]
     fn as_bytes() {
+        // first test
         let mut expected = [
             // magic number
             100, 97, 116, 97, 104, 101, 110, 95, 105, 100, 120,
@@ -286,6 +287,7 @@ mod tests {
         };
         assert_eq!(expected, header.as_bytes());
 
+        // second test
         let expected = [
             // magic number
             100, 97, 116, 97, 104, 101, 110, 95, 105, 100, 120,
@@ -317,7 +319,7 @@ mod tests {
 
     #[test]
     fn load_from_u8_slice() {
-        let mut value = Header{
+        let mut header = Header{
             indexed: false,
             hash: None,
             indexed_count: 0
@@ -331,11 +333,11 @@ mod tests {
             indexed_count: 4535435
         };
         let buf = build_header_bytes(true, &hash, true, 4535435);
-        if let Err(_) = value.load_from(&buf[..]) {
-            assert!(false, "shouldn't error out");
+        if let Err(e) = header.load_from(&buf) {
+            assert!(false, "shouldn't error out but got error: {:?}", e);
             return;
         };
-        assert_eq!(expected, value);
+        assert_eq!(expected, header);
 
         // second random try
         let expected = Header{
@@ -344,11 +346,51 @@ mod tests {
             indexed_count: 6572646535124
         };
         let buf = build_header_bytes(false, &[], false, 6572646535124);
-        if let Err(_) = value.load_from(&buf[..]) {
-            assert!(false, "shouldn't error out");
+        if let Err(e) = header.load_from(&buf) {
+            assert!(false, "shouldn't error out but got error: {:?}", e);
             return;
         };
-        assert_eq!(expected, value);
+        assert_eq!(expected, header);
+    }
+
+    #[test]
+    fn load_from_u8_slice_with_invalid_bigger_buf_size() {
+        let mut header = Header{
+            indexed: false,
+            hash: None,
+            indexed_count: 0
+        };
+        let buf = [0u8; Header::BYTES+1];
+        match header.load_from(&buf) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:x?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        }
+    }
+
+    #[test]
+    fn load_from_u8_slice_with_invalid_smaller_buf_size() {
+        let mut header = Header{
+            indexed: false,
+            hash: None,
+            indexed_count: 0
+        };
+        let buf = [0u8; Header::BYTES-1];
+        match header.load_from(&buf) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:x?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        }
     }
 
     #[test]
@@ -363,8 +405,8 @@ mod tests {
         let buf = build_header_bytes(true, &hash, true, 2341234);
         let value = match Header::from_byte_slice(&buf) {
             Ok(v) => v,
-            Err(_) => {
-                assert!(false, "shouldn't error out");
+            Err(e) => {
+                assert!(false, "shouldn't error out but got error: {:?}", e);
                 return;
             }
         };
@@ -379,8 +421,8 @@ mod tests {
         let buf = build_header_bytes(false, &[], false, 9879873495743);
         let value = match Header::from_byte_slice(&buf) {
             Ok(v) => v,
-            Err(_) => {
-                assert!(false, "shouldn't error out");
+            Err(e) => {
+                assert!(false, "shouldn't error out but got error: {:?}", e);
                 return;
             }
         };
@@ -400,8 +442,8 @@ mod tests {
         let mut reader = &buf as &[u8];
         let value = match Header::read_from(&mut reader) {
             Ok(v) => v,
-            Err(_) => {
-                assert!(false, "shouldn't error out");
+            Err(e) => {
+                assert!(false, "shouldn't error out but got error: {:?}", e);
                 return;
             }
         };
@@ -417,8 +459,8 @@ mod tests {
         let mut reader = &buf as &[u8];
         let value = match Header::read_from(&mut reader) {
             Ok(v) => v,
-            Err(_) => {
-                assert!(false, "shouldn't error out");
+            Err(e) => {
+                assert!(false, "shouldn't error out but got error: {:?}", e);
                 return;
             }
         };

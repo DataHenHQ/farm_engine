@@ -249,41 +249,915 @@ mod tests {
 
     #[test]
     fn bool_from_byte_slice() {
-        assert!(
-            match bool::from_byte_slice(&[0u8]) {
-                Ok(v) => v == false,
-                Err(_) => false
-            }, "[0] should have been false"
-        );
-        assert!(
-            match bool::from_byte_slice(&[1u8]) {
-                Ok(v) => v == true,
-                Err(_) => false
-            }, "[1] should have been true"
-        );
-        assert!(
-            match bool::from_byte_slice(&[3u8]) {
-                Ok(_) => false,
-                Err(e) => match e.downcast() {
-                    Ok(ex) => match ex {
-                        ParseError::InvalidValue => true,
-                        _ => false
-                    },
-                    Err(_) => false
-                }
-            }, "[3] should have been ParseError::InvalidValue"
-        );
-        assert!(
-            match bool::from_byte_slice(&[0u8, 0u8]) {
-                Ok(_) => false,
-                Err(e) => match e.downcast() {
-                    Ok(ex) => match ex {
-                        ParseError::InvalidSize => true,
-                        _ => false
-                    },
-                    Err(_) => false
-                }
-            }, "[3] should have been ParseError::InvalidSize"
-        );
+        let expected = false;
+        match bool::from_byte_slice(&[0u8]) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got an error: {:?}", expected, e)
+        };
+        let expected = true;
+        match bool::from_byte_slice(&[1u8]) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got an error: {:?}", expected, e)
+        };
+        match bool::from_byte_slice(&[3u8]) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidValue but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidValue => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidValue but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidValue but got error: {:?}", ex)
+            }
+        };
+        match bool::from_byte_slice(&[0u8, 0u8]) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn bool_read_from() {
+        let expected = false;
+        match bool::read_from(&mut (&[0u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got an error: {:?}", expected, e)
+        };
+        let expected = true;
+        match bool::read_from(&mut (&[1u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got an error: {:?}", expected, e)
+        };
+        match bool::read_from(&mut (&[4u8] as &[u8])) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidValue but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidValue => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidValue but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidValue but got error: {:?}", ex)
+            }
+        };
+        let expected = false;
+        match bool::read_from(&mut (&[0u8, 0u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got an error: {:?}", expected, e)
+        };
+        let expected = true;
+        match bool::read_from(&mut (&[1u8, 0u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got an error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn bool_false_on_write_as_bytes() {
+        let mut buf = [0u8];
+        let expected = [0u8];
+        match false.write_as_bytes(&mut buf) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn bool_true_on_write_as_bytes() {
+        let mut buf = [0u8];
+        let expected = [1u8];
+        match true.write_as_bytes(&mut buf) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn bool_invalid_buf_size_on_write_as_bytes() {
+        let mut buf = [0u8, 0u8];
+        match false.write_as_bytes(&mut buf) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn bool_false_on_write_to() {
+        let mut buf = [0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [0u8];
+        match false.write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn bool_true_on_write_to() {
+        let mut buf = [0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [1u8];
+        match true.write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn bool_buf_size_on_write_to() {
+        let mut buf = [0u8, 0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [0u8, 0u8];
+        match false.write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+
+        let mut buf = [0u8, 0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [1u8, 0u8];
+        match true.write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn i8_from_byte_slice() {
+        let expected = 96i8;
+        match i8::from_byte_slice(&[96u8]) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+        match i8::from_byte_slice(&[0u8, 0u8]) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn i8_read_from() {
+        let expected = 101i8;
+        match i8::read_from(&mut (&[101u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+        let expected = -87i8;
+        match i8::read_from(&mut (&[169u8, 53u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn i8_write_as_bytes() {
+        let mut buf = [0u8];
+        let expected = [154u8];
+        match (-102i8).write_as_bytes(&mut buf) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn i8_invalid_buf_size_on_write_as_bytes() {
+        let mut buf = [0u8, 0u8];
+        match 76i8.write_as_bytes(&mut buf) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn i8_on_write_to() {
+        let mut buf = [0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [24u8];
+        match 24i8.write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+
+        let mut buf = [0u8, 0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [202u8, 0u8];
+        match (-54i8).write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn i16_from_byte_slice() {
+        let expected = 24599i16;
+        match i16::from_byte_slice(&[96u8, 23u8]) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+        match i16::from_byte_slice(&[0u8, 0u8, 0u8]) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn i16_read_from() {
+        let expected = 25932i16;
+        match i16::read_from(&mut (&[101u8, 76u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+        let expected = -5973i16;
+        match i16::read_from(&mut (&[232u8, 171u8, 12u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn i16_write_as_bytes() {
+        let mut buf = [0u8, 0u8];
+        let expected = [216u8, 6u8];
+        match (-10234i16).write_as_bytes(&mut buf) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn i16_invalid_buf_size_on_write_as_bytes() {
+        let mut buf = [0u8, 0u8, 0u8];
+        match 7634i16.write_as_bytes(&mut buf) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn i16_on_write_to() {
+        let mut buf = [0u8, 0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [94u8, 170u8];
+        match 24234i16.write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+
+        let mut buf = [0u8, 0u8, 0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [234u8, 165u8, 0u8];
+        match (-5467i16).write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn i32_from_byte_slice() {
+        let expected = 1612144144i32;
+        match i32::from_byte_slice(&[96u8, 23u8, 94u8, 16u8]) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+        match i32::from_byte_slice(&[0u8, 0u8, 0u8, 0u8, 0u8]) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn i32_read_from() {
+        let expected = 1699488309i32;
+        match i32::read_from(&mut (&[101u8, 76u8, 34u8, 53u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+        let expected = -391449643i32;
+        match i32::read_from(&mut (&[232u8, 170u8, 243u8, 213u8, 98u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn i32_write_as_bytes() {
+        let mut buf = [0u8, 0u8, 0u8, 0u8];
+        let expected = [194u8, 254u8, 253u8, 48u8];
+        match (-1023476432i32).write_as_bytes(&mut buf) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn i32_invalid_buf_size_on_write_as_bytes() {
+        let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8];
+        match 763123434i32.write_as_bytes(&mut buf) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn i32_on_write_to() {
+        let mut buf = [0u8, 0u8, 0u8, 0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [14u8, 113u8, 187u8, 81u8];
+        match 242334545i32.write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+
+        let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [252u8, 189u8, 180u8, 28u8, 0u8];
+        match (-54676452i32).write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn i64_from_byte_slice() {
+        let expected = 6924106375311862602i64;
+        match i64::from_byte_slice(&[96u8, 23u8, 94u8, 16u8, 23u8, 123u8, 43u8, 74u8]) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+        match i64::from_byte_slice(&[0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8]) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn i64_read_from() {
+        let expected = 7299246708500139070i64;
+        match i64::read_from(&mut (&[101u8, 76u8, 34u8, 53u8, 84u8, 23u8, 12u8, 62u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+        let expected = -1681263416360839989i64;
+        match i64::read_from(&mut (&[232u8, 170u8, 243u8, 212u8, 157u8, 243u8, 212u8, 203u8, 17u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn i64_write_as_bytes() {
+        let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        let expected = [241u8, 203u8, 225u8, 155u8, 172u8, 106u8, 6u8, 236u8];
+        match (-1023476431567845652i64).write_as_bytes(&mut buf) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn i64_invalid_buf_size_on_write_as_bytes() {
+        let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        match 7634642314545343i64.write_as_bytes(&mut buf) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn i64_on_write_to() {
+        let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [3u8, 92u8, 241u8, 252u8, 56u8, 24u8, 123u8, 126u8];
+        match 242334545546345342i64.write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+
+        let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [255u8, 61u8, 192u8, 14u8, 71u8, 147u8, 51u8, 22u8, 0u8];
+        match (-54676452895673578i64).write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn u8_from_byte_slice() {
+        let expected = 96u8;
+        match u8::from_byte_slice(&[96u8]) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+        match u8::from_byte_slice(&[0u8, 0u8]) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn u8_read_from() {
+        let expected = 101u8;
+        match u8::read_from(&mut (&[101u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+        let expected = 87u8;
+        match u8::read_from(&mut (&[87u8, 53u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn u8_write_as_bytes() {
+        let mut buf = [0u8];
+        let expected = [102u8];
+        match 102u8.write_as_bytes(&mut buf) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn u8_invalid_buf_size_on_write_as_bytes() {
+        let mut buf = [0u8, 0u8];
+        match 76u8.write_as_bytes(&mut buf) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn u8_on_write_to() {
+        let mut buf = [0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [24u8];
+        match 24u8.write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+
+        let mut buf = [0u8, 0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [54u8, 0u8];
+        match 54u8.write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn u16_from_byte_slice() {
+        let expected = 24599u16;
+        match u16::from_byte_slice(&[96u8, 23u8]) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+        match u16::from_byte_slice(&[0u8, 0u8, 0u8]) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn u16_read_from() {
+        let expected = 25932u16;
+        match u16::read_from(&mut (&[101u8, 76u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+        let expected = 5973u16;
+        match u16::read_from(&mut (&[23u8, 85u8, 12u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn u16_write_as_bytes() {
+        let mut buf = [0u8, 0u8];
+        let expected = [39u8, 250u8];
+        match 10234u16.write_as_bytes(&mut buf) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn u16_invalid_buf_size_on_write_as_bytes() {
+        let mut buf = [0u8, 0u8, 0u8];
+        match 7634u16.write_as_bytes(&mut buf) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn u16_on_write_to() {
+        let mut buf = [0u8, 0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [94u8, 170u8];
+        match 24234u16.write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+
+        let mut buf = [0u8, 0u8, 0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [21u8, 91u8, 0u8];
+        match 5467u16.write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn u32_from_byte_slice() {
+        let expected = 1612144144u32;
+        match u32::from_byte_slice(&[96u8, 23u8, 94u8, 16u8]) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+        match u32::from_byte_slice(&[0u8, 0u8, 0u8, 0u8, 0u8]) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn u32_read_from() {
+        let expected = 1699488309u32;
+        match u32::read_from(&mut (&[101u8, 76u8, 34u8, 53u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+        let expected = 391449643u32;
+        match u32::read_from(&mut (&[23u8, 85u8, 12u8, 43u8, 98u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn u32_write_as_bytes() {
+        let mut buf = [0u8, 0u8, 0u8, 0u8];
+        let expected = [61u8, 1u8, 2u8, 208u8];
+        match 1023476432u32.write_as_bytes(&mut buf) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn u32_invalid_buf_size_on_write_as_bytes() {
+        let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8];
+        match 763123434u32.write_as_bytes(&mut buf) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn u32_on_write_to() {
+        let mut buf = [0u8, 0u8, 0u8, 0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [14u8, 113u8, 187u8, 81u8];
+        match 242334545u32.write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+
+        let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [3u8, 66u8, 75u8, 228u8, 0u8];
+        match 54676452u32.write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn u64_from_byte_slice() {
+        let expected = 6924106375311862602u64;
+        match u64::from_byte_slice(&[96u8, 23u8, 94u8, 16u8, 23u8, 123u8, 43u8, 74u8]) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+        match u64::from_byte_slice(&[0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8]) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn u64_read_from() {
+        let expected = 7299246708500139070u64;
+        match u64::read_from(&mut (&[101u8, 76u8, 34u8, 53u8, 84u8, 23u8, 12u8, 62u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+        let expected = 1681263416360839989u64;
+        match u64::read_from(&mut (&[23u8, 85u8, 12u8, 43u8, 98u8, 12u8, 43u8, 53u8, 17u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn u64_write_as_bytes() {
+        let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        let expected = [14u8, 52u8, 30u8, 100u8, 83u8, 149u8, 249u8, 20u8];
+        match 1023476431567845652u64.write_as_bytes(&mut buf) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn u64_invalid_buf_size_on_write_as_bytes() {
+        let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        match 7634642314545343u64.write_as_bytes(&mut buf) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn u64_on_write_to() {
+        let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [3u8, 92u8, 241u8, 252u8, 56u8, 24u8, 123u8, 126u8];
+        match 242334545546345342u64.write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+
+        let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [7u8, 150u8, 126u8, 118u8, 170u8, 3u8, 60u8, 234u8, 0u8];
+        match 546763452895673578u64.write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn f32_from_byte_slice() {
+        let expected = 16121.44144f32;
+        match f32::from_byte_slice(&[70u8, 123u8, 229u8, 196]) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+        match f32::from_byte_slice(&[0u8, 0u8, 0u8, 0u8, 0u8]) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn f32_read_from() {
+        let expected = 169948.8309f32;
+        match f32::read_from(&mut (&[72u8, 37u8, 247u8, 53u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+        let expected = -39144.9643f32;
+        match f32::read_from(&mut (&[199u8, 24u8, 232u8, 247u8, 30u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn f32_write_as_bytes() {
+        let mut buf = [0u8, 0u8, 0u8, 0u8];
+        let expected = [201u8, 121u8, 223u8, 71u8];
+        match (-1023476.432f32).write_as_bytes(&mut buf) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn f32_invalid_buf_size_on_write_as_bytes() {
+        let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8];
+        match 763123.434f32.write_as_bytes(&mut buf) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn f32_on_write_to() {
+        let mut buf = [0u8, 0u8, 0u8, 0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [72u8, 108u8, 167u8, 163u8];
+        match 242334.545f32.write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+
+        let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [199u8, 85u8, 148u8, 116u8, 0];
+        match (-54676.452f32).write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn f64_from_byte_slice() {
+        let expected = 69241063753.11862602f64;
+        match f64::from_byte_slice(&[66u8, 48u8, 31u8, 22u8, 201u8, 73u8, 30u8, 94u8]) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+        match f64::from_byte_slice(&[0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8]) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn f64_read_from() {
+        let expected = 729924670.8500139070f64;
+        match f64::read_from(&mut (&[65u8, 197u8, 192u8, 226u8, 31u8, 108u8, 205u8, 65u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+        let expected = -168126341636.0839989f64;
+        match f64::read_from(&mut (&[194u8, 67u8, 146u8, 142u8, 49u8, 2u8, 10u8, 192u8, 54u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn f64_write_as_bytes() {
+        let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        let expected = [194u8, 55u8, 212u8, 101u8, 25u8, 20u8, 200u8, 217u8];
+        match (-102347643156.7845652f64).write_as_bytes(&mut buf) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn f64_invalid_buf_size_on_write_as_bytes() {
+        let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        match 76346423145.45343f64.write_as_bytes(&mut buf) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn f64_on_write_to() {
+        let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [66u8, 182u8, 10u8, 74u8, 115u8, 78u8, 10u8, 137u8];
+        match 24233454554634.5342f64.write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+
+        let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [194u8, 200u8, 221u8, 45u8, 70u8, 181u8, 220u8, 202u8, 0u8];
+        match (-54676452895673.578f64).write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
     }
 }
