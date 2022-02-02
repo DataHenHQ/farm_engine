@@ -6,7 +6,7 @@ use crate::traits::{ByteSized, FromByteSlice, WriteAsBytes, ReadFrom, WriteTo};
 use super::value::Value;
 use super::Record;
 
-/// Represents a field type. Byte format: `<type:1><value:4>`.
+/// Represents a field type.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum FieldType {
     /// Represents a bool type being `type_byte = 1`.
@@ -261,6 +261,7 @@ impl FieldType {
 }
 
 impl ByteSized for FieldType {
+    /// Byte representation: `<type:1><value:4>`.
     const BYTES: usize = 5;
 }
 
@@ -317,7 +318,7 @@ impl WriteTo for FieldType {
     }
 }
 
-/// Represents a field. Byte representation: `<name:50><field_type:5>`
+/// Represents a field.
 #[derive(Debug, PartialEq)]
 pub struct Field {
     _name: String,
@@ -356,6 +357,7 @@ impl Field {
 }
 
 impl ByteSized for Field {
+    /// Byte representation: `<name_value_size:4><name_value:50><field_type:5>`.
     const BYTES: usize = 59;
 }
 
@@ -599,21 +601,39 @@ impl Header {
     /// # Arguments
     /// 
     /// * `reader` - Reader to read from.
-    fn read_from(&mut self, reader: &mut impl Read) -> Result<()> {
+    fn load_from(&mut self, reader: &mut impl Read) -> Result<()> {
         // read field count
-        let field_count = u8::read_from(reader)?;
+        let field_count = u32::read_from(reader)?;
 
         // read fields
-        let mut fields = Vec::new();
-        for _ in 0..field_count {
+        let mut list = Vec::new();
+        let mut map = HashMap::new();
+        for i in 0..field_count {
             // read field data and push into the field list
             let field = Field::read_from(reader)?;
-            fields.push(field);
+            if let Some(v) = map.insert(field._name.clone(), i as usize) {
+                bail!("duplicated field \"{}\"", &field._name);
+            }
+            list.push(field);
         }
 
         // save read field list
-        self._list = fields;
+        self._list = list;
+        self._map = map;
         Ok(())
+    }
+
+    /// Returns an iterator over the header fields.
+    fn iter(&self) -> std::slice::Iter<Field> {
+        self._list.iter()
+    }
+}
+
+impl ReadFrom for Header {
+    fn read_from(reader: &mut impl Read) -> Result<Self> {
+        let mut header = Self::new();
+        header.load_from(reader)?;
+        Ok(header)
     }
 }
 
@@ -631,26 +651,9 @@ impl WriteTo for Header {
     }
 }
 
-impl IntoIterator for Header {
-    type Item = Field;
-    type IntoIter = std::vec::IntoIter<Self::Item>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self._list.into_iter()
-    }
-}
-
-#[cfg(test)]
-pub mod test_helper {
-    use super::*;
-
-
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use test_helper::*;
 
     mod field_type {
         use super::*;
@@ -662,7 +665,7 @@ mod tests {
 
         #[test]
         fn max_type_id() {
-            assert_eq!(1u8, FieldType::MAX_TYPE_ID);
+            assert_eq!(12u8, FieldType::MAX_TYPE_ID);
         }
 
         #[test]
@@ -689,7 +692,7 @@ mod tests {
                 Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
             };
             let expected = 234u32;
-            match FieldType::Str(47u32).str_size() {
+            match FieldType::Str(234u32).str_size() {
                 Ok(v) => assert_eq!(expected, v),
                 Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
             };
@@ -2583,6 +2586,776 @@ mod tests {
                 Some(v) => assert_eq!(1, *v),
                 None => assert!(false, "expected {:?} but got None", 1)
             }
+        }
+
+        #[test]
+        fn remove_with_index() {
+            let expected = Field{
+                _name: "abcde".to_string(),
+                _value_type: FieldType::I64
+            };
+            let mut header = Header::new();
+
+            // add fields
+            if let Err(e) = header.add("foo", FieldType::F32) {
+                assert!(false, "expected to add \"foo\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("abcde", FieldType::I64) {
+                assert!(false, "expected to add \"abcde\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("bar", FieldType::U64) {
+                assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
+                return;
+            }
+            assert_eq!(3, header._list.len());
+            assert_eq!(3, header._map.len());
+            assert_eq!(expected, header._list[1]);
+            match header._map.get("abcde") {
+                Some(v) => assert_eq!(1, *v),
+                None => assert!(false, "expected {:?} but got None", 1)
+            }
+
+            // remove the header
+            let deleted = header.remove(1);
+            assert_eq!(expected, deleted);
+            assert_eq!(2, header._list.len());
+            assert_eq!(2, header._map.len());
+            assert_ne!(deleted, header._list[1]);
+            match header._map.get("abcde") {
+                Some(v) => assert!(false, "expected None but got {:?}", v),
+                None => assert!(true, "")
+            }
+        }
+
+        #[test]
+        fn remove_by_name() {
+            let expected = Field{
+                _name: "abcde".to_string(),
+                _value_type: FieldType::I64
+            };
+            let mut header = Header::new();
+
+            // add fields
+            if let Err(e) = header.add("foo", FieldType::F32) {
+                assert!(false, "expected to add \"foo\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("faa", FieldType::F64) {
+                assert!(false, "expected to add \"faa\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("abcde", FieldType::I64) {
+                assert!(false, "expected to add \"abcde\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("bar", FieldType::U64) {
+                assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
+                return;
+            }
+            assert_eq!(4, header._list.len());
+            assert_eq!(4, header._map.len());
+            assert_eq!(expected, header._list[2]);
+            match header._map.get("abcde") {
+                Some(v) => assert_eq!(2, *v),
+                None => assert!(false, "expected {:?} but got None", 1)
+            }
+
+            // remove the header
+            let deleted = match header.remove_by_name("abcde") {
+                Some(v) => v,
+                None => {
+                    assert!(false, "expected {:?} but got None", expected);
+                    return;
+                }
+            };
+            assert_eq!(expected, deleted);
+            assert_eq!(3, header._list.len());
+            assert_eq!(3, header._map.len());
+            assert_ne!(deleted, header._list[2]);
+            match header._map.get("abcde") {
+                Some(v) => assert!(false, "expected None but got {:?}", v),
+                None => assert!(true, "")
+            }
+        }
+
+        #[test]
+        fn remove_by_name_not_found() {
+            let mut header = Header::new();
+
+            // add fields
+            if let Err(e) = header.add("foo", FieldType::F32) {
+                assert!(false, "expected to add \"foo\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("faa", FieldType::F64) {
+                assert!(false, "expected to add \"faa\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("bar", FieldType::U64) {
+                assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
+                return;
+            }
+            assert_eq!(3, header._list.len());
+            assert_eq!(3, header._map.len());
+            match header._map.get("abcde") {
+                Some(v) => assert!(false, "expected None but got {:?}", v),
+                None => assert!(true, "")
+            }
+
+            // try to remove the header
+            match header.remove_by_name("abcde") {
+                Some(v) => assert!(false, "expected None but got {:?}", v),
+                None => assert!(true, "")
+            };
+            assert_eq!(3, header._list.len());
+            assert_eq!(3, header._map.len());
+        }
+
+        #[test]
+        fn get_by_index_existing() {
+            let mut header = Header::new();
+
+            // add fields
+            if let Err(e) = header.add("foo", FieldType::F32) {
+                assert!(false, "expected to add \"foo\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("abcde", FieldType::I64) {
+                assert!(false, "expected to add \"abcde\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("bar", FieldType::U64) {
+                assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
+                return;
+            }
+            assert_eq!(3, header._list.len());
+
+            // test search by index
+            let expected = Field{
+                _name: "abcde".to_string(),
+                _value_type: FieldType::I64
+            };
+            assert_eq!(expected, header._list[1]);
+            match header.get_by_index(1) {
+                Some(v) => assert_eq!(&expected, v),
+                None => assert!(false, "expected {:?} but got None", expected)
+            }
+
+            // test search mutable by index
+            let mut expected = Field{
+                _name: "foo".to_string(),
+                _value_type: FieldType::F32
+            };
+            assert_eq!(expected, header._list[0]);
+            match header.get_mut_by_index(0) {
+                Some(v) => assert_eq!(&mut expected, v),
+                None => assert!(false, "expected {:?} but got None", expected)
+            }
+        }
+
+        #[test]
+        fn get_by_index_not_found() {
+            let mut header = Header::new();
+
+            // add fields
+            if let Err(e) = header.add("foo", FieldType::F32) {
+                assert!(false, "expected to add \"foo\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("abcde", FieldType::I64) {
+                assert!(false, "expected to add \"abcde\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("bar", FieldType::U64) {
+                assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
+                return;
+            }
+            assert_eq!(3, header._list.len());
+
+            // test search
+            match header.get_by_index(4) {
+                Some(v) => assert!(false, "expected None but got {:?}", v),
+                None => assert!(true, "")
+            }
+            match header.get_mut_by_index(5) {
+                Some(v) => assert!(false, "expected None but got {:?}", v),
+                None => assert!(true, "")
+            }
+        }
+
+        #[test]
+        fn get_existing() {
+            let mut header = Header::new();
+
+            // add fields
+            if let Err(e) = header.add("foo", FieldType::F32) {
+                assert!(false, "expected to add \"foo\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("abcde", FieldType::I64) {
+                assert!(false, "expected to add \"abcde\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("bar", FieldType::U64) {
+                assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
+                return;
+            }
+            assert_eq!(3, header._list.len());
+            assert_eq!(3, header._map.len());
+
+            // test search by index
+            let expected = Field{
+                _name: "abcde".to_string(),
+                _value_type: FieldType::I64
+            };
+            assert_eq!(expected, header._list[1]);
+            match header.get("abcde") {
+                Some(v) => assert_eq!(&expected, v),
+                None => assert!(false, "expected {:?} but got None", expected)
+            }
+
+            // test search mutable by index
+            let mut expected = Field{
+                _name: "foo".to_string(),
+                _value_type: FieldType::F32
+            };
+            assert_eq!(expected, header._list[0]);
+            match header.get_mut("foo") {
+                Some(v) => assert_eq!(&mut expected, v),
+                None => assert!(false, "expected {:?} but got None", expected)
+            }
+        }
+
+        #[test]
+        fn get_not_found() {
+            let mut header = Header::new();
+
+            // add fields
+            if let Err(e) = header.add("foo", FieldType::F32) {
+                assert!(false, "expected to add \"foo\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("abcde", FieldType::I64) {
+                assert!(false, "expected to add \"abcde\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("bar", FieldType::U64) {
+                assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
+                return;
+            }
+            assert_eq!(3, header._list.len());
+            assert_eq!(3, header._map.len());
+
+            // test search
+            match header.get("aaa") {
+                Some(v) => assert!(false, "expected None but got {:?}", v),
+                None => assert!(true, "")
+            }
+            match header.get_mut("bbb") {
+                Some(v) => assert!(false, "expected None but got {:?}", v),
+                None => assert!(true, "")
+            }
+        }
+
+        #[test]
+        fn len() {
+            let mut header = Header::new();
+
+            // add fields
+            if let Err(e) = header.add("foo", FieldType::F32) {
+                assert!(false, "expected to add \"foo\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("abcde", FieldType::I64) {
+                assert!(false, "expected to add \"abcde\" field but got error: {:?}", e);
+                return;
+            }
+
+            // test length
+            assert_eq!(2, header.len());
+
+            // add fields
+            if let Err(e) = header.add("bar", FieldType::U64) {
+                assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
+                return;
+            }
+
+            // test length
+            assert_eq!(3, header.len());
+
+            // delete 2 items
+            header.remove(1);
+            header.remove_by_name("foo");
+
+            // test length
+            assert_eq!(1, header.len());
+        }
+
+        #[test]
+        fn size_as_bytes() {
+            let mut header = Header::new();
+
+            // add fields
+            if let Err(e) = header.add("foo", FieldType::F32) {
+                assert!(false, "expected to add \"foo\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("abcde", FieldType::I64) {
+                assert!(false, "expected to add \"abcde\" field but got error: {:?}", e);
+                return;
+            }
+
+            // test length
+            assert_eq!(122, header.size_as_bytes());
+
+            // add fields
+            if let Err(e) = header.add("bar", FieldType::U64) {
+                assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
+                return;
+            }
+
+            // test length
+            assert_eq!(181, header.size_as_bytes());
+        }
+
+        #[test]
+        fn clear() {
+            let mut header = Header::new();
+
+            // add fields
+            if let Err(e) = header.add("foo", FieldType::F32) {
+                assert!(false, "expected to add \"foo\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("abcde", FieldType::I64) {
+                assert!(false, "expected to add \"abcde\" field but got error: {:?}", e);
+                return;
+            }
+            assert_eq!(2, header._list.len());
+
+            // test clear
+            let expected: Vec<Field> = Vec::new();
+            header.clear();
+            assert_eq!(expected, header._list);
+        }
+
+        #[test]
+        fn new_record() {
+            let mut header = Header::new();
+
+            // add fields
+            if let Err(e) = header.add("foo", FieldType::F32) {
+                assert!(false, "expected to add \"foo\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("bar", FieldType::I64) {
+                assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
+                return;
+            }
+
+            // test new record
+            let mut expected = Record::new();
+            if let Err(e) = expected.add(&header._list[0], Value::Default) {
+                assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = expected.add(&header._list[1], Value::Default) {
+                assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
+                return;
+            }
+            let record = match header.new_record() {
+                Ok(v) => v,
+                Err(e) => {
+                    assert!(false, "expected a new record but got error: {:?}", e);
+                    return
+                }
+            };
+            assert_eq!(expected, record);
+        }
+
+        #[test]
+        fn read_record() {
+            // create buffer and reader
+            let buf = [
+                // foo field
+                6u8, 74u8, 236u8, 75u8, 242u8, 24u8, 101u8, 197u8,
+                // bar field value size
+                0, 0, 0, 5u8,
+                // bar field value
+                104u8, 101u8, 108u8, 108u8, 111u8, 0, 0, 0, 0, 0,
+                // abc field
+                9u8, 41u8
+            ];
+            let mut reader = &buf as &[u8];
+
+            // create header
+            let mut header = Header::new();
+            if let Err(e) = header.add("foo", FieldType::U64) {
+                assert!(false, "expected to add \"foo\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("bar", FieldType::Str(10)) {
+                assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("abc", FieldType::I16) {
+                assert!(false, "expected to add \"abc\" field but got error: {:?}", e);
+                return;
+            }
+
+            // create expected record
+            let mut expected = Record::new();
+            let field = Field{
+                _name: "foo".to_string(),
+                _value_type: FieldType::U64
+            };
+            if let Err(e) = expected.add(&field, Value::U64(453434523432543685u64)) {
+                assert!(false, "expected to add \"foo\" field but got error: {:?}", e);
+                return;
+            }
+            let field = Field{
+                _name: "bar".to_string(),
+                _value_type: FieldType::Str(10)
+            };
+            if let Err(e) = expected.add(&field, Value::Str("hello".to_string())) {
+                assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
+                return;
+            }
+            let field = Field{
+                _name: "abc".to_string(),
+                _value_type: FieldType::I16
+            };
+            if let Err(e) = expected.add(&field, Value::I16(2345i16)) {
+                assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
+                return;
+            }
+
+            // test
+            match header.read_record(&mut reader) {
+                Ok(v) => assert_eq!(expected, v),
+                Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+            }
+        }
+
+        #[test]
+        fn write_record() {
+            let expected = [
+                // foo field
+                74u8, 138u8, 96u8, 147u8,
+                // bar field value size
+                0, 0, 0, 6u8,
+                // bar field value
+                119u8, 111u8, 114u8, 108u8, 100u8, 33u8, 0, 0, 0, 0, 0, 0,
+                // abc field
+                48u8, 141u8, 107u8, 57u8, 24u8, 192u8, 156u8, 149u8
+            ];
+
+            // create header
+            let mut header = Header::new();
+            if let Err(e) = header.add("foo", FieldType::F32) {
+                assert!(false, "expected to add \"foo\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("bar", FieldType::Str(12)) {
+                assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("abc", FieldType::U64) {
+                assert!(false, "expected to add \"abc\" field but got error: {:?}", e);
+                return;
+            }
+
+            // create record
+            let mut record = Record::new();
+            let field = Field{
+                _name: "foo".to_string(),
+                _value_type: FieldType::F32
+            };
+            if let Err(e) = record.add(&field, Value::F32(4534345.345f32)) {
+                assert!(false, "expected to add \"foo\" field but got error: {:?}", e);
+                return;
+            }
+            let field = Field{
+                _name: "bar".to_string(),
+                _value_type: FieldType::Str(12)
+            };
+            if let Err(e) = record.add(&field, Value::Str("world!".to_string())) {
+                assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
+                return;
+            }
+            let field = Field{
+                _name: "abc".to_string(),
+                _value_type: FieldType::U64
+            };
+            if let Err(e) = record.add(&field, Value::U64(3498570378509327509u64)) {
+                assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
+                return;
+            }
+
+            // test
+            let mut buf = [0u8; 28];
+            let mut writer = &mut buf as &mut [u8];
+            match header.write_record(&mut writer, &record) {
+                Ok(()) => assert_eq!(expected, buf),
+                Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+            }
+        }
+
+        #[test]
+        fn load_from_with_uniq_fields() {
+            // expected header
+            let mut expected = Header::new();
+            if let Err(e) = expected.add("foo", FieldType::F64) {
+                assert!(false, "expected to add \"foo\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = expected.add("bar", FieldType::Str(45)) {
+                assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = expected.add("abcde", FieldType::I8) {
+                assert!(false, "expected to add \"abcde\" field but got error: {:?}", e);
+                return;
+            }
+
+            // test
+            let buf = [
+                // field count
+                0, 0, 0, 3u8,
+
+                // foo field name value size
+                0, 0, 0, 3u8,
+                // foo field name value
+                102u8, 111u8, 111u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0,
+                // foo field type
+                11u8, 0, 0, 0, 0,
+
+                // bar field name value size
+                0, 0, 0, 3u8,
+                // bar field name value
+                98u8, 97u8, 114u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0,
+                // bar field type
+                12u8, 0, 0, 0, 45u8,
+
+                // abcde field name value size
+                0, 0, 0, 5u8,
+                // abcde field name value
+                97u8, 98u8, 99u8, 100u8, 101u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0,
+                // abcde field type
+                2u8, 0, 0, 0, 0
+            ];
+            let mut reader = &buf as &[u8];
+            let mut header = Header::new();
+            match header.load_from(&mut reader) {
+                Ok(()) => assert_eq!(expected, header),
+                Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+            }
+        }
+
+        #[test]
+        fn load_from_with_dup_fields() {
+            // expected header
+            let expected = "duplicated field \"foo\"";
+
+            // test
+            let buf = [
+                // field count
+                0, 0, 0, 2u8,
+
+                // foo field name value size
+                0, 0, 0, 3u8,
+                // foo field name value
+                102u8, 111u8, 111u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0,
+                // foo field type
+                11u8, 0, 0, 0, 0,
+
+                // dup foo field name value size
+                0, 0, 0, 3u8,
+                // dup foo field name value
+                102u8, 111u8, 111u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0,
+                // dup foo field type should be detected even with different types
+                1u8, 0, 0, 0, 0
+            ];
+            let mut reader = &buf as &[u8];
+            let mut header = Header::new();
+            match header.load_from(&mut reader) {
+                Ok(()) => assert!(false, "expected error but got sucess"),
+                Err(e) => assert_eq!(expected, e.to_string())
+            }
+        }
+
+        #[test]
+        fn read_from_with_uniq_fields() {
+            // expected header
+            let mut expected = Header::new();
+            if let Err(e) = expected.add("foo", FieldType::U64) {
+                assert!(false, "expected to add \"foo\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = expected.add("hello", FieldType::Str(656875457u32)) {
+                assert!(false, "expected to add \"hello\" field but got error: {:?}", e);
+                return;
+            }
+
+            // test
+            let buf = [
+                // field count
+                0, 0, 0, 2u8,
+
+                // foo field name value size
+                0, 0, 0, 3u8,
+                // foo field name value
+                102u8, 111u8, 111u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0,
+                // foo field type
+                9u8, 0, 0, 0, 0,
+
+                // hello field name value size
+                0, 0, 0, 5u8,
+                // hello field name value
+                104u8, 101u8, 108u8, 108u8, 111u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0,
+                // hello field type
+                12u8, 39u8, 39u8, 31u8, 193u8,
+            ];
+            let mut reader = &buf as &[u8];
+            match Header::read_from(&mut reader) {
+                Ok(v) => assert_eq!(expected, v),
+                Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+            }
+        }
+
+        #[test]
+        fn read_from_with_dup_fields() {
+            // expected header
+            let expected = "duplicated field \"bar\"";
+
+            // test
+            let buf = [
+                // field count
+                0, 0, 0, 2u8,
+
+                // bar field name value size
+                0, 0, 0, 3u8,
+                // bar field name value
+                98u8, 97u8, 114u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0,
+                // bar field type
+                5u8, 0, 0, 0, 0,
+
+                // dup bar field name value size
+                0, 0, 0, 3u8,
+                // dup bar field name value
+                98u8, 97u8, 114u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0,
+                // dup bar field type should be detected even with different types
+                3u8, 0, 0, 0, 0
+            ];
+            let mut reader = &buf as &[u8];
+            match Header::read_from(&mut reader) {
+                Ok(v) => assert!(false, "expected error but got: {:?}", v),
+                Err(e) => assert_eq!(expected, e.to_string())
+            }
+        }
+
+        #[test]
+        fn write_to() {
+            let expected = [
+                // field count
+                0, 0, 0, 3u8,
+
+                // foo field name value size
+                0, 0, 0, 3u8,
+                // foo field name value
+                102u8, 111u8, 111u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0,
+                // foo field type
+                1u8, 0, 0, 0, 0,
+
+                // abcde field name value size
+                0, 0, 0, 5u8,
+                // abcde field name value
+                97u8, 98u8, 99u8, 100u8, 101u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0,
+                // abcde field type
+                2u8, 0, 0, 0, 0,
+
+                // bar field name value size
+                0, 0, 0, 3u8,
+                // bar field name value
+                98u8, 97u8, 114u8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0, 0, 0,
+                // bar field type
+                12u8, 0, 0, 0, 37u8
+            ];
+
+            // create header
+            let mut header = Header::new();
+            if let Err(e) = header.add("foo", FieldType::Bool) {
+                assert!(false, "expected to add \"foo\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("abcde", FieldType::I8) {
+                assert!(false, "expected to add \"abcde\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("bar", FieldType::Str(37)) {
+                assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
+                return;
+            }
+
+            // test
+            let mut buf = [0u8; 181];
+            let mut writer = &mut buf as &mut [u8];
+            match header.write_to(&mut writer) {
+                Ok(()) => assert_eq!(expected, buf),
+                Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+            }
+        }
+
+        #[test]
+        fn iter() {
+            // create header
+            let mut header = Header::new();
+            if let Err(e) = header.add("foo", FieldType::Bool) {
+                assert!(false, "expected to add \"foo\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("abcde", FieldType::I8) {
+                assert!(false, "expected to add \"abcde\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("bar", FieldType::Str(37)) {
+                assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
+                return;
+            }
+
+            // test
+            let expected = vec!["foo".to_string(), "abcde".to_string(), "bar".to_string()];
+            let mut field_names: Vec<String> = Vec::new();
+            for field in header.iter() {
+                field_names.push(field._name.clone());
+            }
+            assert_eq!(expected, field_names);
         }
     }
 }
