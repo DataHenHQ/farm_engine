@@ -144,15 +144,14 @@ impl ByteSized for Value {
     const BYTES: usize = 25;
 }
 
-impl LoadFrom<&[u8]> for Value {
-    fn load_from(&mut self, buf: &[u8]) -> Result<()> {
-        // validate line size
-        if buf.len() != Self::BYTES {
-            bail!(ParseError::InvalidSize);
-        }
+impl LoadFrom for Value {
+    fn load_from(&mut self, reader: &mut impl Read) -> Result<()> {
+        // read data
+        let mut carry = 0;
+        let mut buf = [0u8; Self::BYTES];
+        reader.read_exact(&mut buf)?;
 
         // read input start pos
-        let mut carry = 0;
         let input_start_pos = u64::from_byte_slice(&buf[carry..carry+u64::BYTES])?;
         carry += u64::BYTES;
 
@@ -180,7 +179,8 @@ impl LoadFrom<&[u8]> for Value {
 impl FromByteSlice for Value {
     fn from_byte_slice(buf: &[u8]) -> Result<Self> {
         let mut value = Self::new();
-        value.load_from(buf)?;
+        let mut reader = buf;
+        value.load_from(&mut reader)?;
         Ok(value)
     }
 }
@@ -188,9 +188,7 @@ impl FromByteSlice for Value {
 impl ReadFrom for Value {
     fn read_from(reader: &mut impl Read) -> Result<Self> {
         let mut value = Self::new();
-        let mut buf = [0u8; Self::BYTES];
-        reader.read_exact(&mut buf)?;
-        value.load_from(&buf)?;
+        value.load_from(reader)?;
         Ok(value)
     }
 }
@@ -200,7 +198,8 @@ impl TryFrom<&[u8]> for Value {
 
     fn try_from(buf: &[u8]) -> Result<Self, Self::Error> {
         let mut value = Self::new();
-        value.load_from(buf)?;
+        let mut reader = buf;
+        value.load_from(&mut reader)?;
         Ok(value)
     }
 }
@@ -317,7 +316,8 @@ mod tests {
             match_flag: MatchFlag::Skip
         };
         let buf = build_value_bytes(1400004, 2341234, 20777332, b'S');
-        if let Err(e) = value.load_from(&buf) {
+        let mut reader = &buf as &[u8];
+        if let Err(e) = value.load_from(&mut reader) {
             assert!(false, "shouldn't error out but got error: {:?}", e);
             return;
         };
@@ -331,32 +331,12 @@ mod tests {
             match_flag: MatchFlag::None
         };
         let buf = build_value_bytes(445685221, 34656435243, 8427343298732, 0);
-        if let Err(e) = value.load_from(&buf) {
+        let mut reader = &buf as &[u8];
+        if let Err(e) = value.load_from(&mut reader) {
             assert!(false, "shouldn't error out but got error: {:?}", e);
             return;
         };
         assert_eq!(expected, value);
-    }
-
-    #[test]
-    fn load_from_u8_slice_with_invalid_bigger_buf_size() {
-        let mut value = Value{
-            input_start_pos: 0,
-            input_end_pos: 0,
-            spent_time: 0,
-            match_flag: MatchFlag::None
-        };
-        let buf = [0u8; Value::BYTES+1];
-        match value.load_from(&buf) {
-            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:x?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
-            }
-        }
     }
 
     #[test]
@@ -368,15 +348,14 @@ mod tests {
             match_flag: MatchFlag::None
         };
 
+        let expected = std::io::ErrorKind::UnexpectedEof;
         let buf = [0u8; Value::BYTES-1];
-        match value.load_from(&buf) {
-            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:x?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+        let mut reader = &buf as &[u8];
+        match value.load_from(&mut reader) {
+            Ok(v) => assert!(false, "expected IO error with ErrorKind::UnexpectedEof but got {:x?}", v),
+            Err(e) => match e.downcast::<std::io::Error>() {
+                Ok(ex) => assert_eq!(expected, ex.kind()),
+                Err(ex) => assert!(false, "expected IO error with ErrorKind::UnexpectedEof but got error: {:?}", ex)
             }
         }
     }

@@ -96,14 +96,12 @@ impl ByteSized for Header {
     const BYTES: usize = 46 + MAGIC_NUMBER_SIZE;
 }
 
-impl LoadFrom<&[u8]> for Header {
-    fn load_from(&mut self, buf: &[u8]) -> Result<()> {
+impl LoadFrom for Header {
+    fn load_from(&mut self, reader: &mut impl Read) -> Result<()> {
+        // read data
         let mut carry = 0;
-
-        // validate buffer size
-        if buf.len() != Self::BYTES {
-            bail!(ParseError::InvalidSize);
-        }
+        let mut buf = [0u8; Self::BYTES];
+        reader.read_exact(&mut buf)?;
 
         // extract and validate magic number
         if buf[carry..carry+MAGIC_NUMBER_SIZE] != MAGIC_NUMBER_BYTES {
@@ -146,7 +144,8 @@ impl LoadFrom<&[u8]> for Header {
 impl FromByteSlice for Header {
     fn from_byte_slice(buf: &[u8]) -> Result<Self> {
         let mut header = Self::new();
-        header.load_from(buf)?;
+        let mut reader = buf;
+        header.load_from(&mut reader)?;
         Ok(header)
     }
 }
@@ -154,9 +153,7 @@ impl FromByteSlice for Header {
 impl ReadFrom for Header {
     fn read_from(reader: &mut impl Read) -> Result<Self> {
         let mut header = Self::new();
-        let mut buf = [0u8; Self::BYTES];
-        reader.read_exact(&mut buf)?;
-        header.load_from(&buf)?;
+        header.load_from(reader)?;
         Ok(header)
     }
 }
@@ -166,7 +163,8 @@ impl TryFrom<&[u8]> for Header {
 
     fn try_from(buf: &[u8]) -> Result<Self, Self::Error> {
         let mut header = Self::new();
-        header.load_from(buf)?;
+        let mut reader = buf;
+        header.load_from(&mut reader)?;
         Ok(header)
     }
 }
@@ -333,7 +331,8 @@ mod tests {
             indexed_count: 4535435
         };
         let buf = build_header_bytes(true, &hash, true, 4535435);
-        if let Err(e) = header.load_from(&buf) {
+        let mut reader = &buf as &[u8];
+        if let Err(e) = header.load_from(&mut reader) {
             assert!(false, "shouldn't error out but got error: {:?}", e);
             return;
         };
@@ -346,31 +345,12 @@ mod tests {
             indexed_count: 6572646535124
         };
         let buf = build_header_bytes(false, &[], false, 6572646535124);
-        if let Err(e) = header.load_from(&buf) {
+        let mut reader = &buf as &[u8];
+        if let Err(e) = header.load_from(&mut reader) {
             assert!(false, "shouldn't error out but got error: {:?}", e);
             return;
         };
         assert_eq!(expected, header);
-    }
-
-    #[test]
-    fn load_from_u8_slice_with_invalid_bigger_buf_size() {
-        let mut header = Header{
-            indexed: false,
-            hash: None,
-            indexed_count: 0
-        };
-        let buf = [0u8; Header::BYTES+1];
-        match header.load_from(&buf) {
-            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:x?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
-            }
-        }
     }
 
     #[test]
@@ -380,15 +360,15 @@ mod tests {
             hash: None,
             indexed_count: 0
         };
+
+        let expected = std::io::ErrorKind::UnexpectedEof;
         let buf = [0u8; Header::BYTES-1];
-        match header.load_from(&buf) {
-            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:x?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+        let mut reader = &buf as &[u8];
+        match header.load_from(&mut reader) {
+            Ok(v) => assert!(false, "expected IO error with ErrorKind::UnexpectedEof but got {:x?}", v),
+            Err(e) => match e.downcast::<std::io::Error>() {
+                Ok(ex) => assert_eq!(expected, ex.kind()),
+                Err(ex) => assert!(false, "expected IO error with ErrorKind::UnexpectedEof but got error: {:?}", ex)
             }
         }
     }

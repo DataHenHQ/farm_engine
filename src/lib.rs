@@ -536,8 +536,8 @@ pub struct Engine {
 //     Ok(hash)
 // }
 
-// #[cfg(test)]
-// pub mod test_helper;
+#[cfg(test)]
+pub mod test_helper;
 
 // #[cfg(test)]
 // mod tests {

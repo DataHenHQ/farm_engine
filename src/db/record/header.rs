@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use anyhow::{bail, Result};
 use crate::error::ParseError;
-use crate::traits::{ByteSized, FromByteSlice, WriteAsBytes, ReadFrom, WriteTo};
+use crate::traits::{ByteSized, FromByteSlice, WriteAsBytes, ReadFrom, WriteTo, LoadFrom};
 use super::value::Value;
 use super::Record;
 
@@ -413,7 +413,8 @@ impl WriteTo for Field {
 #[derive(Debug, PartialEq)]
 pub struct Header {
     _list: Vec<Field>,
-    _map: HashMap<String, usize>
+    _map: HashMap<String, usize>,
+    _record_byte_size: u64
 }
 
 impl Header {
@@ -421,7 +422,8 @@ impl Header {
     pub fn new() -> Self {
         Self{
             _list: Vec::new(),
-            _map: HashMap::new()
+            _map: HashMap::new(),
+            _record_byte_size: 0
         }
     }
 
@@ -440,6 +442,7 @@ impl Header {
         }
 
         // add field
+        self._record_byte_size += field._value_type.value_byte_size() as u64;
         self._list.push(field);
         self._map.insert(name.to_string(), self._list.len()-1);
         
@@ -449,10 +452,13 @@ impl Header {
     /// Rebuilds the index hashmap.
     fn rebuild_hashmap(&mut self) {
         let mut field_map = HashMap::new();
+        let mut record_size = 0u64;
         for (index, field) in self._list.iter().enumerate() {
             field_map.insert(field._name.clone(), index);
+            record_size += field._value_type.value_byte_size() as u64;
         }
         self._map = field_map;
+        self._record_byte_size = record_size;
     }
 
     /// Removes and return the field at the index position.
@@ -545,10 +551,16 @@ impl Header {
         u32::BYTES as u64 + (Field::BYTES as u64 * self._list.len() as u64)
     }
 
+    /// Returns the record size in bytes.
+    pub fn record_byte_size(&self) -> u64 {
+        return self._record_byte_size;
+    }
+
     /// Clears the field type list.
     pub fn clear(&mut self) {
         self._list = Vec::new();
         self._map = HashMap::new();
+        self._record_byte_size = 0;
     }
 
     /// Creates a new record instance from the header fields.
@@ -596,16 +608,19 @@ impl Header {
         Ok(())
     }
 
-    /// Read header from a reader.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `reader` - Reader to read from.
+    /// Returns an iterator over the header fields.
+    pub fn iter(&self) -> std::slice::Iter<Field> {
+        self._list.iter()
+    }
+}
+
+impl LoadFrom for Header {
     fn load_from(&mut self, reader: &mut impl Read) -> Result<()> {
         // read field count
         let field_count = u32::read_from(reader)?;
 
         // read fields
+        let mut record_size = 0u64;
         let mut list = Vec::new();
         let mut map = HashMap::new();
         for i in 0..field_count {
@@ -614,18 +629,15 @@ impl Header {
             if let Some(v) = map.insert(field._name.clone(), i as usize) {
                 bail!("duplicated field \"{}\"", &field._name);
             }
+            record_size += field._value_type.value_byte_size() as u64;
             list.push(field);
         }
 
         // save read field list
         self._list = list;
         self._map = map;
+        self._record_byte_size = record_size;
         Ok(())
-    }
-
-    /// Returns an iterator over the header fields.
-    fn iter(&self) -> std::slice::Iter<Field> {
-        self._list.iter()
     }
 }
 
@@ -2505,7 +2517,8 @@ mod tests {
         fn new_header() {
             let expected = Header{
                 _list: Vec::new(),
-                _map: HashMap::new()
+                _map: HashMap::new(),
+                _record_byte_size: 0
             };
             let header = Header::new();
             assert_eq!(expected, header);
@@ -2534,8 +2547,10 @@ mod tests {
             }
 
             // test list and map
+            assert_eq!(2, header._list.len());
             assert_eq!(expected_0, header._list[0]);
             assert_eq!(expected_1, header._list[1]);
+            assert_eq!(8, header._record_byte_size);
             match header._map.get("foo") {
                 Some(v) => assert_eq!(0, *v),
                 None => assert!(false, "expected {:?} but got None", 0)
@@ -2575,9 +2590,11 @@ mod tests {
                         _value_type: FieldType::Str(45)
                     }
                 ),
-                _map: HashMap::new()
+                _map: HashMap::new(),
+                _record_byte_size: 0
             };
             header.rebuild_hashmap();
+            assert_eq!(53u64, header._record_byte_size);
             match header._map.get("abc") {
                 Some(v) => assert_eq!(0, *v),
                 None => assert!(false, "expected {:?} but got None", 0)
@@ -2612,6 +2629,7 @@ mod tests {
             assert_eq!(3, header._list.len());
             assert_eq!(3, header._map.len());
             assert_eq!(expected, header._list[1]);
+            assert_eq!(20, header._record_byte_size);
             match header._map.get("abcde") {
                 Some(v) => assert_eq!(1, *v),
                 None => assert!(false, "expected {:?} but got None", 1)
@@ -2623,6 +2641,7 @@ mod tests {
             assert_eq!(2, header._list.len());
             assert_eq!(2, header._map.len());
             assert_ne!(deleted, header._list[1]);
+            assert_eq!(12, header._record_byte_size);
             match header._map.get("abcde") {
                 Some(v) => assert!(false, "expected None but got {:?}", v),
                 None => assert!(true, "")
@@ -2657,6 +2676,7 @@ mod tests {
             assert_eq!(4, header._list.len());
             assert_eq!(4, header._map.len());
             assert_eq!(expected, header._list[2]);
+            assert_eq!(28, header._record_byte_size);
             match header._map.get("abcde") {
                 Some(v) => assert_eq!(2, *v),
                 None => assert!(false, "expected {:?} but got None", 1)
@@ -2674,6 +2694,7 @@ mod tests {
             assert_eq!(3, header._list.len());
             assert_eq!(3, header._map.len());
             assert_ne!(deleted, header._list[2]);
+            assert_eq!(20, header._record_byte_size);
             match header._map.get("abcde") {
                 Some(v) => assert!(false, "expected None but got {:?}", v),
                 None => assert!(true, "")
@@ -2699,6 +2720,7 @@ mod tests {
             }
             assert_eq!(3, header._list.len());
             assert_eq!(3, header._map.len());
+            assert_eq!(20, header._record_byte_size);
             match header._map.get("abcde") {
                 Some(v) => assert!(false, "expected None but got {:?}", v),
                 None => assert!(true, "")
@@ -2711,6 +2733,7 @@ mod tests {
             };
             assert_eq!(3, header._list.len());
             assert_eq!(3, header._map.len());
+            assert_eq!(20, header._record_byte_size);
         }
 
         #[test]
@@ -2921,6 +2944,35 @@ mod tests {
         }
 
         #[test]
+        fn record_byte_size() {
+            let mut header = Header::new();
+
+            // add fields
+            if let Err(e) = header.add("foo", FieldType::F32) {
+                assert!(false, "expected to add \"foo\" field but got error: {:?}", e);
+                return;
+            }
+            if let Err(e) = header.add("abcde", FieldType::I64) {
+                assert!(false, "expected to add \"abcde\" field but got error: {:?}", e);
+                return;
+            }
+
+            // test length
+            assert_eq!(122, header.size_as_bytes());
+            assert_eq!(12, header._record_byte_size);
+
+            // add fields
+            if let Err(e) = header.add("bar", FieldType::U64) {
+                assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
+                return;
+            }
+
+            // test length
+            assert_eq!(181, header.size_as_bytes());
+            assert_eq!(20, header._record_byte_size);
+        }
+
+        #[test]
         fn clear() {
             let mut header = Header::new();
 
@@ -2934,11 +2986,13 @@ mod tests {
                 return;
             }
             assert_eq!(2, header._list.len());
+            assert_eq!(12, header._record_byte_size);
 
             // test clear
             let expected: Vec<Field> = Vec::new();
             header.clear();
             assert_eq!(expected, header._list);
+            assert_eq!(0, header._record_byte_size);
         }
 
         #[test]

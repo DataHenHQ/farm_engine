@@ -189,13 +189,13 @@ impl_write_as_bytes!(i8, to_be_bytes);
 impl_write_as_bytes!(f64, to_be_bytes);
 impl_write_as_bytes!(f32, to_be_bytes);
 
-pub trait LoadFrom<T> {
-    /// Loads data into the instance from a source.
+pub trait LoadFrom {
+    /// Loads data into the instance from a reader.
     /// 
     /// # Arguments
     /// 
-    /// * `source` - Source to load data from.
-    fn load_from(&mut self, source: T) -> Result<()>;
+    /// * `reader` - Byte reader.
+    fn load_from(&mut self, reader: &mut impl Read) -> Result<()>;
 }
 
 #[cfg(test)]
