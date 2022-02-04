@@ -37,10 +37,10 @@ pub enum FieldType {
 
 impl FieldType {
     /// Min value the field type first byte can take.
-    const MIN_TYPE_ID: u8 = 1u8;
+    pub const MIN_TYPE_ID: u8 = 1u8;
 
     /// Max value the field type first byte can take.
-    const MAX_TYPE_ID: u8 = 12u8;
+    pub const MAX_TYPE_ID: u8 = 12u8;
 
     /// Gets the byte size of the value described by the field type.
     pub fn value_byte_size(&self) -> usize {
@@ -626,7 +626,7 @@ impl LoadFrom for Header {
         for i in 0..field_count {
             // read field data and push into the field list
             let field = Field::read_from(reader)?;
-            if let Some(v) = map.insert(field._name.clone(), i as usize) {
+            if let Some(_) = map.insert(field._name.clone(), i as usize) {
                 bail!("duplicated field \"{}\"", &field._name);
             }
             record_size += field._value_type.value_byte_size() as u64;

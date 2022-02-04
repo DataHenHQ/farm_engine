@@ -9,7 +9,7 @@ use crate::traits::{ByteSized, FromByteSlice, WriteAsBytes, ReadFrom, WriteTo, L
 pub const MAGIC_NUMBER_SIZE: usize = 11;
 
 /// File's magic number value `datahen_idx` as bytes.
-pub const MAGIC_NUMBER_BYTES: [u8; 11] = [100, 97, 116, 97, 104, 101, 110, 95, 105, 100, 120];
+pub const MAGIC_NUMBER_BYTES: [u8; MAGIC_NUMBER_SIZE] = [100, 97, 116, 97, 104, 101, 110, 95, 105, 100, 120];
 
 /// Unsigned hash value size. Currently using SHA3-256 = key 32 bytes
 pub const HASH_SIZE: usize = 32;
@@ -92,7 +92,7 @@ impl ByteSized for Header {
     /// Index header size in bytes.
     /// 
     /// Byte Format
-    /// `<magic_number:?><version:4><indexed:1><indexed_count:8><hash_valid:1><hash:32>`.
+    /// `<magic_number:11><version:4><indexed:1><indexed_count:8><hash_valid:1><hash:32>`.
     const BYTES: usize = 46 + MAGIC_NUMBER_SIZE;
 }
 

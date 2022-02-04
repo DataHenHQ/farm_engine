@@ -27,7 +27,7 @@ impl Value {
     /// # Arguments
     /// 
     /// * `value` - JS value to convert from.
-    fn try_from_js_u64(value: JSValue) -> Result<Value> {
+    pub fn try_from_js_u64(value: JSValue) -> Result<Value> {
         match value {
             JSValue::Number(n) => {
                 if !n.is_u64() {

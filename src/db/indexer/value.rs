@@ -103,6 +103,9 @@ pub struct Value {
 }
 
 impl Value {
+    /// Match flag byte index when as bytes.
+    pub const MATCH_FLAG_BYTE_INDEX: usize = 24;
+
     /// Creates a new value.
     pub fn new() -> Self {
         Self{
@@ -292,6 +295,33 @@ mod tests {
             match_flag: MatchFlag::No
         };
         assert_eq!(expected, value.as_bytes());
+    }
+
+    #[test]
+    fn match_flag_byte_index() {
+        // test Yes
+        let mut value = Value::new();
+        value.match_flag = MatchFlag::Yes;
+        let buf = value.as_bytes();
+        assert_eq!(b'Y', buf[Value::MATCH_FLAG_BYTE_INDEX]);
+
+        // test No
+        let mut value = Value::new();
+        value.match_flag = MatchFlag::No;
+        let buf = value.as_bytes();
+        assert_eq!(b'N', buf[Value::MATCH_FLAG_BYTE_INDEX]);
+
+        // test Skip
+        let mut value = Value::new();
+        value.match_flag = MatchFlag::Skip;
+        let buf = value.as_bytes();
+        assert_eq!(b'S', buf[Value::MATCH_FLAG_BYTE_INDEX]);
+
+        // test None
+        let mut value = Value::new();
+        value.match_flag = MatchFlag::None;
+        let buf = value.as_bytes();
+        assert_eq!(0, buf[Value::MATCH_FLAG_BYTE_INDEX]);
     }
 
     #[test]

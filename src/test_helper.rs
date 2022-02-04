@@ -52,7 +52,13 @@ pub fn append_bytes(buf: &mut Vec<u8>, data: &[u8]) {
     buf.append(&mut buf_data)
 }
 
-/// Copy bytes from the source into the target at a specific offset
+/// Copy bytes from the source into the target at a specific offset.
+/// 
+/// # Arguments
+/// 
+/// * `target` - Byte slice to copy bytes into.
+/// * `source` - Byte slice to copy bytes from.
+/// * `offset` - Target offset to start copy bytes.
 pub fn copy_bytes(target: &mut [u8], source: &[u8], offset: usize) -> Result<()> {
     // validate source into target
     if source.len() + offset > target.len() {
