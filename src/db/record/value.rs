@@ -41,6 +41,26 @@ impl Value {
     }
 }
 
+impl std::fmt::Display for Value{
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { 
+        write!(f, "{}", match self {
+            Self::Default => "".to_string(),
+            Self::Bool(v) => v.to_string(),
+            Self::I8(v) => v.to_string(),
+            Self::I16(v) => v.to_string(),
+            Self::I32(v) => v.to_string(),
+            Self::I64(v) => v.to_string(),
+            Self::U8(v) => v.to_string(),
+            Self::U16(v) => v.to_string(),
+            Self::U32(v) => v.to_string(),
+            Self::U64(v) => v.to_string(),
+            Self::F32(v) => v.to_string(),
+            Self::F64(v) => v.to_string(),
+            Self::Str(v) => v.to_string()
+        })
+    }
+}
+
 impl From<bool> for Value {
     fn from(v: bool) -> Self {
         Value::Bool(v)
@@ -166,9 +186,60 @@ impl From<Value> for JSValue {
     }
 }
 
+impl From<&Value> for JSValue {
+    fn from(value: &Value) -> Self {
+        // convert to serde_json::Value
+        match value {
+            Value::Default => Self::Null,
+            Value::Bool(v) => Self::Bool(*v),
+            Value::I8(v) => Self::Number(JSNumber::from(*v)),
+            Value::I16(v) => Self::Number(JSNumber::from(*v)),
+            Value::I32(v) => Self::Number(JSNumber::from(*v)),
+            Value::I64(v) => Self::Number(JSNumber::from(*v)),
+            Value::U8(v) => Self::Number(JSNumber::from(*v)),
+            Value::U16(v) => Self::Number(JSNumber::from(*v)),
+            Value::U32(v) => Self::Number(JSNumber::from(*v)),
+            Value::U64(v) => Self::Number(JSNumber::from(*v)),
+            Value::F32(v) => match JSNumber::from_f64((*v) as f64) {
+                Some(jv) => Self::Number(jv),
+                None => Self::Null
+            },
+            Value::F64(v) => match JSNumber::from_f64(*v) {
+                Some(jv) => Self::Number(jv),
+                None => Self::Null
+            },
+            Value::Str(v) => Self::String(v.to_string())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display() {
+        assert_eq!("", Value::Default.to_string());
+        assert_eq!("true", Value::Bool(true).to_string());
+        assert_eq!("false", Value::Bool(false).to_string());
+        assert_eq!("5", Value::I8(5i8).to_string());
+        assert_eq!("-5", Value::I8(-5i8).to_string());
+        assert_eq!("11", Value::I16(11i16).to_string());
+        assert_eq!("-11", Value::I16(-11i16).to_string());
+        assert_eq!("23", Value::I32(23i32).to_string());
+        assert_eq!("-23", Value::I32(-23i32).to_string());
+        assert_eq!("76", Value::I64(76i64).to_string());
+        assert_eq!("-76", Value::I64(-76i64).to_string());
+        assert_eq!("43", Value::U8(43u8).to_string());
+        assert_eq!("54", Value::U16(54u16).to_string());
+        assert_eq!("87", Value::U32(87u32).to_string());
+        assert_eq!("98", Value::U64(98u64).to_string());
+        assert_eq!("123.234", Value::F32(123.234f32).to_string());
+        assert_eq!("-123.234", Value::F32(-123.234f32).to_string());
+        assert_eq!("345.852", Value::F64(345.852).to_string());
+        assert_eq!("-345.852", Value::F64(-345.852).to_string());
+        assert_eq!("hello", Value::Str("hello".to_string()).to_string());
+    }
 
     #[test]
     fn try_from_js_u64_valid() {
@@ -433,5 +504,71 @@ mod tests {
     #[test]
     fn js_from_str() {
         assert_eq!(JSValue::String("foo".to_string()), JSValue::from(Value::Str("foo".to_string())));
+    }
+
+    #[test]
+    fn js_from_ref_default() {
+        assert_eq!(JSValue::Null, JSValue::from(&Value::Default));
+    }
+
+    #[test]
+    fn js_from_ref_bool() {
+        assert_eq!(JSValue::Bool(false), JSValue::from(&Value::Bool(false)));
+        assert_eq!(JSValue::Bool(true), JSValue::from(&Value::Bool(true)));
+    }
+
+    #[test]
+    fn js_from_ref_i8() {
+        assert_eq!(JSValue::Number(JSNumber::from(4i8)), JSValue::from(&Value::I8(4i8)));
+    }
+
+    #[test]
+    fn js_from_ref_i16() {
+        assert_eq!(JSValue::Number(JSNumber::from(4i16)), JSValue::from(&Value::I16(4i16)));
+    }
+
+    #[test]
+    fn js_from_ref_i32() {
+        assert_eq!(JSValue::Number(JSNumber::from(4i32)), JSValue::from(&Value::I32(4i32)));
+    }
+
+    #[test]
+    fn js_from_ref_i64() {
+        assert_eq!(JSValue::Number(JSNumber::from(4i64)), JSValue::from(&Value::I64(4i64)));
+    }
+
+    #[test]
+    fn js_from_ref_u8() {
+        assert_eq!(JSValue::Number(JSNumber::from(4u8)), JSValue::from(&Value::U8(4u8)));
+    }
+
+    #[test]
+    fn js_from_ref_u16() {
+        assert_eq!(JSValue::Number(JSNumber::from(4u16)), JSValue::from(&Value::U16(4u16)));
+    }
+
+    #[test]
+    fn js_from_ref_u32() {
+        assert_eq!(JSValue::Number(JSNumber::from(4u32)), JSValue::from(&Value::U32(4u32)));
+    }
+
+    #[test]
+    fn js_from_ref_u64() {
+        assert_eq!(JSValue::Number(JSNumber::from(4u64)), JSValue::from(&Value::U64(4u64)));
+    }
+
+    #[test]
+    fn js_from_ref_f32() {
+        assert_eq!(JSValue::Number(JSNumber::from_f64(4f64).unwrap()), JSValue::from(&Value::F32(4f32)));
+    }
+
+    #[test]
+    fn js_from_ref_f64() {
+        assert_eq!(JSValue::Number(JSNumber::from_f64(4f64).unwrap()), JSValue::from(&Value::F64(4f64)));
+    }
+
+    #[test]
+    fn js_from_ref_str() {
+        assert_eq!(JSValue::String("foo".to_string()), JSValue::from(&Value::Str("foo".to_string())));
     }
 }

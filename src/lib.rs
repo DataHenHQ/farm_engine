@@ -4,6 +4,7 @@ pub mod traits;
 pub mod db;
 
 use std::collections::HashMap;
+use std::ffi::{OsString};
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
 use std::path::PathBuf;
@@ -44,24 +45,28 @@ impl Engine {
     /// 
     /// * `input_path` - Input file path.
     /// * `index_path` - Index path (Optional).
-    pub fn new(input_path: &str, index_path: Option<&str>) -> Self {
+    pub fn new(input_path: PathBuf, index_path: Option<PathBuf>) -> Self {
         let index_path = match index_path {
-            Some(s) => s.to_string(),
-            None => format!("{}.matchqa.index", input_path)
+            Some(s) => s,
+            None => {
+                // default to input path + index file extension
+                let mut path: OsString = input_path.clone().into();
+                path.push(".");
+                path.push(db::indexer::INDEX_FILE_EXTENSION);
+                path.into()
+            }
         };
-        let input_path = input_path.to_string();
-        let indexer_obj = Indexer::new(
-            &input_path,
-            &index_path
-        );
         Self{
-            index: indexer_obj
+            index: Indexer::new(
+                input_path,
+                index_path
+            )
         }
     }
 
     /// Generates a regex expression to validate the index file extension.
     pub fn index_extension_regex() -> Regex {
-        Regex::new(r"(?i)\.matchqa\.index$").unwrap()
+        Regex::new(r"(?i)\.fmindex$").unwrap()
     }
 
     /// Validate an index path extension.
@@ -203,11 +208,11 @@ impl Engine {
     /// 
     /// * `index` - Record index.
     pub fn get_data(&self, index: u64) -> Result<serde_json::Value> {
-        let first_value = match self.index.get_record_index(0)? {
+        let first_value = match self.index.record(0)? {
             Some(v) => v,
             None => return Ok(serde_json::Value::Null)
         };
-        let value = match self.index.get_record_index(index)? {
+        let value = match self.index.record(index)? {
             Some(v) => v,
             None => return Ok(serde_json::Value::Null)
         };
@@ -215,11 +220,11 @@ impl Engine {
         // build a fake CSV string
         let file = File::open(&self.index.input_path)?;
         let mut reader = BufReader::new(file);
-        let mut buf: Vec<u8> = vec![0u8; first_value.input_start_pos as usize];
+        let mut buf: Vec<u8> = vec![0u8; first_value.index.input_start_pos as usize];
         reader.read_exact(&mut buf)?;
         buf.push(b'\n');
-        reader.seek(SeekFrom::Start(value.input_start_pos))?;
-        let mut buf_value: Vec<u8> = vec![0u8; (value.input_end_pos - value.input_start_pos) as usize];
+        reader.seek(SeekFrom::Start(value.index.input_start_pos))?;
+        let mut buf_value: Vec<u8> = vec![0u8; (value.index.input_end_pos - value.index.input_start_pos) as usize];
         reader.read_exact(&mut buf_value)?;
         // dbg!(String::from_utf8(buf_value.clone()).unwrap());
         buf.append(&mut buf_value);
@@ -238,7 +243,7 @@ impl Engine {
                     return Ok(serde_json::Value::Object(record))
                 }
                 Err(e) => {
-                    println!("Couldn't parse record at position {}: {}", value.input_start_pos, e);
+                    println!("Couldn't parse record at position {}: {}", value.index.input_start_pos, e);
                     bail!(ParseError::InvalidFormat)
                 }
             }
@@ -247,152 +252,148 @@ impl Engine {
         Ok(serde_json::Value::Null)
     }
 
-//     pub fn export(&self, output_path: PathBuf) -> Result<()> {
-        
-//     }
+    // /// Build a source index file list from an expanded path list.
+    // /// 
+    // /// # Arguments
+    // /// 
+    // /// * `expanded_path_list` - Expanded path list to build from.
+    // fn build_index_source_list(&self, expanded_path_list: Vec<PathBuf>) -> Result<Vec<BufReader<File>>> {
+    //     let base_size = file_size(&self.index.index_path)?;
+    //     let mut source_list: Vec<BufReader<File>> = vec!();
+    //     for path in expanded_path_list {
+    //         let file = File::open(&path)?;
+    //         let mut reader = BufReader::new(file);
+    //         println!("Open file \"{}\"", path.to_string_lossy());
 
-    /// Build a source index file list from an expanded path list.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `expanded_path_list` - Expanded path list to build from.
-    fn build_index_source_list(&self, expanded_path_list: Vec<PathBuf>) -> Result<Vec<BufReader<File>>> {
-        let base_size = file_size(&self.index.index_path)?;
-        let mut source_list: Vec<BufReader<File>> = vec!();
-        for path in expanded_path_list {
-            let file = File::open(&path)?;
-            let mut reader = BufReader::new(file);
-            println!("Open file \"{}\"", path.to_string_lossy());
+    //         // validate index file size
+    //         reader.seek(SeekFrom::End(0))?;
+    //         let size = reader.stream_position()?;
+    //         if size != base_size {
+    //             bail!(ParseError::Other(format!(
+    //                 "Index file size mismatch on file \"{}\"",
+    //                 path.to_string_lossy()
+    //             )));
+    //         }
 
-            // validate index file size
-            reader.seek(SeekFrom::End(0))?;
-            let size = reader.stream_position()?;
-            if size != base_size {
-                bail!(ParseError::Other(format!(
-                    "Index file size mismatch on file \"{}\"",
-                    path.to_string_lossy()
-                )));
-            }
+    //         // validate index header match
+    //         let mut header = IndexHeader::new();
+    //         Indexer::header_from_file(&mut reader, &mut header)?;
+    //         if header != self.index.header {
+    //             bail!(ParseError::Other(format!(
+    //                 "Index header mismatch on file \"{}\"",
+    //                 path.to_string_lossy()
+    //             )));
+    //         }
 
-            // validate index header match
-            let mut header = IndexHeader::new();
-            Indexer::header_from_file(&mut reader, &mut header)?;
-            if header != self.index.header {
-                bail!(ParseError::Other(format!(
-                    "Index header mismatch on file \"{}\"",
-                    path.to_string_lossy()
-                )));
-            }
+    //         // add to valid file source list
+    //         source_list.push(reader);
+    //     }
+    //     Ok(source_list)
+    // }
 
-            // add to valid file source list
-            source_list.push(reader);
-        }
-        Ok(source_list)
-    }
+    // /// Join index files into a single one using a >50% rule to decide on match flags.
+    // /// 
+    // /// # Arguments
+    // /// 
+    // /// * `raw_path_list` - Index file path list to join.
+    // pub fn join(&self, raw_path_list: &Vec<PathBuf>) -> Result<()> {
+    //     // skip if no indexed records found
+    //     if !self.index.index_header.indexed || self.index.index_header.indexed_count < 1 {
+    //         return Ok(());
+    //     }
 
-    /// Join index files into a single one using a >50% rule to decide on match flags.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `raw_path_list` - Index file path list to join.
-    pub fn join(&self, raw_path_list: &Vec<PathBuf>) -> Result<()> {
-        // skip if no indexed records found
-        if !self.index.index_header.indexed || self.index.index_header.indexed_count < 1 {
-            return Ok(());
-        }
+    //     // expand paths
+    //     let mut path_list: Vec<PathBuf> = vec!();
+    //     let index_path = match PathBuf::from_str(&self.index.index_path) {
+    //         Ok(v) => v,
+    //         Err(e) => bail!(e)
+    //     };
+    //     let exclusions = [index_path].to_vec();
+    //     for path in raw_path_list {
+    //         Self::expand_index_path(path, &mut path_list, &exclusions)?;
+    //     }
 
-        // expand paths
-        let mut path_list: Vec<PathBuf> = vec!();
-        let index_path = match PathBuf::from_str(&self.index.index_path) {
-            Ok(v) => v,
-            Err(e) => bail!(e)
-        };
-        let exclusions = [index_path].to_vec();
-        for path in raw_path_list {
-            Self::expand_index_path(path, &mut path_list, &exclusions)?;
-        }
+    //     // open and validate source index files
+    //     let mut source_list = self.build_index_source_list(path_list)?;
 
-        // open and validate source index files
-        let mut source_list = self.build_index_source_list(path_list)?;
+    //     // iterate and join index files
+    //     let mut target_indexer = Indexer::new(input_path, index_path);
+    //     let index_file = OpenOptions::new()
+    //         .read(true)
+    //         .write(true)
+    //         .open(&self.index.index_path)?;
+    //     let mut index_reader = BufReader::new(&index_file);
+    //     let mut index_writer = BufWriter::new(&index_file);
+    //     let match_values = MatchFlag::as_array();
+    //     let total_sources = source_list.len() as f64;
+    //     for index in 0..self.index.index_header.indexed_count {
+    //         // initialize matches hash
+    //         let mut matches: HashMap<u8, f64> = HashMap::new();
+    //         for k in match_values {
+    //             matches.insert(k.into(), 0f64);
+    //         }
 
-        // iterate and join index files
-        let mut target_indexer = Indexer::new(input_path, index_path);
-        let index_file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&self.index.index_path)?;
-        let mut index_reader = BufReader::new(&index_file);
-        let mut index_writer = BufWriter::new(&index_file);
-        let match_values = MatchFlag::as_array();
-        let total_sources = source_list.len() as f64;
-        for index in 0..self.index.index_header.indexed_count {
-            // initialize matches hash
-            let mut matches: HashMap<u8, f64> = HashMap::new();
-            for k in match_values {
-                matches.insert(k.into(), 0f64);
-            }
+    //         // get base index value
+    //         let mut index_value = match indexer.record((&mut index_reader, true, index)? {
+    //             Some(v) => v,
+    //             None => bail!(ParseError::Other(format!(
+    //                 "couldn't retrieve index record on index {} from base index file",
+    //                 index
+    //             )))
+    //         };
 
-            // get base index value
-            let mut index_value = match indexer.record((&mut index_reader, true, index)? {
-                Some(v) => v,
-                None => bail!(ParseError::Other(format!(
-                    "couldn't retrieve index record on index {} from base index file",
-                    index
-                )))
-            };
+    //         // iterate source index files and count match flag values
+    //         for reader in source_list.iter_mut() {
+    //             // get and validate source index value
+    //             let value = match Indexer::value_from_file(reader, true, index)? {
+    //                 Some(v) => v,
+    //                 None => bail!(ParseError::Other(format!(
+    //                     "couldn't retrieve index record on index {}",
+    //                     index
+    //                 )))
+    //             };
+    //             if index_value.input_start_pos != value.input_start_pos || index_value.input_end_pos != value.input_end_pos {
+    //                 bail!(ParseError::Other("Source index value doesn't match base value".to_string()));
+    //             }
 
-            // iterate source index files and count match flag values
-            for reader in source_list.iter_mut() {
-                // get and validate source index value
-                let value = match Indexer::value_from_file(reader, true, index)? {
-                    Some(v) => v,
-                    None => bail!(ParseError::Other(format!(
-                        "couldn't retrieve index record on index {}",
-                        index
-                    )))
-                };
-                if index_value.input_start_pos != value.input_start_pos || index_value.input_end_pos != value.input_end_pos {
-                    bail!(ParseError::Other("Source index value doesn't match base value".to_string()));
-                }
+    //             // record match flag counter
+    //             let count = match matches.get_mut(&value.match_flag.into()) {
+    //                 Some(v) => v,
+    //                 None => bail!(ParseError::InvalidValue)
+    //             };
+    //             *count += 1f64;
+    //         }
 
-                // record match flag counter
-                let count = match matches.get_mut(&value.match_flag.into()) {
-                    Some(v) => v,
-                    None => bail!(ParseError::InvalidValue)
-                };
-                *count += 1f64;
-            }
+    //         // calculate match_flag value
+    //         let mut match_flag = MatchFlag::None;
+    //         for k in match_values {
+    //             if *matches.get(&k.into()).unwrap() / total_sources > 0.5 {
+    //                 match_flag = k;
+    //                 break;
+    //             }
+    //         }
+    //         if match_flag == MatchFlag::Skip {
+    //             match_flag = MatchFlag::None
+    //         }
+    //         index_value.match_flag = match_flag;
 
-            // calculate match_flag value
-            let mut match_flag = MatchFlag::None;
-            for k in match_values {
-                if *matches.get(&k.into()).unwrap() / total_sources > 0.5 {
-                    match_flag = k;
-                    break;
-                }
-            }
-            if match_flag == MatchFlag::Skip {
-                match_flag = MatchFlag::None
-            }
-            index_value.match_flag = match_flag;
+    //         // record index and output values
+    //         Self::write_output(
+    //             &mut output_writer,
+    //             &index_value,
+    //             match_flag,
+    //             0,
+    //             ""
+    //         )?;
+    //         Indexer::update_index_file_value(
+    //             &mut index_writer,
+    //             index,
+    //             &index_value
+    //         )?;
+    //     }
 
-            // record index and output values
-            Self::write_output(
-                &mut output_writer,
-                &index_value,
-                match_flag,
-                0,
-                ""
-            )?;
-            Indexer::update_index_file_value(
-                &mut index_writer,
-                index,
-                &index_value
-            )?;
-        }
-
-        Ok(())
-    }
+    //     Ok(())
+    // }
 }
 
 /// Get a file size.
@@ -401,9 +402,10 @@ impl Engine {
 /// 
 /// * `path` - File path.
 /// * `create` - If `true` then file will be created if not exists.
-pub fn file_size(path: &str) -> std::io::Result<u64> {
-    if !std::path::Path::new(path).exists() {
-        return Ok(0);
+pub fn file_size(path: &PathBuf) -> Result<u64> {
+    let path = path.as_path();
+    if !path.is_file() {
+        bail!("\"{}\" is not a file", path.to_string_lossy());
     }
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
@@ -411,78 +413,12 @@ pub fn file_size(path: &str) -> std::io::Result<u64> {
     Ok(reader.stream_position()?)
 }
 
-// /// Fill a file with zero byte until the target size or ignore if
-// /// bigger. Return true if file is bigger.
-// /// 
-// /// # Arguments
-// /// 
-// /// * `path` - File path to fill.
-// /// * `target_size` - Target file size in bytes.
-// /// * `truncate` - If `true` then it truncates de file and fill it.
-// pub fn fill_file(path: &str, target_size: u64, truncate: bool) -> std::io::Result<FillAction> {
-//     let mut action = FillAction::Fill;
-//     let file = if truncate {
-//         OpenOptions::new()
-//             .create(true)
-//             .truncate(true)
-//             .write(true)
-//             .open(path)?
-//     } else {
-//         OpenOptions::new()
-//             .create(true)
-//             .append(true)
-//             .write(true)
-//             .open(path)?
-//     };
-
-//     // get file size
-//     file.sync_all()?;
-//     let mut size = file.metadata()?.len();
-
-//     // change default action to created when new file
-//     if size < 1 {
-//         action = FillAction::Created;
-//     }
-
-//     // validate file current size vs target size
-//     if truncate {
-//         action = FillAction::Truncated;
-//     } else {
-//         if target_size < size {
-//             // file is bigger, return true
-//             return Ok(FillAction::Bigger);
-//         }
-//         if target_size == size {
-//             return Ok(FillAction::Skip);
-//         }
-//     }
-
-//     // fill file with zeros until target size is match
-//     let buf_size = 4096u64;
-//     let buf = [0u8; 4096];
-//     let mut wrt = BufWriter::new(file);
-//     while size + buf_size < target_size {
-//         wrt.write_all(&buf)?;
-//         size += buf_size;
-//         wrt.flush()?;
-//     }
-//     let remaining = (target_size - size) as usize;
-//     if remaining > 0 {
-//         wrt.write_all(&buf[..remaining])?;
-//     }
-//     wrt.flush()?;
-
-//     Ok(action)
-// }
-
 /// Generates a hash value from a file contents.
 /// 
 /// # Arguments
 /// 
 /// * `path` - File path.
-pub fn generate_hash(path: &str) -> std::io::Result<[u8; HASH_SIZE]> {
-    let file = File::open(path)?;
-    let mut reader = BufReader::new(file);
+pub fn generate_hash(reader: &mut impl Read) -> std::io::Result<[u8; HASH_SIZE]> {
     let mut hasher = Sha3_256::new();
 
     loop {
@@ -515,15 +451,15 @@ mod tests {
         with_tmpdir(&|dir: &TempDir| -> Result<()> {
             // test one
             let path = dir.path().join("my_file_a");
-            let path_str = path.to_str().unwrap().to_string();
-            create_file_with_bytes(&path_str, &[0u8; 34])?;
-            assert_eq!(34, file_size(&path_str)?);
+            create_file_with_bytes(&path, &[0u8; 34])?;
+            assert_eq!(34, file_size(&path)?);
+            drop(path);
 
             // test two
             let path = dir.path().join("my_file_b");
-            let path_str = path.to_str().unwrap().to_string();
-            create_file_with_bytes(&path_str, &[0u8; 24])?;
-            assert_eq!(24, file_size(&path_str)?);
+            create_file_with_bytes(&path, &[0u8; 24])?;
+            assert_eq!(24, file_size(&path)?);
+            drop(path);
 
             Ok(())
         });
@@ -533,11 +469,12 @@ mod tests {
     fn file_size_without_file() {
         with_tmpdir(&|dir: &TempDir| -> Result<()> {
             let path = dir.path().join("my_file_non_exists");
-            let path_str = path.to_str().unwrap().to_string();
-            assert_eq!(0, file_size(&path_str)?);
+            let expected = format!("\"{}\" is not a file", path.to_string_lossy());
             assert_eq!(false, path.exists());
-            drop(path);
-
+            match file_size(&path) {
+                Ok(v) => assert!(false, "expected an error but got {:?}", v),
+                Err(e) => assert_eq!(expected, e.to_string())
+            }
             Ok(())
         });
     }
@@ -546,170 +483,19 @@ mod tests {
     fn gen_hash() {
         with_tmpdir(&|dir: &TempDir| -> Result<()> {
             let path = dir.path().join("my_file");
-            let path_str = path.to_str().unwrap().to_string();
             let buf: &[u8] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-            create_file_with_bytes(&path_str, buf)?;
+            create_file_with_bytes(&path, buf)?;
             
             let expected: &[u8] = &[12, 213, 40, 91, 168, 82, 79, 228, 42, 200,
               240, 7, 109, 233, 19, 93, 5, 97, 50, 169, 153, 98, 19, 174, 28,
               15, 20, 32, 201, 8, 65, 139];
-            let value = generate_hash(&path_str)?;
+            let file = File::open(&path)?;
+            let mut reader = BufReader::new(file);
+            let value = generate_hash(&mut reader)?;
             assert_eq!(HASH_SIZE, value.len());
             assert_eq!(expected, value);
             
             Ok(())
         });
     }
-
-//     #[test]
-//     fn fill_file_non_exists() {
-//         with_tmpdir(&|dir: &TempDir| -> Result<()> {
-//             let path = dir.path().join("my_file");
-//             let path_str = path.to_str().unwrap().to_string();
-            
-//             // fill file
-//             match fill_file(&path_str, 20, false) {
-//                 Ok(action) => assert_eq!(FillAction::Created, action),
-//                 Err(e) => bail!(e)
-//             }
-
-//             // read file after fill
-//             let file = File::open(&path_str)?;
-//             let mut reader = BufReader::new(file);
-//             let mut buf: Vec<u8> = vec!();
-//             reader.read_to_end(&mut buf)?;
-
-//             // compare
-//             let expected = [0u8; 20].to_vec();
-//             assert_eq!(expected, buf);
-
-//             // drop file
-//             drop(path);
-//             Ok(())
-//         });
-//     }
-
-//     #[test]
-//     fn fill_file_smaller() {
-//         with_tmpdir(&|dir: &TempDir| -> Result<()> {
-//             // create test file
-//             let path = dir.path().join("my_file");
-//             let path_str = path.to_str().unwrap().to_string();
-//             let buf: [u8; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-//             create_file_with_bytes(&path_str, &buf)?;
-
-//             // fill file
-//             match fill_file(&path_str, 15, false) {
-//                 Ok(action) => assert_eq!(FillAction::Fill, action),
-//                 Err(e) => bail!(e)
-//             }
-
-//             // read file after fill
-//             let file = File::open(&path_str)?;
-//             let mut reader = BufReader::new(file);
-//             let mut buf: Vec<u8> = vec!();
-//             reader.read_to_end(&mut buf)?;
-
-//             // compare
-//             let expected = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 0, 0, 0, 0].to_vec();
-//             assert_eq!(expected, buf);
-
-//             // drop test file
-//             drop(path);
-//             Ok(())
-//         });
-//     }
-
-//     #[test]
-//     fn fill_file_bigger() {
-//         with_tmpdir(&|dir: &TempDir| -> Result<()> {
-//             // create test file
-//             let path = dir.path().join("my_file");
-//             let path_str = path.to_str().unwrap().to_string();
-//             let buf: [u8; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-//             create_file_with_bytes(&path_str, &buf)?;
-
-//             // fill file
-//             match fill_file(&path_str, 10, false) {
-//                 Ok(action) => assert_eq!(FillAction::Bigger, action),
-//                 Err(e) => bail!(e)
-//             }
-
-//             // read file afer fill
-//             let file = File::open(&path_str)?;
-//             let mut reader = BufReader::new(file);
-//             let mut buf: Vec<u8> = vec!();
-//             reader.read_to_end(&mut buf)?;
-
-//             // compare
-//             let expected = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].to_vec();
-//             assert_eq!(expected, buf);
-
-//             // drop test file
-//             drop(path);
-//             Ok(())
-//         });
-//     }
-
-//     #[test]
-//     fn fill_file_equal() {
-//         with_tmpdir(&|dir: &TempDir| -> Result<()> {
-//             // create test file
-//             let path = dir.path().join("my_file");
-//             let path_str = path.to_str().unwrap().to_string();
-//             let buf: [u8; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-//             create_file_with_bytes(&path_str, &buf)?;
-
-//             // fill file
-//             match fill_file(&path_str, 15, false) {
-//                 Ok(action) => assert_eq!(FillAction::Skip, action),
-//                 Err(e) => bail!(e)
-//             }
-
-//             // read file after fill
-//             let file = File::open(&path_str)?;
-//             let mut reader = BufReader::new(file);
-//             let mut buf: Vec<u8> = vec!();
-//             reader.read_to_end(&mut buf)?;
-
-//             // compare
-//             let expected = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].to_vec();
-//             assert_eq!(expected, buf);
-
-//             // drop test file
-//             drop(path);
-//             Ok(())
-//         });
-//     }
-
-//     #[test]
-//     fn fill_file_truncate() {
-//         with_tmpdir(&|dir: &TempDir| -> Result<()> {
-//             // create test file
-//             let path = dir.path().join("my_file");
-//             let path_str = path.to_str().unwrap().to_string();
-//             let buf: [u8; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-//             create_file_with_bytes(&path_str, &buf)?;
-
-//             // fill file
-//             match fill_file(&path_str, 10, true) {
-//                 Ok(action) => assert_eq!(FillAction::Truncated, action),
-//                 Err(e) => bail!(e)
-//             }
-
-//             // read file after fill
-//             let file = File::open(&path_str)?;
-//             let mut reader = BufReader::new(file);
-//             let mut buf: Vec<u8> = vec!();
-//             reader.read_to_end(&mut buf)?;
-
-//             // compare
-//             let expected = [0u8; 10].to_vec();
-//             assert_eq!(expected, buf);
-
-//             // drop test file
-//             drop(path);
-//             Ok(())
-//         });
-//     }
 }

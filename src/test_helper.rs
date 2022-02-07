@@ -1,6 +1,7 @@
 use tempfile::{TempDir, tempdir};
 use std::fs::{OpenOptions};
 use std::io::{Write, BufWriter, Error, ErrorKind};
+use std::path::PathBuf;
 use anyhow::{Result, bail};
 
 /// Create a file with the buffer as content.
@@ -9,7 +10,7 @@ use anyhow::{Result, bail};
 /// 
 /// * `path` - File path.
 /// * `buf` - File content.
-pub fn create_file_with_bytes(path: &str, buf: &[u8]) -> Result<()> {
+pub fn create_file_with_bytes(path: &PathBuf, buf: &[u8]) -> Result<()> {
     let file = OpenOptions::new()
         .write(true)
         .create(true)

@@ -17,6 +17,63 @@ pub const HASH_SIZE: usize = 32;
 /// Signed hash value size.
 pub const HASH_U_SIZE: usize = HASH_SIZE + 1;
 
+/// Input supported file types.
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum InputType {
+    Unknown,
+    CSV,
+    JSON
+}
+
+impl TryFrom<u8> for InputType {
+    type Error = ParseError;
+
+    fn try_from(v: u8) -> std::result::Result<Self, Self::Error> {
+        let match_flag = match v {
+            0 => Self::Unknown,
+            1 => Self::CSV,
+            2 => Self::JSON,
+            _ => return Err(ParseError::InvalidFormat)
+        };
+
+        Ok(match_flag)
+    }
+}
+
+impl From<&InputType> for u8 {
+    fn from(v: &InputType) -> Self {
+        match v {
+            InputType::Unknown => 0,
+            InputType::CSV => 1,
+            InputType::JSON => 2
+        }
+    }
+}
+
+impl From<InputType> for u8 {
+    fn from(v: InputType) -> Self {
+        (&v).into()
+    }
+}
+
+impl ByteSized for InputType {
+    const BYTES: usize = 1;
+}
+
+impl WriteAsBytes for InputType {
+    fn write_as_bytes(&self, buf: &mut [u8]) -> Result<()> {
+        // validate value size
+        if buf.len() != Self::BYTES {
+            bail!(ParseError::InvalidSize);
+        }
+
+        // save value as bytes
+        buf.copy_from_slice(&[self.into()]);
+
+        Ok(())
+    }
+}
+
 //// Describes an Indexer file header.
 #[derive(Debug, PartialEq)]
 pub struct Header {
@@ -27,7 +84,10 @@ pub struct Header {
     pub hash: Option<[u8; HASH_SIZE]>,
 
     /// Indexed records count.
-    pub indexed_count: u64
+    pub indexed_count: u64,
+
+    /// input file type
+    pub input_type: InputType
 }
 
 impl Header {
@@ -36,7 +96,8 @@ impl Header {
         Self{
             indexed: false,
             hash: None,
-            indexed_count: 0
+            indexed_count: 0,
+            input_type: InputType::Unknown
         }
     }
 
@@ -77,6 +138,10 @@ impl Header {
         self.indexed_count.write_as_bytes(&mut buf[carry..carry+u64::BYTES]).unwrap();
         carry += u64::BYTES;
 
+        // save input type
+        buf[carry] = self.input_type.into();
+        carry += InputType::BYTES;
+
         // save hash flag and value
         if let Some(hash_bytes) = self.hash {
             buf[carry] = 1;
@@ -92,8 +157,8 @@ impl ByteSized for Header {
     /// Index header size in bytes.
     /// 
     /// Byte Format
-    /// `<magic_number:11><version:4><indexed:1><indexed_count:8><hash_valid:1><hash:32>`.
-    const BYTES: usize = 46 + MAGIC_NUMBER_SIZE;
+    /// `<magic_number:11><version:4><indexed:1><indexed_count:8><input_type:1><hash_valid:1><hash:32>`.
+    const BYTES: usize = 47 + MAGIC_NUMBER_SIZE;
 }
 
 impl LoadFrom for Header {
@@ -103,26 +168,30 @@ impl LoadFrom for Header {
         let mut buf = [0u8; Self::BYTES];
         reader.read_exact(&mut buf)?;
 
-        // extract and validate magic number
+        // read and validate magic number
         if buf[carry..carry+MAGIC_NUMBER_SIZE] != MAGIC_NUMBER_BYTES {
             bail!("invalid file magic number");
         }
         carry += MAGIC_NUMBER_SIZE;
 
-        // extract and validate indexer version
+        // read and validate indexer version
         let version = u32::from_byte_slice(&buf[carry..carry+u32::BYTES])?;
         if version != VERSION {
             bail!("indexer version mismatch, expected {} buf found {}", VERSION, version);
         }
         carry += u32::BYTES;
 
-        // extract indexed
+        // read indexed
         let indexed = bool::from_byte_slice(&buf[carry..carry+1])?;
         carry += bool::BYTES;
 
-        // extract indexed record count
+        // read indexed record count
         let indexed_count = u64::from_byte_slice(&buf[carry..carry+u64::BYTES])?;
         carry += u64::BYTES;
+
+        // read input type
+        let input_type = buf[carry].try_into()?;
+        carry += InputType::BYTES;
 
         // extract hash
         let hash = if buf[carry] > 0 {
@@ -134,8 +203,9 @@ impl LoadFrom for Header {
 
         // save values
         self.indexed = indexed;
-        self.hash = hash;
         self.indexed_count = indexed_count;
+        self.hash = hash;
+        self.input_type = input_type;
 
         Ok(())
     }
@@ -200,7 +270,7 @@ pub mod test_helper {
     /// * `hash_buf` - Hash byte slice.
     /// * `indexed` - `true` if indexed flag should be true.
     /// * `indexed_count` - Total indexed records.
-    pub fn build_header_bytes(hash_valid: bool, hash_buf: &[u8], indexed: bool, indexed_count: u64) -> [u8; Header::BYTES] {
+    pub fn build_header_bytes(hash_valid: bool, hash_buf: &[u8], indexed: bool, indexed_count: u64, input_type: InputType) -> [u8; Header::BYTES] {
         let mut hash = None;
         if hash_valid {
             if hash_buf.len() != HASH_SIZE {
@@ -213,7 +283,8 @@ pub mod test_helper {
         Header{
             indexed,
             indexed_count,
-            hash
+            hash,
+            input_type
         }.as_bytes()
     }
 
@@ -222,298 +293,364 @@ pub mod test_helper {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use test_helper::*;
 
-    #[test]
-    fn new() {
-        assert_eq!(
-            Header{
+    mod input_type {
+        use super::*;
+
+        #[test]
+        fn try_from_u8() {
+            match InputType::try_from(0u8) {
+                Ok(v) => assert_eq!(InputType::Unknown, v),
+                Err(_) => assert!(false, "should be Ok(InputType::Unknown)")
+            }
+            match InputType::try_from(1u8) {
+                Ok(v) => assert_eq!(InputType::CSV, v),
+                Err(_) => assert!(false, "should be Ok(InputType::CSV)")
+            }
+            match InputType::try_from(2u8) {
+                Ok(v) => assert_eq!(InputType::JSON, v),
+                Err(_) => assert!(false, "should be Ok(InputType::JSON)")
+            }
+            match InputType::try_from(3u8) {
+                Ok(_) => assert!(false, "should be an Err(ParseError::InvalidFormat)"),
+                Err(e) => assert!(
+                    if let ParseError::InvalidFormat = e { true } else { false },
+                    "should be an Err(ParseError::InvalidFormat)"
+                )
+            }
+        }
+
+        #[test]
+        fn into_u8() {
+            assert_eq!(0u8, u8::from(InputType::Unknown));
+            assert_eq!(1u8, u8::from(InputType::CSV));
+            assert_eq!(2u8, u8::from(InputType::JSON));
+
+            assert_eq!(0u8, u8::from(&InputType::Unknown));
+            assert_eq!(1u8, u8::from(&InputType::CSV));
+            assert_eq!(2u8, u8::from(&InputType::JSON));
+        }
+    }
+
+    mod header {
+        use super::*;
+        use test_helper::*;
+
+        #[test]
+        fn new() {
+            assert_eq!(
+                Header{
+                    indexed: false,
+                    hash: None,
+                    indexed_count: 0,
+                    input_type: InputType::Unknown
+                },
+                Header::new()
+            );
+        }
+
+        #[test]
+        fn clone_hash() {
+            // first try
+            let expected = random_hash();
+            match Header::clone_hash(&expected) {
+                Ok(v) => assert_eq!(expected, v),
+                Err(_) => assert!(false, "clone_hash error out")
+            }
+
+            // second try
+            let expected = random_hash();
+            match Header::clone_hash(&expected) {
+                Ok(v) => assert_eq!(expected, v),
+                Err(_) => assert!(false, "clone_hash error out")
+            }
+        }
+
+        #[test]
+        fn as_bytes() {
+            // first test
+            let mut expected = [
+                // magic number
+                100, 97, 116, 97, 104, 101, 110, 95, 105, 100, 120,
+                // version
+                0, 0, 0, 2,
+                // indexed
+                1,
+                // indexed count = 2311457452320998633
+                32, 19, 242, 78, 103, 5, 196, 233,
+                // input type
+                1,
+                // valid hash
+                1,
+                // hash value placeholder
+                0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+            ];
+            let hash_buf = &mut expected[26..26+HASH_SIZE];
+            let random_hash_buf = random_hash();
+            if hash_buf.len() != HASH_SIZE {
+                panic!("invalid hash size, check test \"indexer::header::as_bytes\"");
+            }
+            hash_buf.copy_from_slice(&random_hash_buf);
+
+            // test header as_bytes function
+            let header = Header{
+                indexed: true,
+                indexed_count: 2311457452320998633,
+                hash: Some(random_hash_buf),
+                input_type: InputType::CSV
+            };
+            assert_eq!(expected, header.as_bytes());
+
+            // second test
+            let expected = [
+                // magic number
+                100, 97, 116, 97, 104, 101, 110, 95, 105, 100, 120,
+                // version
+                0, 0, 0, 2,
+                // indexed
+                0,
+                // indexed count = 4525325654675485867
+                62, 205, 47, 180, 235, 228, 244, 171,
+                // input type
+                2,
+                // valid hash
+                0,
+                // empty hash value
+                0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+            ];
+
+            // test header as_bytes function
+            let header = Header{
+                indexed: false,
+                indexed_count: 4525325654675485867,
+                hash: None,
+                input_type: InputType::JSON,
+            };
+            assert_eq!(expected, header.as_bytes());
+        }
+
+        #[test]
+        fn byte_sized() {
+            assert_eq!(58, Header::BYTES);
+        }
+
+        #[test]
+        fn load_from_u8_slice() {
+            // first random try
+            let mut header = Header{
                 indexed: false,
                 hash: None,
-                indexed_count: 0
-            },
-            Header::new()
-        );
-    }
-
-    #[test]
-    fn clone_hash() {
-        // first try
-        let expected = random_hash();
-        match Header::clone_hash(&expected) {
-            Ok(v) => assert_eq!(expected, v),
-            Err(_) => assert!(false, "clone_hash error out")
-        }
-
-        // second try
-        let expected = random_hash();
-        match Header::clone_hash(&expected) {
-            Ok(v) => assert_eq!(expected, v),
-            Err(_) => assert!(false, "clone_hash error out")
-        }
-    }
-
-    #[test]
-    fn as_bytes() {
-        // first test
-        let mut expected = [
-            // magic number
-            100, 97, 116, 97, 104, 101, 110, 95, 105, 100, 120,
-            // version
-            0, 0, 0, 2,
-            // indexed
-            1,
-            // indexed count = 2311457452320998633
-            32, 19, 242, 78, 103, 5, 196, 233,
-            // valid hash
-            1,
-            // hash value placeholder
-            0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        ];
-        let hash_buf = &mut expected[25..25+HASH_SIZE];
-        let random_hash_buf = random_hash();
-        if hash_buf.len() != HASH_SIZE {
-            panic!("invalid hash size, check test \"indexer::header::as_bytes\"");
-        }
-        hash_buf.copy_from_slice(&random_hash_buf);
-
-        // test header as_bytes function
-        let header = Header{
-            indexed: true,
-            indexed_count: 2311457452320998633,
-            hash: Some(random_hash_buf)
-        };
-        assert_eq!(expected, header.as_bytes());
-
-        // second test
-        let expected = [
-            // magic number
-            100, 97, 116, 97, 104, 101, 110, 95, 105, 100, 120,
-            // version
-            0, 0, 0, 2,
-            // indexed
-            0,
-            // indexed count = 4525325654675485867
-            62, 205, 47, 180, 235, 228, 244, 171,
-            // valid hash
-            0,
-            // empty hash value
-            0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
-        ];
-
-        // test header as_bytes function
-        let header = Header{
-            indexed: false,
-            indexed_count: 4525325654675485867,
-            hash: None
-        };
-        assert_eq!(expected, header.as_bytes());
-    }
-
-    #[test]
-    fn byte_sized() {
-        assert_eq!(57, Header::BYTES);
-    }
-
-    #[test]
-    fn load_from_u8_slice() {
-        let mut header = Header{
-            indexed: false,
-            hash: None,
-            indexed_count: 0
-        };
-
-        // first random try
-        let hash = random_hash();
-        let expected = Header{
-            indexed: true,
-            hash: Some(hash),
-            indexed_count: 4535435
-        };
-        let buf = build_header_bytes(true, &hash, true, 4535435);
-        let mut reader = &buf as &[u8];
-        if let Err(e) = header.load_from(&mut reader) {
-            assert!(false, "shouldn't error out but got error: {:?}", e);
-            return;
-        };
-        assert_eq!(expected, header);
-
-        // second random try
-        let expected = Header{
-            indexed: false,
-            hash: None,
-            indexed_count: 6572646535124
-        };
-        let buf = build_header_bytes(false, &[], false, 6572646535124);
-        let mut reader = &buf as &[u8];
-        if let Err(e) = header.load_from(&mut reader) {
-            assert!(false, "shouldn't error out but got error: {:?}", e);
-            return;
-        };
-        assert_eq!(expected, header);
-    }
-
-    #[test]
-    fn load_from_u8_slice_with_invalid_smaller_buf_size() {
-        let mut header = Header{
-            indexed: false,
-            hash: None,
-            indexed_count: 0
-        };
-
-        let expected = std::io::ErrorKind::UnexpectedEof;
-        let buf = [0u8; Header::BYTES-1];
-        let mut reader = &buf as &[u8];
-        match header.load_from(&mut reader) {
-            Ok(v) => assert!(false, "expected IO error with ErrorKind::UnexpectedEof but got {:x?}", v),
-            Err(e) => match e.downcast::<std::io::Error>() {
-                Ok(ex) => assert_eq!(expected, ex.kind()),
-                Err(ex) => assert!(false, "expected IO error with ErrorKind::UnexpectedEof but got error: {:?}", ex)
-            }
-        }
-    }
-
-    #[test]
-    fn from_byte_slice() {
-        // first random try
-        let hash = random_hash();
-        let expected = Header{
-            indexed: true,
-            hash: Some(hash),
-            indexed_count: 2341234
-        };
-        let buf = build_header_bytes(true, &hash, true, 2341234);
-        let value = match Header::from_byte_slice(&buf) {
-            Ok(v) => v,
-            Err(e) => {
+                indexed_count: 0,
+                input_type: InputType::Unknown
+            };
+            let hash = random_hash();
+            let expected = Header{
+                indexed: true,
+                hash: Some(hash),
+                indexed_count: 4535435,
+                input_type: InputType::JSON
+            };
+            let buf = build_header_bytes(true, &hash, true, 4535435, InputType::JSON);
+            let mut reader = &buf as &[u8];
+            if let Err(e) = header.load_from(&mut reader) {
                 assert!(false, "shouldn't error out but got error: {:?}", e);
                 return;
-            }
-        };
-        assert_eq!(expected, value);
+            };
+            assert_eq!(expected, header);
 
-        // second random try
-        let expected = Header{
-            indexed: false,
-            hash: None,
-            indexed_count: 9879873495743
-        };
-        let buf = build_header_bytes(false, &[], false, 9879873495743);
-        let value = match Header::from_byte_slice(&buf) {
-            Ok(v) => v,
-            Err(e) => {
+            // second random try
+            let mut header = Header{
+                indexed: false,
+                hash: None,
+                indexed_count: 0,
+                input_type: InputType::Unknown
+            };
+            let expected = Header{
+                indexed: false,
+                hash: None,
+                indexed_count: 6572646535124,
+                input_type: InputType::JSON
+            };
+            let buf = build_header_bytes(false, &[], false, 6572646535124, InputType::JSON);
+            let mut reader = &buf as &[u8];
+            if let Err(e) = header.load_from(&mut reader) {
                 assert!(false, "shouldn't error out but got error: {:?}", e);
                 return;
-            }
-        };
-        assert_eq!(expected, value);
-    }
+            };
+            assert_eq!(expected, header);
+        }
 
-    #[test]
-    fn read_from_reader() {
-        // first random try
-        let hash = random_hash();
-        let expected = Header{
-            indexed: false,
-            hash: Some(hash),
-            indexed_count: 974734838473874
-        };
-        let buf = build_header_bytes(true, &hash, false, 974734838473874);
-        let mut reader = &buf as &[u8];
-        let value = match Header::read_from(&mut reader) {
-            Ok(v) => v,
-            Err(e) => {
-                assert!(false, "shouldn't error out but got error: {:?}", e);
+        #[test]
+        fn load_from_u8_slice_with_invalid_smaller_buf_size() {
+            let mut header = Header{
+                indexed: false,
+                hash: None,
+                indexed_count: 0,
+                input_type: InputType::Unknown
+            };
+
+            let expected = std::io::ErrorKind::UnexpectedEof;
+            let buf = [0u8; Header::BYTES-1];
+            let mut reader = &buf as &[u8];
+            match header.load_from(&mut reader) {
+                Ok(v) => assert!(false, "expected IO error with ErrorKind::UnexpectedEof but got {:x?}", v),
+                Err(e) => match e.downcast::<std::io::Error>() {
+                    Ok(ex) => assert_eq!(expected, ex.kind()),
+                    Err(ex) => assert!(false, "expected IO error with ErrorKind::UnexpectedEof but got error: {:?}", ex)
+                }
+            }
+        }
+
+        #[test]
+        fn from_byte_slice() {
+            // first random try
+            let hash = random_hash();
+            let expected = Header{
+                indexed: true,
+                hash: Some(hash),
+                indexed_count: 2341234,
+                input_type: InputType::CSV
+            };
+            let buf = build_header_bytes(true, &hash, true, 2341234, InputType::CSV);
+            let value = match Header::from_byte_slice(&buf) {
+                Ok(v) => v,
+                Err(e) => {
+                    assert!(false, "shouldn't error out but got error: {:?}", e);
+                    return;
+                }
+            };
+            assert_eq!(expected, value);
+
+            // second random try
+            let expected = Header{
+                indexed: false,
+                hash: None,
+                indexed_count: 9879873495743,
+                input_type: InputType::Unknown
+            };
+            let buf = build_header_bytes(false, &[], false, 9879873495743, InputType::Unknown);
+            let value = match Header::from_byte_slice(&buf) {
+                Ok(v) => v,
+                Err(e) => {
+                    assert!(false, "shouldn't error out but got error: {:?}", e);
+                    return;
+                }
+            };
+            assert_eq!(expected, value);
+        }
+
+        #[test]
+        fn read_from_reader() {
+            // first random try
+            let hash = random_hash();
+            let expected = Header{
+                indexed: false,
+                hash: Some(hash),
+                indexed_count: 974734838473874,
+                input_type: InputType::CSV
+            };
+            let buf = build_header_bytes(true, &hash, false, 974734838473874, InputType::CSV);
+            let mut reader = &buf as &[u8];
+            let value = match Header::read_from(&mut reader) {
+                Ok(v) => v,
+                Err(e) => {
+                    assert!(false, "shouldn't error out but got error: {:?}", e);
+                    return;
+                }
+            };
+            assert_eq!(expected, value);
+
+            // second random try
+            let expected = Header{
+                indexed: true,
+                hash: None,
+                indexed_count: 3434232315645344,
+                input_type: InputType::JSON
+            };
+            let buf = build_header_bytes(false, &[], true, 3434232315645344, InputType::JSON);
+            let mut reader = &buf as &[u8];
+            let value = match Header::read_from(&mut reader) {
+                Ok(v) => v,
+                Err(e) => {
+                    assert!(false, "shouldn't error out but got error: {:?}", e);
+                    return;
+                }
+            };
+            assert_eq!(expected, value);
+        }
+
+        #[test]
+        fn try_from_u8_slice() {
+            // first random try
+            let hash = random_hash();
+            let expected = Header{
+                indexed: false,
+                hash: Some(hash),
+                indexed_count: 32412342134234,
+                input_type: InputType::CSV
+            };
+            let buf = build_header_bytes(true, &hash, false, 32412342134234, InputType::CSV);
+            let value = match Header::try_from(&buf[..]) {
+                Ok(v) => v,
+                Err(_) => {
+                    assert!(false, "shouldn't error out");
+                    return;
+                }
+            };
+            assert_eq!(expected, value);
+
+            // second random try
+            let expected = Header{
+                indexed: true,
+                hash: None,
+                indexed_count: 56535423143214,
+                input_type: InputType::JSON
+            };
+            let buf = build_header_bytes(false, &[], true, 56535423143214, InputType::JSON);
+            let value = match Header::try_from(&buf[..]) {
+                Ok(v) => v,
+                Err(_) => {
+                    assert!(false, "shouldn't error out");
+                    return;
+                }
+            };
+            assert_eq!(expected, value);
+        }
+
+        #[test]
+        fn write_to_writer() {
+            // first random try
+            let hash = random_hash();
+            let expected = build_header_bytes(true, &hash, false, 788477630402843, InputType::CSV);
+            let header = Header{
+                indexed: false,
+                hash: Some(hash),
+                indexed_count: 788477630402843,
+                input_type: InputType::CSV
+            };
+            let mut buf = [0u8; Header::BYTES];
+            let mut writer = &mut buf as &mut [u8];
+            if let Err(e) = header.write_to(&mut writer) {
+                assert!(false, "{:?}", e);
                 return;
-            }
-        };
-        assert_eq!(expected, value);
+            };
+            assert_eq!(expected, buf);
 
-        // second random try
-        let expected = Header{
-            indexed: true,
-            hash: None,
-            indexed_count: 3434232315645344
-        };
-        let buf = build_header_bytes(false, &[], true, 3434232315645344);
-        let mut reader = &buf as &[u8];
-        let value = match Header::read_from(&mut reader) {
-            Ok(v) => v,
-            Err(e) => {
-                assert!(false, "shouldn't error out but got error: {:?}", e);
+            // second random try
+            let expected = build_header_bytes(false, &[], true, 63439320337562938, InputType::JSON);
+            let header = Header{
+                indexed: true,
+                hash: None,
+                indexed_count: 63439320337562938,
+                input_type: InputType::JSON
+            };
+            let mut buf = [0u8; Header::BYTES];
+            let mut writer = &mut buf as &mut [u8];
+            if let Err(e) = header.write_to(&mut writer) {
+                assert!(false, "{:?}", e);
                 return;
-            }
-        };
-        assert_eq!(expected, value);
-    }
-
-    #[test]
-    fn try_from_u8_slice() {
-        // first random try
-        let hash = random_hash();
-        let expected = Header{
-            indexed: false,
-            hash: Some(hash),
-            indexed_count: 32412342134234
-        };
-        let buf = build_header_bytes(true, &hash, false, 32412342134234);
-        let value = match Header::try_from(&buf[..]) {
-            Ok(v) => v,
-            Err(_) => {
-                assert!(false, "shouldn't error out");
-                return;
-            }
-        };
-        assert_eq!(expected, value);
-
-        // second random try
-        let expected = Header{
-            indexed: true,
-            hash: None,
-            indexed_count: 56535423143214
-        };
-        let buf = build_header_bytes(false, &[], true, 56535423143214);
-        let value = match Header::try_from(&buf[..]) {
-            Ok(v) => v,
-            Err(_) => {
-                assert!(false, "shouldn't error out");
-                return;
-            }
-        };
-        assert_eq!(expected, value);
-    }
-
-    #[test]
-    fn write_to_writer() {
-        // first random try
-        let hash = random_hash();
-        let expected = build_header_bytes(true, &hash, false, 788477630402843);
-        let header = Header{
-            indexed: false,
-            hash: Some(hash),
-            indexed_count: 788477630402843
-        };
-        let mut buf = [0u8; Header::BYTES];
-        let mut writer = &mut buf as &mut [u8];
-        if let Err(e) = header.write_to(&mut writer) {
-            assert!(false, "{:?}", e);
-            return;
-        };
-        assert_eq!(expected, buf);
-
-        // second random try
-        let expected = build_header_bytes(false, &[], true, 63439320337562938);
-        let header = Header{
-            indexed: true,
-            hash: None,
-            indexed_count: 63439320337562938
-        };
-        let mut buf = [0u8; Header::BYTES];
-        let mut writer = &mut buf as &mut [u8];
-        if let Err(e) = header.write_to(&mut writer) {
-            assert!(false, "{:?}", e);
-            return;
-        };
-        assert_eq!(expected, buf);
+            };
+            assert_eq!(expected, buf);
+        }
     }
 }

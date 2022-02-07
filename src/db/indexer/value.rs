@@ -35,10 +35,21 @@ impl MatchFlag {
     }
 }
 
+impl std::fmt::Display for MatchFlag {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "{}", match self {
+            Self::Yes => "Yes",
+            Self::No => "No",
+            Self::Skip => "Skip",
+            Self::None => ""
+        })
+    }
+}
+
 impl TryFrom<u8> for MatchFlag {
     type Error = ParseError;
 
-    fn try_from(v: u8) -> Result<Self, Self::Error> {
+    fn try_from(v: u8) -> std::result::Result<Self, Self::Error> {
         let match_flag = match v {
             b'Y' => Self::Yes,
             b'N' => Self::No,
@@ -239,304 +250,6 @@ pub mod test_helper {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use test_helper::*;
-
-    #[test]
-    fn new() {
-        assert_eq!(
-            Value{
-                input_start_pos: 0,
-                input_end_pos: 0,
-                spent_time: 0,
-                match_flag: MatchFlag::None
-            },
-            Value::new()
-        );
-    }
-
-    #[test]
-    fn as_bytes() {
-        // first test
-        let expected = [
-            // input start position
-            12, 32, 43, 12, 75, 32, 65, 32,
-            // input end position
-            21, 43, 72, 74, 14, 75, 93, 48,
-            // spent time
-            34, 62, 94, 37, 48, 54, 38, 59,
-            // match flag
-            b'Y'
-        ];
-        let value = Value{
-            input_start_pos: 873745659509883168,
-            input_end_pos: 1525392381699644720,
-            spent_time: 2467513159661266491,
-            match_flag: MatchFlag::Yes
-        };
-        assert_eq!(expected, value.as_bytes());
-
-        // second test
-        let expected = [
-            // input start position
-            45, 38, 63, 17, 74, 20, 101, 67,
-            // input end position
-            111, 27, 84, 87, 21, 54, 23, 95,
-            // spent time
-            26, 28, 94, 99, 20, 104, 24, 64,
-            // match flag
-            b'N'
-        ];
-
-        // test value as_bytes function
-        let value = Value{
-            input_start_pos: 3253357124311606595,
-            input_end_pos: 8006085495575943007,
-            spent_time: 1881482523971164224,
-            match_flag: MatchFlag::No
-        };
-        assert_eq!(expected, value.as_bytes());
-    }
-
-    #[test]
-    fn match_flag_byte_index() {
-        // test Yes
-        let mut value = Value::new();
-        value.match_flag = MatchFlag::Yes;
-        let buf = value.as_bytes();
-        assert_eq!(b'Y', buf[Value::MATCH_FLAG_BYTE_INDEX]);
-
-        // test No
-        let mut value = Value::new();
-        value.match_flag = MatchFlag::No;
-        let buf = value.as_bytes();
-        assert_eq!(b'N', buf[Value::MATCH_FLAG_BYTE_INDEX]);
-
-        // test Skip
-        let mut value = Value::new();
-        value.match_flag = MatchFlag::Skip;
-        let buf = value.as_bytes();
-        assert_eq!(b'S', buf[Value::MATCH_FLAG_BYTE_INDEX]);
-
-        // test None
-        let mut value = Value::new();
-        value.match_flag = MatchFlag::None;
-        let buf = value.as_bytes();
-        assert_eq!(0, buf[Value::MATCH_FLAG_BYTE_INDEX]);
-    }
-
-    #[test]
-    fn byte_sized() {
-        assert_eq!(25, Value::BYTES);
-    }
-
-    #[test]
-    fn load_from_u8_slice() {
-        let mut value = Value{
-            input_start_pos: 0,
-            input_end_pos: 0,
-            spent_time: 0,
-            match_flag: MatchFlag::None
-        };
-
-        // first random try
-        let expected = Value{
-            input_start_pos: 1400004,
-            input_end_pos: 2341234,
-            spent_time: 20777332,
-            match_flag: MatchFlag::Skip
-        };
-        let buf = build_value_bytes(1400004, 2341234, 20777332, b'S');
-        let mut reader = &buf as &[u8];
-        if let Err(e) = value.load_from(&mut reader) {
-            assert!(false, "shouldn't error out but got error: {:?}", e);
-            return;
-        };
-        assert_eq!(expected, value);
-
-        // second random try
-        let expected = Value{
-            input_start_pos: 445685221,
-            input_end_pos: 34656435243,
-            spent_time: 8427343298732,
-            match_flag: MatchFlag::None
-        };
-        let buf = build_value_bytes(445685221, 34656435243, 8427343298732, 0);
-        let mut reader = &buf as &[u8];
-        if let Err(e) = value.load_from(&mut reader) {
-            assert!(false, "shouldn't error out but got error: {:?}", e);
-            return;
-        };
-        assert_eq!(expected, value);
-    }
-
-    #[test]
-    fn load_from_u8_slice_with_invalid_smaller_buf_size() {
-        let mut value = Value{
-            input_start_pos: 0,
-            input_end_pos: 0,
-            spent_time: 0,
-            match_flag: MatchFlag::None
-        };
-
-        let expected = std::io::ErrorKind::UnexpectedEof;
-        let buf = [0u8; Value::BYTES-1];
-        let mut reader = &buf as &[u8];
-        match value.load_from(&mut reader) {
-            Ok(v) => assert!(false, "expected IO error with ErrorKind::UnexpectedEof but got {:x?}", v),
-            Err(e) => match e.downcast::<std::io::Error>() {
-                Ok(ex) => assert_eq!(expected, ex.kind()),
-                Err(ex) => assert!(false, "expected IO error with ErrorKind::UnexpectedEof but got error: {:?}", ex)
-            }
-        }
-    }
-
-    #[test]
-    fn from_byte_slice() {
-        // first random try
-        let expected = Value{
-            input_start_pos: 14321432,
-            input_end_pos: 456542532,
-            spent_time: 5463211,
-            match_flag: MatchFlag::No
-        };
-        let buf = build_value_bytes(14321432, 456542532, 5463211, b'N');
-        let value = match Value::from_byte_slice(&buf) {
-            Ok(v) => v,
-            Err(e) => {
-                assert!(false, "shouldn't error out but got error: {:?}", e);
-                return;
-            }
-        };
-        assert_eq!(expected, value);
-
-        // second random try
-        let expected = Value{
-            input_start_pos: 56745631532,
-            input_end_pos: 45245234,
-            spent_time: 11896524543541452385,
-            match_flag: MatchFlag::Yes
-        };
-        let buf = build_value_bytes(56745631532, 45245234, 11896524543541452385, b'Y');
-        let value = match Value::from_byte_slice(&buf) {
-            Ok(v) => v,
-            Err(e) => {
-                assert!(false, "shouldn't error out but got error: {:?}", e);
-                return;
-            }
-        };
-        assert_eq!(expected, value);
-    }
-
-    #[test]
-    fn read_from_reader() {
-        // first random try
-        let expected = Value{
-            input_start_pos: 14321432,
-            input_end_pos: 456542532,
-            spent_time: 5463211,
-            match_flag: MatchFlag::No
-        };
-        let buf = build_value_bytes(14321432, 456542532, 5463211, b'N');
-        let mut reader = &buf as &[u8];
-        let value = match Value::read_from(&mut reader) {
-            Ok(v) => v,
-            Err(e) => {
-                assert!(false, "shouldn't error out but got error: {:?}", e);
-                return;
-            }
-        };
-        assert_eq!(expected, value);
-
-        // second random try
-        let expected = Value{
-            input_start_pos: 56745631532,
-            input_end_pos: 45245234,
-            spent_time: 11896524543541452385,
-            match_flag: MatchFlag::Yes
-        };
-        let buf = build_value_bytes(56745631532, 45245234, 11896524543541452385, b'Y');
-        let mut reader = &buf as &[u8];
-        let value = match Value::from_byte_slice(&mut reader) {
-            Ok(v) => v,
-            Err(e) => {
-                assert!(false, "shouldn't error out but got error: {:?}", e);
-                return;
-            }
-        };
-        assert_eq!(expected, value);
-    }
-
-    #[test]
-    fn try_from_u8_slice() {
-        // first random try
-        let expected = Value{
-            input_start_pos: 14321432,
-            input_end_pos: 456542532,
-            spent_time: 5463211,
-            match_flag: MatchFlag::No
-        };
-        let buf = build_value_bytes(14321432, 456542532, 5463211, b'N');
-        let value = match Value::try_from(&buf[..]) {
-            Ok(v) => v,
-            Err(e) => {
-                assert!(false, "shouldn't error out but got error: {:?}", e);
-                return;
-            }
-        };
-        assert_eq!(expected, value);
-
-        // second random try
-        let expected = Value{
-            input_start_pos: 56745631532,
-            input_end_pos: 45245234,
-            spent_time: 11896524543541452385,
-            match_flag: MatchFlag::Yes
-        };
-        let buf = build_value_bytes(56745631532, 45245234, 11896524543541452385, b'Y');
-        let value = match Value::try_from(&buf[..]) {
-            Ok(v) => v,
-            Err(e) => {
-                assert!(false, "shouldn't error out but got error: {:?}", e);
-                return;
-            }
-        };
-        assert_eq!(expected, value);
-    }
-
-    #[test]
-    fn write_to_writer() {
-        // first random try
-        let expected = build_value_bytes(32464573645, 2343534543, 29034574985234, b'Y');
-        let value = &Value{
-            input_start_pos: 32464573645,
-            input_end_pos: 2343534543,
-            spent_time: 29034574985234,
-            match_flag: MatchFlag::Yes
-        };
-        let mut buf = [0u8; Value::BYTES];
-        let mut writer = &mut buf as &mut [u8];
-        if let Err(e) = value.write_to(&mut writer) {
-            assert!(false, "{:?}", e);
-            return;
-        };
-        assert_eq!(expected, buf);
-
-        // second random try
-        let expected = build_value_bytes(789865473674, 83454327, 98734951983457, b'N');
-        let value = &Value{
-            input_start_pos: 789865473674,
-            input_end_pos: 83454327,
-            spent_time: 98734951983457,
-            match_flag: MatchFlag::No
-        };
-        let mut buf = [0u8; Value::BYTES];
-        let mut writer = &mut buf as &mut [u8];
-        if let Err(e) = value.write_to(&mut writer) {
-            assert!(false, "{:?}", e);
-            return;
-        };
-        assert_eq!(expected, buf);
-    }
 
     mod match_flag {
         use super::*;
@@ -579,6 +292,316 @@ mod tests {
             assert_eq!(b'N', u8::from(&MatchFlag::No));
             assert_eq!(b'S', u8::from(&MatchFlag::Skip));
             assert_eq!(0u8, u8::from(&MatchFlag::None));
+        }
+
+        #[test]
+        fn display() {
+            assert_eq!("Yes", MatchFlag::Yes.to_string());
+            assert_eq!("No", MatchFlag::No.to_string());
+            assert_eq!("Skip", MatchFlag::Skip.to_string());
+            assert_eq!("", MatchFlag::None.to_string());
+        }
+    }
+
+    mod value {
+        use super::*;
+        use test_helper::*;
+
+        #[test]
+        fn new() {
+            assert_eq!(
+                Value{
+                    input_start_pos: 0,
+                    input_end_pos: 0,
+                    spent_time: 0,
+                    match_flag: MatchFlag::None
+                },
+                Value::new()
+            );
+        }
+
+        #[test]
+        fn as_bytes() {
+            // first test
+            let expected = [
+                // input start position
+                12, 32, 43, 12, 75, 32, 65, 32,
+                // input end position
+                21, 43, 72, 74, 14, 75, 93, 48,
+                // spent time
+                34, 62, 94, 37, 48, 54, 38, 59,
+                // match flag
+                b'Y'
+            ];
+            let value = Value{
+                input_start_pos: 873745659509883168,
+                input_end_pos: 1525392381699644720,
+                spent_time: 2467513159661266491,
+                match_flag: MatchFlag::Yes
+            };
+            assert_eq!(expected, value.as_bytes());
+
+            // second test
+            let expected = [
+                // input start position
+                45, 38, 63, 17, 74, 20, 101, 67,
+                // input end position
+                111, 27, 84, 87, 21, 54, 23, 95,
+                // spent time
+                26, 28, 94, 99, 20, 104, 24, 64,
+                // match flag
+                b'N'
+            ];
+
+            // test value as_bytes function
+            let value = Value{
+                input_start_pos: 3253357124311606595,
+                input_end_pos: 8006085495575943007,
+                spent_time: 1881482523971164224,
+                match_flag: MatchFlag::No
+            };
+            assert_eq!(expected, value.as_bytes());
+        }
+
+        #[test]
+        fn match_flag_byte_index() {
+            // test Yes
+            let mut value = Value::new();
+            value.match_flag = MatchFlag::Yes;
+            let buf = value.as_bytes();
+            assert_eq!(b'Y', buf[Value::MATCH_FLAG_BYTE_INDEX]);
+
+            // test No
+            let mut value = Value::new();
+            value.match_flag = MatchFlag::No;
+            let buf = value.as_bytes();
+            assert_eq!(b'N', buf[Value::MATCH_FLAG_BYTE_INDEX]);
+
+            // test Skip
+            let mut value = Value::new();
+            value.match_flag = MatchFlag::Skip;
+            let buf = value.as_bytes();
+            assert_eq!(b'S', buf[Value::MATCH_FLAG_BYTE_INDEX]);
+
+            // test None
+            let mut value = Value::new();
+            value.match_flag = MatchFlag::None;
+            let buf = value.as_bytes();
+            assert_eq!(0, buf[Value::MATCH_FLAG_BYTE_INDEX]);
+        }
+
+        #[test]
+        fn byte_sized() {
+            assert_eq!(25, Value::BYTES);
+        }
+
+        #[test]
+        fn load_from_u8_slice() {
+            let mut value = Value{
+                input_start_pos: 0,
+                input_end_pos: 0,
+                spent_time: 0,
+                match_flag: MatchFlag::None
+            };
+
+            // first random try
+            let expected = Value{
+                input_start_pos: 1400004,
+                input_end_pos: 2341234,
+                spent_time: 20777332,
+                match_flag: MatchFlag::Skip
+            };
+            let buf = build_value_bytes(1400004, 2341234, 20777332, b'S');
+            let mut reader = &buf as &[u8];
+            if let Err(e) = value.load_from(&mut reader) {
+                assert!(false, "shouldn't error out but got error: {:?}", e);
+                return;
+            };
+            assert_eq!(expected, value);
+
+            // second random try
+            let expected = Value{
+                input_start_pos: 445685221,
+                input_end_pos: 34656435243,
+                spent_time: 8427343298732,
+                match_flag: MatchFlag::None
+            };
+            let buf = build_value_bytes(445685221, 34656435243, 8427343298732, 0);
+            let mut reader = &buf as &[u8];
+            if let Err(e) = value.load_from(&mut reader) {
+                assert!(false, "shouldn't error out but got error: {:?}", e);
+                return;
+            };
+            assert_eq!(expected, value);
+        }
+
+        #[test]
+        fn load_from_u8_slice_with_invalid_smaller_buf_size() {
+            let mut value = Value{
+                input_start_pos: 0,
+                input_end_pos: 0,
+                spent_time: 0,
+                match_flag: MatchFlag::None
+            };
+
+            let expected = std::io::ErrorKind::UnexpectedEof;
+            let buf = [0u8; Value::BYTES-1];
+            let mut reader = &buf as &[u8];
+            match value.load_from(&mut reader) {
+                Ok(v) => assert!(false, "expected IO error with ErrorKind::UnexpectedEof but got {:x?}", v),
+                Err(e) => match e.downcast::<std::io::Error>() {
+                    Ok(ex) => assert_eq!(expected, ex.kind()),
+                    Err(ex) => assert!(false, "expected IO error with ErrorKind::UnexpectedEof but got error: {:?}", ex)
+                }
+            }
+        }
+
+        #[test]
+        fn from_byte_slice() {
+            // first random try
+            let expected = Value{
+                input_start_pos: 14321432,
+                input_end_pos: 456542532,
+                spent_time: 5463211,
+                match_flag: MatchFlag::No
+            };
+            let buf = build_value_bytes(14321432, 456542532, 5463211, b'N');
+            let value = match Value::from_byte_slice(&buf) {
+                Ok(v) => v,
+                Err(e) => {
+                    assert!(false, "shouldn't error out but got error: {:?}", e);
+                    return;
+                }
+            };
+            assert_eq!(expected, value);
+
+            // second random try
+            let expected = Value{
+                input_start_pos: 56745631532,
+                input_end_pos: 45245234,
+                spent_time: 11896524543541452385,
+                match_flag: MatchFlag::Yes
+            };
+            let buf = build_value_bytes(56745631532, 45245234, 11896524543541452385, b'Y');
+            let value = match Value::from_byte_slice(&buf) {
+                Ok(v) => v,
+                Err(e) => {
+                    assert!(false, "shouldn't error out but got error: {:?}", e);
+                    return;
+                }
+            };
+            assert_eq!(expected, value);
+        }
+
+        #[test]
+        fn read_from_reader() {
+            // first random try
+            let expected = Value{
+                input_start_pos: 14321432,
+                input_end_pos: 456542532,
+                spent_time: 5463211,
+                match_flag: MatchFlag::No
+            };
+            let buf = build_value_bytes(14321432, 456542532, 5463211, b'N');
+            let mut reader = &buf as &[u8];
+            let value = match Value::read_from(&mut reader) {
+                Ok(v) => v,
+                Err(e) => {
+                    assert!(false, "shouldn't error out but got error: {:?}", e);
+                    return;
+                }
+            };
+            assert_eq!(expected, value);
+
+            // second random try
+            let expected = Value{
+                input_start_pos: 56745631532,
+                input_end_pos: 45245234,
+                spent_time: 11896524543541452385,
+                match_flag: MatchFlag::Yes
+            };
+            let buf = build_value_bytes(56745631532, 45245234, 11896524543541452385, b'Y');
+            let mut reader = &buf as &[u8];
+            let value = match Value::from_byte_slice(&mut reader) {
+                Ok(v) => v,
+                Err(e) => {
+                    assert!(false, "shouldn't error out but got error: {:?}", e);
+                    return;
+                }
+            };
+            assert_eq!(expected, value);
+        }
+
+        #[test]
+        fn try_from_u8_slice() {
+            // first random try
+            let expected = Value{
+                input_start_pos: 14321432,
+                input_end_pos: 456542532,
+                spent_time: 5463211,
+                match_flag: MatchFlag::No
+            };
+            let buf = build_value_bytes(14321432, 456542532, 5463211, b'N');
+            let value = match Value::try_from(&buf[..]) {
+                Ok(v) => v,
+                Err(e) => {
+                    assert!(false, "shouldn't error out but got error: {:?}", e);
+                    return;
+                }
+            };
+            assert_eq!(expected, value);
+
+            // second random try
+            let expected = Value{
+                input_start_pos: 56745631532,
+                input_end_pos: 45245234,
+                spent_time: 11896524543541452385,
+                match_flag: MatchFlag::Yes
+            };
+            let buf = build_value_bytes(56745631532, 45245234, 11896524543541452385, b'Y');
+            let value = match Value::try_from(&buf[..]) {
+                Ok(v) => v,
+                Err(e) => {
+                    assert!(false, "shouldn't error out but got error: {:?}", e);
+                    return;
+                }
+            };
+            assert_eq!(expected, value);
+        }
+
+        #[test]
+        fn write_to_writer() {
+            // first random try
+            let expected = build_value_bytes(32464573645, 2343534543, 29034574985234, b'Y');
+            let value = &Value{
+                input_start_pos: 32464573645,
+                input_end_pos: 2343534543,
+                spent_time: 29034574985234,
+                match_flag: MatchFlag::Yes
+            };
+            let mut buf = [0u8; Value::BYTES];
+            let mut writer = &mut buf as &mut [u8];
+            if let Err(e) = value.write_to(&mut writer) {
+                assert!(false, "{:?}", e);
+                return;
+            };
+            assert_eq!(expected, buf);
+
+            // second random try
+            let expected = build_value_bytes(789865473674, 83454327, 98734951983457, b'N');
+            let value = &Value{
+                input_start_pos: 789865473674,
+                input_end_pos: 83454327,
+                spent_time: 98734951983457,
+                match_flag: MatchFlag::No
+            };
+            let mut buf = [0u8; Value::BYTES];
+            let mut writer = &mut buf as &mut [u8];
+            if let Err(e) = value.write_to(&mut writer) {
+                assert!(false, "{:?}", e);
+                return;
+            };
+            assert_eq!(expected, buf);
         }
     }
 }
