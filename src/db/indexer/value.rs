@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::{Seek, SeekFrom, Read, Write};
 use std::convert::TryFrom;
 use anyhow::{bail, Result};
 use crate::error::ParseError;
@@ -147,6 +147,19 @@ impl Value {
         // save match flag
         buf[carry] = self.match_flag.into();
         buf
+    }
+
+    /// Read the input bytes from a reader.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `index` - Record index.
+    pub fn read_input_from(&self, reader: &mut (impl Seek + Read)) -> Result<Vec<u8>> {
+        let size = self.input_end_pos - self.input_start_pos + 1;
+        let mut buf = vec![0u8; size as usize];
+        reader.seek(SeekFrom::Start(self.input_start_pos))?;
+        reader.read_exact(&mut buf)?;
+        Ok(buf)
     }
 }
 
@@ -361,6 +374,36 @@ mod tests {
                 match_flag: MatchFlag::No
             };
             assert_eq!(expected, value.as_bytes());
+        }
+
+        #[test]
+        fn read_input_from() {
+            let input_buf = [
+                // offset
+                0, 0, 0,
+                // input bytes
+                23u8, 12u8, 25u8, 74u8,
+                // extra bytes
+                0, 0, 0, 0
+            ];
+            let rdr = &input_buf as &[u8];
+            let mut reader = std::io::Cursor::new(rdr);
+            let value = Value{
+                input_start_pos: 3,
+                input_end_pos: 6,
+                spent_time: 0,
+                match_flag: MatchFlag::None
+            };
+            let expected = vec![23u8, 12u8, 25u8, 74u8];
+            let buf = match value.read_input_from(&mut reader) {
+                Ok(v) => v,
+                Err(e) => {
+                    assert!(false, "expected {:?} but got error: {:?}", expected, e);
+                    return;
+                }
+            };
+            
+            assert_eq!(expected, buf)
         }
 
         #[test]

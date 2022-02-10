@@ -1,4 +1,4 @@
-use serde_json::{Value as JSValue, Number as JSNumber, Map};
+use serde_json::{Value as JSValue, Number as JSNumber};
 use anyhow::{bail, Result};
 
 /// Represents a value.
@@ -216,6 +216,7 @@ impl From<&Value> for JSValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{Map as JSMap};
 
     #[test]
     fn display() {
@@ -271,7 +272,7 @@ mod tests {
             Ok(v) => assert!(false, "expected an error but got: {:?}", v),
             Err(e) => assert_eq!(expected, e.to_string())
         }
-        match Value::try_from_js_u64(JSValue::Object(Map::new())) {
+        match Value::try_from_js_u64(JSValue::Object(JSMap::new())) {
             Ok(v) => assert!(false, "expected an error but got: {:?}", v),
             Err(e) => assert_eq!(expected, e.to_string())
         }
@@ -434,7 +435,7 @@ mod tests {
     #[test]
     fn try_from_js_object() {
         let expected = "can't convert from object";
-        match Value::try_from(JSValue::Object(Map::new())) {
+        match Value::try_from(JSValue::Object(JSMap::new())) {
             Ok(v) => assert!(false, "expected an error but got: {:?}", v),
             Err(e) => assert_eq!(expected, e.to_string())
         }

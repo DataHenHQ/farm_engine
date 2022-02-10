@@ -12,9 +12,11 @@ use std::str::FromStr;
 use sha3::{Digest, Sha3_256};
 use path_absolutize::*;
 use regex::Regex;
+use traits::{ReadFrom};
 use db::indexer::Indexer;
 use db::indexer::header::{Header as IndexHeader, HASH_SIZE};
 use db::indexer::value::{Value as IndexValue, MatchFlag};
+use db::record::{Header as RecordHeader};
 use anyhow::{bail, Result};
 use self::error::ParseError;
 
@@ -252,148 +254,144 @@ impl Engine {
         Ok(serde_json::Value::Null)
     }
 
-    // /// Build a source index file list from an expanded path list.
-    // /// 
-    // /// # Arguments
-    // /// 
-    // /// * `expanded_path_list` - Expanded path list to build from.
-    // fn build_index_source_list(&self, expanded_path_list: Vec<PathBuf>) -> Result<Vec<BufReader<File>>> {
-    //     let base_size = file_size(&self.index.index_path)?;
-    //     let mut source_list: Vec<BufReader<File>> = vec!();
-    //     for path in expanded_path_list {
-    //         let file = File::open(&path)?;
-    //         let mut reader = BufReader::new(file);
-    //         println!("Open file \"{}\"", path.to_string_lossy());
+    /// Build a source index file list from an expanded path list.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `expanded_path_list` - Expanded path list to build from.
+    fn build_index_source_list(&self, expanded_path_list: Vec<PathBuf>) -> Result<Vec<BufReader<File>>> {
+        let base_size = file_size(&self.index.index_path)?;
+        let mut source_list: Vec<BufReader<File>> = vec!();
+        for path in expanded_path_list {
+            let file = File::open(&path)?;
+            let mut reader = BufReader::new(file);
+            println!("Open file \"{}\"", path.to_string_lossy());
 
-    //         // validate index file size
-    //         reader.seek(SeekFrom::End(0))?;
-    //         let size = reader.stream_position()?;
-    //         if size != base_size {
-    //             bail!(ParseError::Other(format!(
-    //                 "Index file size mismatch on file \"{}\"",
-    //                 path.to_string_lossy()
-    //             )));
-    //         }
+            // validate index file size
+            reader.seek(SeekFrom::End(0))?;
+            let size = reader.stream_position()?;
+            if size != base_size {
+                bail!(ParseError::Other(format!(
+                    "Index file size mismatch on file \"{}\"",
+                    path.to_string_lossy()
+                )));
+            }
 
-    //         // validate index header match
-    //         let mut header = IndexHeader::new();
-    //         Indexer::header_from_file(&mut reader, &mut header)?;
-    //         if header != self.index.header {
-    //             bail!(ParseError::Other(format!(
-    //                 "Index header mismatch on file \"{}\"",
-    //                 path.to_string_lossy()
-    //             )));
-    //         }
+            // validate index header match
+            let index_header = IndexHeader::read_from(&mut reader)?;
+            let record_header = RecordHeader::read_from(&mut reader)?;
+            if index_header != self.index.index_header || record_header != self.index.record_header {
+                bail!(ParseError::Other(format!(
+                    "Index header mismatch on file \"{}\"",
+                    path.to_string_lossy()
+                )));
+            }
 
-    //         // add to valid file source list
-    //         source_list.push(reader);
-    //     }
-    //     Ok(source_list)
-    // }
+            // add to valid file source list
+            source_list.push(reader);
+        }
+        Ok(source_list)
+    }
 
-    // /// Join index files into a single one using a >50% rule to decide on match flags.
-    // /// 
-    // /// # Arguments
-    // /// 
-    // /// * `raw_path_list` - Index file path list to join.
-    // pub fn join(&self, raw_path_list: &Vec<PathBuf>) -> Result<()> {
-    //     // skip if no indexed records found
-    //     if !self.index.index_header.indexed || self.index.index_header.indexed_count < 1 {
-    //         return Ok(());
-    //     }
+    /// Join index files into a single one using a >50% rule to decide on match flags.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `raw_path_list` - Index file path list to join.
+    pub fn join(&self, raw_path_list: &Vec<PathBuf>) -> Result<()> {
+        // skip if no indexed records found
+        if !self.index.index_header.indexed || self.index.index_header.indexed_count < 1 {
+            return Ok(());
+        }
 
-    //     // expand paths
-    //     let mut path_list: Vec<PathBuf> = vec!();
-    //     let index_path = match PathBuf::from_str(&self.index.index_path) {
-    //         Ok(v) => v,
-    //         Err(e) => bail!(e)
-    //     };
-    //     let exclusions = [index_path].to_vec();
-    //     for path in raw_path_list {
-    //         Self::expand_index_path(path, &mut path_list, &exclusions)?;
-    //     }
+        // expand paths
+        let mut path_list: Vec<PathBuf> = vec!();
+        let exclusions = [self.index.index_path].to_vec();
+        for path in raw_path_list {
+            Self::expand_index_path(path, &mut path_list, &exclusions)?;
+        }
 
-    //     // open and validate source index files
-    //     let mut source_list = self.build_index_source_list(path_list)?;
+        // open and validate source index files
+        let mut source_list = self.build_index_source_list(path_list)?;
 
-    //     // iterate and join index files
-    //     let mut target_indexer = Indexer::new(input_path, index_path);
-    //     let index_file = OpenOptions::new()
-    //         .read(true)
-    //         .write(true)
-    //         .open(&self.index.index_path)?;
-    //     let mut index_reader = BufReader::new(&index_file);
-    //     let mut index_writer = BufWriter::new(&index_file);
-    //     let match_values = MatchFlag::as_array();
-    //     let total_sources = source_list.len() as f64;
-    //     for index in 0..self.index.index_header.indexed_count {
-    //         // initialize matches hash
-    //         let mut matches: HashMap<u8, f64> = HashMap::new();
-    //         for k in match_values {
-    //             matches.insert(k.into(), 0f64);
-    //         }
+        // iterate and join index files
+        let mut target_indexer = Indexer::new(self.index.input_path, self.index.index_path);
+        let index_file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&self.index.index_path)?;
+        let mut index_reader = BufReader::new(&index_file);
+        let mut index_writer = BufWriter::new(&index_file);
+        let match_values = MatchFlag::as_array();
+        let total_sources = source_list.len() as f64;
+        for index in 0..self.index.index_header.indexed_count {
+            // initialize matches hash
+            let mut matches: HashMap<u8, f64> = HashMap::new();
+            for k in match_values {
+                matches.insert(k.into(), 0f64);
+            }
 
-    //         // get base index value
-    //         let mut index_value = match indexer.record((&mut index_reader, true, index)? {
-    //             Some(v) => v,
-    //             None => bail!(ParseError::Other(format!(
-    //                 "couldn't retrieve index record on index {} from base index file",
-    //                 index
-    //             )))
-    //         };
+            // get base index value
+            let mut index_value = match indexer.record((&mut index_reader, true, index)? {
+                Some(v) => v,
+                None => bail!(ParseError::Other(format!(
+                    "couldn't retrieve index record on index {} from base index file",
+                    index
+                )))
+            };
 
-    //         // iterate source index files and count match flag values
-    //         for reader in source_list.iter_mut() {
-    //             // get and validate source index value
-    //             let value = match Indexer::value_from_file(reader, true, index)? {
-    //                 Some(v) => v,
-    //                 None => bail!(ParseError::Other(format!(
-    //                     "couldn't retrieve index record on index {}",
-    //                     index
-    //                 )))
-    //             };
-    //             if index_value.input_start_pos != value.input_start_pos || index_value.input_end_pos != value.input_end_pos {
-    //                 bail!(ParseError::Other("Source index value doesn't match base value".to_string()));
-    //             }
+            // iterate source index files and count match flag values
+            for reader in source_list.iter_mut() {
+                // get and validate source index value
+                let value = match Indexer::value_from_file(reader, true, index)? {
+                    Some(v) => v,
+                    None => bail!(ParseError::Other(format!(
+                        "couldn't retrieve index record on index {}",
+                        index
+                    )))
+                };
+                if index_value.input_start_pos != value.input_start_pos || index_value.input_end_pos != value.input_end_pos {
+                    bail!(ParseError::Other("Source index value doesn't match base value".to_string()));
+                }
 
-    //             // record match flag counter
-    //             let count = match matches.get_mut(&value.match_flag.into()) {
-    //                 Some(v) => v,
-    //                 None => bail!(ParseError::InvalidValue)
-    //             };
-    //             *count += 1f64;
-    //         }
+                // record match flag counter
+                let count = match matches.get_mut(&value.match_flag.into()) {
+                    Some(v) => v,
+                    None => bail!(ParseError::InvalidValue)
+                };
+                *count += 1f64;
+            }
 
-    //         // calculate match_flag value
-    //         let mut match_flag = MatchFlag::None;
-    //         for k in match_values {
-    //             if *matches.get(&k.into()).unwrap() / total_sources > 0.5 {
-    //                 match_flag = k;
-    //                 break;
-    //             }
-    //         }
-    //         if match_flag == MatchFlag::Skip {
-    //             match_flag = MatchFlag::None
-    //         }
-    //         index_value.match_flag = match_flag;
+            // calculate match_flag value
+            let mut match_flag = MatchFlag::None;
+            for k in match_values {
+                if *matches.get(&k.into()).unwrap() / total_sources > 0.5 {
+                    match_flag = k;
+                    break;
+                }
+            }
+            if match_flag == MatchFlag::Skip {
+                match_flag = MatchFlag::None
+            }
+            index_value.match_flag = match_flag;
 
-    //         // record index and output values
-    //         Self::write_output(
-    //             &mut output_writer,
-    //             &index_value,
-    //             match_flag,
-    //             0,
-    //             ""
-    //         )?;
-    //         Indexer::update_index_file_value(
-    //             &mut index_writer,
-    //             index,
-    //             &index_value
-    //         )?;
-    //     }
+            // record index and output values
+            Self::write_output(
+                &mut output_writer,
+                &index_value,
+                match_flag,
+                0,
+                ""
+            )?;
+            Indexer::update_index_file_value(
+                &mut index_writer,
+                index,
+                &index_value
+            )?;
+        }
 
-    //     Ok(())
-    // }
+        Ok(())
+    }
 }
 
 /// Get a file size.

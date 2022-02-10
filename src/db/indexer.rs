@@ -7,7 +7,6 @@ use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
 use std::path::PathBuf;
-use serde_json::{Map as JSMap, Value as JSValue};
 use crate::error::ParseError;
 use crate::{file_size, generate_hash};
 use crate::traits::{ByteSized, LoadFrom, ReadFrom, WriteTo};
@@ -195,9 +194,7 @@ impl Indexer {
     /// * `writer` - File writer to save data into.
     /// * `index` - Index value index.
     /// * `value` - Index value to save.
-    pub fn write_record_into(&self, writer: &mut (impl Write + Seek), index: u64, data: &Data) -> Result<()> {
-        let pos = self.calc_record_pos(index);
-        writer.seek(SeekFrom::Start(pos))?;
+    pub fn write_record_into(&self, writer: &mut (impl Write + Seek), data: &Data) -> Result<()> {
         data.index.write_to(writer)?;
         self.record_header.write_record(writer, &data.record)?;
         Ok(())
@@ -211,8 +208,10 @@ impl Indexer {
     /// * `index_value` - Index value to save.
     /// * `record` - Record to save
     pub fn save_record(&self, index: u64, data: &Data) -> Result<()> {
+        let pos = self.calc_record_pos(index);
         let mut writer = self.new_index_writer(false)?;
-        self.write_record_into(&mut writer, index, data)?;
+        writer.seek(SeekFrom::Start(pos))?;
+        self.write_record_into(&mut writer, data)?;
         writer.flush()?;
         Ok(())
     }
@@ -270,7 +269,19 @@ impl Indexer {
             Ok(mut reader) => if let Err(e) = self.load_headers_from(&mut reader) {
                 match e.downcast::<std::io::Error>() {
                     Ok(ex) => match ex.kind() {
+                        std::io::ErrorKind::NotFound => {
+                            // File not found so the index is new
+                            return Ok(IndexStatus::New);
+                        }
                         std::io::ErrorKind::UnexpectedEof => {
+                            // if the file is empty then is new
+                            let real_size = file_size(&self.index_path)?;
+                            if real_size < 1 {
+                                // store hash and return as new index
+                                self.index_header.hash = Some(hash);
+                                return Ok(IndexStatus::New);
+                            }
+
                             // EOF eror means the index is corrupted
                             return Ok(IndexStatus::Corrupted);
                         },
@@ -305,18 +316,23 @@ impl Indexer {
                 return Ok(IndexStatus::Corrupted)
             }
         }
-
-        // validate incomplete index
-        if !self.index_header.indexed {
-            return Ok(IndexStatus::Incomplete);
-        }
+        
 
         // validate corrupted index
         let real_size = file_size(&self.index_path)?;
         let expected_size = self.calc_record_pos(self.index_header.indexed_count);
-        if real_size != expected_size {
-            // sizes don't match, the file is corrupted
-            return Ok(IndexStatus::Corrupted);
+        if self.index_header.indexed {
+            if real_size != expected_size {
+                // sizes don't match, the file is corrupted
+                return Ok(IndexStatus::Corrupted);
+            }
+        } else {
+            if real_size < expected_size {
+                // sizes is smaller, the file is corrupted
+                return Ok(IndexStatus::Corrupted);
+            }
+            // index is incomplete
+            return Ok(IndexStatus::Incomplete);
         }
 
         // all good, the index is indexed
@@ -348,8 +364,8 @@ impl Indexer {
     fn index_csv_record(&self, iter: &csv::StringRecordsIter<impl Read>, item: csv::StringRecord, input_reader: &mut (impl Read + Seek)) -> Result<IndexValue> {
         // calculate input positions
         let mut start_pos = item.position().unwrap().byte();
-        let mut end_pos = iter.reader().position().byte();
-        let length: usize = (end_pos - start_pos) as usize;
+        let mut end_pos = iter.reader().position().byte() - 1;
+        let length: usize = (end_pos - start_pos + 1) as usize;
 
         // read CSV file line and store it on the buffer
         let mut buf: Vec<u8> = vec![0u8; length];
@@ -395,6 +411,10 @@ impl Indexer {
     /// * `is_first` - `true` when the input reader is set at position 0.
     fn index_csv(&mut self, input_rdr: impl Read, index_wrt: &mut (impl Seek + Write), is_first: bool) -> Result<()> {
         // index records
+        let mut record_data = Data{
+            index: IndexValue::new(),
+            record: self.record_header.new_record()?
+        };
         let mut is_first = is_first;
         let mut input_rdr_nav = self.new_input_reader()?;
         let mut input_csv = csv::ReaderBuilder::new()
@@ -422,7 +442,8 @@ impl Indexer {
             };
 
             // write index value for this record
-            value.write_to(index_wrt)?;
+            record_data.index = value;
+            self.write_record_into(index_wrt, &record_data)?;
             self.index_header.indexed_count += 1;
 
             // save headers every batch
@@ -514,7 +535,7 @@ impl Indexer {
         for result in csv_reader.deserialize() {
             // read input and indexer data
             let input_data = result?;
-            let indexer_data = self.record_from(&mut index_rdr)?;
+            let indexer_data = self.record_from(index_rdr)?;
 
             // write data
             writer.write_data(fields, input_data, indexer_data)?;
@@ -604,8 +625,7 @@ pub mod test_helper {
     use crate::db::indexer::header::test_helper::{random_hash, build_header_bytes};
 //     use crate::index::index_header::test_helper::build_INDEX_HEADER_BYTES;
 //     use crate::index::index_value::test_helper::build_value_bytes;
-//     use crate::index::index_header::HASH_SIZE;
-//     use tempfile::TempDir;
+    use tempfile::TempDir;
 //     use std::io::{Write, BufWriter};
 
     /// It's the size of a record header without any field.
@@ -759,8 +779,8 @@ pub mod test_helper {
 
         // add first record
         let mut record = header.new_record()?;
-        record.set(header.get_by_index(0).unwrap(), Value::I32(234234234i32))?;
-        record.set(header.get_by_index(1).unwrap(), Value::Str("abc".to_string()))?;
+        record.set_by_index(0, Value::I32(234234234i32));
+        record.set_by_index(1, Value::Str("abc".to_string()));
         let data = Data{
             index: IndexValue{
                 input_start_pos: 50,
@@ -774,8 +794,8 @@ pub mod test_helper {
 
         // add second record
         let mut record = header.new_record()?;
-        record.set(header.get_by_index(0).unwrap(), Value::I32(345345345i32))?;
-        record.set(header.get_by_index(1).unwrap(), Value::Str("dfeg".to_string()))?;
+        record.set_by_index(0, Value::I32(345345345i32));
+        record.set_by_index(1, Value::Str("dfeg".to_string()));
         let data = Data{
             index: IndexValue{
                 input_start_pos: 200,
@@ -789,8 +809,8 @@ pub mod test_helper {
 
         // add third record
         let mut record = header.new_record()?;
-        record.set(header.get_by_index(0).unwrap(), Value::I32(857548574i32))?;
-        record.set(header.get_by_index(1).unwrap(), Value::Str("hi123".to_string()))?;
+        record.set_by_index(0, Value::I32(857548574i32));
+        record.set_by_index(1, Value::Str("hi123".to_string()));
         let data = Data{
             index: IndexValue{
                 input_start_pos: 350,
@@ -900,7 +920,7 @@ pub mod test_helper {
     /// # Arguments
     /// 
     /// * `path` - Input file path.
-    pub fn create_fake_input(path: &str) -> Result<()> {
+    pub fn create_fake_input(path: &PathBuf) -> Result<()> {
         let file = OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -912,24 +932,6 @@ pub mod test_helper {
 
         Ok(())
     }
-
-//     /// Returns the empty extra fields value.
-//     pub fn build_empty_extra_fields() -> [u8; 226] {
-//         let mut buf = [0u8; 226];
-//         buf[0] = 44;
-//         buf[1] = 32;
-//         buf[2] = 44;
-//         buf[23] = 44;
-//         buf[24] = 34;
-//         buf[225] = 34;
-//         for i in 0..20 {
-//             buf[3+i] = 48;
-//         }
-//         for i in 0..200 {
-//             buf[25+i] = 32;
-//         }
-//         buf
-//     }
 
 //     /// Return the fake output content as bytes.
 //     pub fn fake_output_bytes() -> Vec<u8> {
@@ -962,73 +964,158 @@ pub mod test_helper {
 //         Ok(())
 //     }
 
-//     /// Return the fake index content as bytes.
-//     /// 
-//     /// # Arguments
-//     /// 
-//     /// * `empty` - If `true` then build all records with MatchFlag::None.
-//     pub fn fake_index_bytes(empty: bool) -> Vec<u8> {
-//         let mut buf: Vec<u8> = vec!();
+    /// Write a fake index bytes into a writer.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `writer` - Byte writer.
+    /// * `with_fields` - If `true` then add record fields.
+    /// * `unprocessed` - If `true` then build all records with MatchFlag::None.
+    pub fn write_fake_index(writer: &mut (impl Seek + Write), with_fields: bool, unprocessed: bool) -> Result<Vec<Data>> {
+        let mut records = Vec::new();
 
-//         // write header
-//         append_bytes(&mut buf, &build_INDEX_HEADER_BYTES(true, &fake_input_hash(), true, 4));
+        // write index header
+        let mut index_header = IndexHeader::new();
+        index_header.indexed = true;
+        index_header.indexed_count = 4;
+        index_header.input_type = InputType::CSV;
+        index_header.hash = Some(fake_input_hash());
+        index_header.write_to(writer)?;
 
-//         // write values
-//         append_bytes(&mut buf, &build_value_bytes(22, 45, 65, if empty { 0 } else { b'Y' }));
-//         append_bytes(&mut buf, &build_value_bytes(46, 81, 327, 0));
-//         append_bytes(&mut buf, &build_value_bytes(82, 107, 579, if empty { 0 } else { b'N' }));
-//         append_bytes(&mut buf, &build_value_bytes(108, 140, 838, 0));
+        // write record header
+        let mut record_header = RecordHeader::new();
+        if with_fields {
+            add_fields(&mut record_header)?;
+        }
+        record_header.write_to(writer)?;
+        
+        // write first record date
+        let mut index_value = IndexValue::new();
+        index_value.input_start_pos = 22;
+        index_value.input_end_pos = 44;
+        if !unprocessed {
+            index_value.match_flag = MatchFlag::Yes;
+            index_value.spent_time = 23;
+        }
+        let mut record = record_header.new_record()?;
+        if with_fields && !unprocessed {
+            record.set("foo", Value::I32(111i32))?;
+            record.set("bar", Value::Str("first".to_string()))?;
+        }
+        index_value.write_to(writer)?;
+        record_header.write_record(writer, &record)?;
+        records.push(Data{
+            index: index_value,
+            record
+        });
+        
+        // write second record date
+        let mut index_value = IndexValue::new();
+        index_value.input_start_pos = 46;
+        index_value.input_end_pos = 80;
+        if !unprocessed {
+            index_value.match_flag = MatchFlag::No;
+            index_value.spent_time = 25;
+        }
+        let mut record = record_header.new_record()?;
+        if with_fields && !unprocessed {
+            record.set("foo", Value::I32(222i32))?;
+            record.set("bar", Value::Str("2th".to_string()))?;
+        }
+        index_value.write_to(writer)?;
+        record_header.write_record(writer, &record)?;
+        records.push(Data{
+            index: index_value,
+            record
+        });
+        
+        // write third record date
+        let mut index_value = IndexValue::new();
+        index_value.input_start_pos = 82;
+        index_value.input_end_pos = 106;
+        if !unprocessed {
+            index_value.match_flag = MatchFlag::None;
+            index_value.spent_time = 30;
+        }
+        let mut record = record_header.new_record()?;
+        if with_fields && !unprocessed {
+            record.set("foo", Value::I32(333i32))?;
+            record.set("bar", Value::Str("3rd".to_string()))?;
+        }
+        index_value.write_to(writer)?;
+        record_header.write_record(writer, &record)?;
+        records.push(Data{
+            index: index_value,
+            record
+        });
 
-//         buf
-//     }
+        // write fourth record date
+        let mut index_value = IndexValue::new();
+        index_value.input_start_pos = 108;
+        index_value.input_end_pos = 139;
+        if !unprocessed {
+            index_value.match_flag = MatchFlag::Skip;
+            index_value.spent_time = 41;
+        }
+        let mut record = record_header.new_record()?;
+        if with_fields && !unprocessed {
+            record.set("foo", Value::I32(444i32))?;
+            record.set("bar", Value::Str("4th".to_string()))?;
+        }
+        index_value.write_to(writer)?;
+        record_header.write_record(writer, &record)?;
+        records.push(Data{
+            index: index_value,
+            record
+        });
 
-//     /// Create a fake index file based on the default fake input file.
-//     /// 
-//     /// # Arguments
-//     /// 
-//     /// * `path` - Index file path.
-//     /// * `empty` - If `true` then build all records with MatchFlag::None.
-//     pub fn create_fake_index(path: &str, empty: bool) -> Result<()> {
-//         let file = OpenOptions::new()
-//             .create(true)
-//             .truncate(true)
-//             .write(true)
-//             .open(path)?;
-//         let mut writer = BufWriter::new(file);
-//         writer.write_all(fake_index_bytes(empty).as_slice())?;
-//         writer.flush()?;
+        Ok(records)
+    }
 
-//         Ok(())
-//     }
+    /// Create a fake index file based on the default fake input file.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `path` - Index file path.
+    /// * `empty` - If `true` then build all records with MatchFlag::None.
+    pub fn create_fake_index(path: &PathBuf, with_fields: bool, unprocessed: bool) -> Result<Vec<Data>> {
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(path)?;
+        let mut writer = BufWriter::new(file);
+        let records = write_fake_index(&mut writer, with_fields, unprocessed)?;
+        writer.flush()?;
 
-//     /// Execute a function with both a temp directory and a new Indexer.
-//     /// 
-//     /// # Arguments
-//     /// 
-//     /// * `f` - Function to execute.
-//     pub fn with_tmpdir_and_indexer(f: &impl Fn(&TempDir, &mut Indexer) -> Result<()>) {
-//         let sub = |dir: &TempDir| -> Result<()> {
-//             // generate default file names for files
-//             let input_path = dir.path().join("i.csv");
-//             let output_path = dir.path().join("o.csv");
-//             let index_path = dir.path().join("i.index");
+        Ok(records)
+    }
 
-//             // create Indexer and execute
-//             let input_path_str = input_path.to_str().unwrap().to_string();
-//             let mut indexer = Indexer::new(
-//                 &input_path_str,
-//                 output_path.to_str().unwrap(),
-//                 index_path.to_str().unwrap()
-//             );
+    /// Execute a function with both a temp directory and a new Indexer.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `f` - Function to execute.
+    pub fn with_tmpdir_and_indexer(f: &impl Fn(&TempDir, &mut Indexer) -> Result<()>) {
+        let sub = |dir: &TempDir| -> Result<()> {
+            // generate default file names for files
+            let input_path = dir.path().join("i.csv");
+            let index_path = dir.path().join("i.fmindex");
 
-//             // execute function
-//             match f(&dir, &mut indexer) {
-//                 Ok(_) => Ok(()),
-//                 Err(e) => bail!(e)
-//             }
-//         };
-//         with_tmpdir(&sub)
-//     }
+            // create Indexer and execute
+            let mut indexer = Indexer::new(
+                input_path,
+                index_path
+            );
+
+            // execute function
+            match f(&dir, &mut indexer) {
+                Ok(_) => Ok(()),
+                Err(e) => bail!(e)
+            }
+        };
+        with_tmpdir(&sub)
+    }
 }
 
 #[cfg(test)]
@@ -1037,7 +1124,8 @@ mod tests {
     use test_helper::*;
     use std::io::Cursor;
     use crate::test_helper::*;
-//     use crate::index::field::FieldTypeHeader;
+    use crate::db::indexer::header::{HASH_SIZE};
+    use crate::db::record::Value;
     use crate::db::indexer::header::test_helper::{random_hash, build_header_bytes};
 //     use crate::index::index_header::test_helper::{random_hash, build_INDEX_HEADER_BYTES};
 //     use crate::index::index_value::test_helper::{build_value_bytes};
@@ -1146,6 +1234,143 @@ mod tests {
     }
 
     #[test]
+    fn record_from_with_fields() {
+        // init buffer
+        let (buf, record_count) = match fake_index_with_fields() {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+        let mut reader = Cursor::new(buf.to_vec());
+
+        // init indexer and expected records
+        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into());
+        indexer.index_header.indexed = true;
+        indexer.index_header.indexed_count = record_count;
+        if let Err(e) = add_fields(&mut indexer.record_header) {
+            assert!(false, "{:?}", e);
+        }
+        let expected = match fake_records() {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+
+        // test first record
+        let pos = indexer.calc_record_pos(0);
+        if let Err(e) = reader.seek(SeekFrom::Start(pos)) {
+            assert!(false, "{}", e);
+        };
+        let data = match indexer.record_from(&mut reader) {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+        assert_eq!(expected[0], data);
+
+        // test second record
+        let pos = indexer.calc_record_pos(1);
+        if let Err(e) = reader.seek(SeekFrom::Start(pos)) {
+            assert!(false, "{}", e);
+        };
+        let data = match indexer.record_from(&mut reader) {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+        assert_eq!(expected[1], data);
+
+        // test third record
+        let pos = indexer.calc_record_pos(2);
+        if let Err(e) = reader.seek(SeekFrom::Start(pos)) {
+            assert!(false, "{}", e);
+        };
+        let data = match indexer.record_from(&mut reader) {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+        assert_eq!(expected[2], data);
+    }
+
+    #[test]
+    fn record_from_without_fields() {
+        // init buffer
+        let (buf, record_count) = match fake_index_without_fields() {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+        let mut reader = Cursor::new(buf.to_vec());
+
+        // init indexer and expected records
+        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into());
+        indexer.index_header.indexed = true;
+        indexer.index_header.indexed_count = record_count;
+        let expected = match fake_records_without_fields() {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+
+        // test first record
+        let pos = indexer.calc_record_pos(0);
+        if let Err(e) = reader.seek(SeekFrom::Start(pos)) {
+            assert!(false, "{}", e);
+        };
+        let data = match indexer.record_from(&mut reader) {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+        assert_eq!(expected[0], data);
+
+        // test second record
+        let pos = indexer.calc_record_pos(1);
+        if let Err(e) = reader.seek(SeekFrom::Start(pos)) {
+            assert!(false, "{}", e);
+        };
+        let data = match indexer.record_from(&mut reader) {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+        assert_eq!(expected[1], data);
+
+        // test third record
+        let pos = indexer.calc_record_pos(2);
+        if let Err(e) = reader.seek(SeekFrom::Start(pos)) {
+            assert!(false, "{}", e);
+        };
+        let data = match indexer.record_from(&mut reader) {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+        assert_eq!(expected[2], data);
+    }
+
+    #[test]
     fn seek_record_from_with_fields() {
         // init buffer
         let (buf, record_count) = match fake_index_with_fields() {
@@ -1222,7 +1447,7 @@ mod tests {
     }
 
     #[test]
-    fn read_record_from_without_fields() {
+    fn seek_record_from_without_fields() {
         // init buffer
         let (buf, record_count) = match fake_index_without_fields() {
             Ok(v) => v,
@@ -1294,253 +1519,598 @@ mod tests {
         assert_eq!(expected[2], data);
     }
 
-//     #[test]
-//     fn init_index_non_trucate() {
-//         with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
-//             let buf: &[u8] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-//             create_file_with_bytes(&indexer.index_path, &buf)?;
+    #[test]
+    fn record_with_fields() {
+        with_tmpdir_and_indexer(&|_, indexer| {
+            // init buffer
+            let (buf, record_count) = match fake_index_with_fields() {
+                Ok(v) => v,
+                Err(e) => {
+                    assert!(false, "{:?}", e);
+                    bail!(e)
+                }
+            };
+            create_file_with_bytes(&indexer.index_path, &buf)?;
 
-//             // create expected file contents
-//             let mut expected = [0u8; INDEX_HEADER_BYTES];
-//             for i in 0..buf.len() {
-//                 expected[i] = buf[i];
-//             }
-//             for i in buf.len()..INDEX_HEADER_BYTES {
-//                 expected[i] = 0;
-//             }
+            // init indexer and expected records
+            indexer.index_header.indexed = true;
+            indexer.index_header.indexed_count = record_count;
+            if let Err(e) = add_fields(&mut indexer.record_header) {
+                assert!(false, "{:?}", e);
+            }
+            let expected = match fake_records() {
+                Ok(v) => v,
+                Err(e) => {
+                    assert!(false, "{:?}", e);
+                    bail!(e)
+                }
+            };
 
-//             indexer.init_index(false)?;
+            // test first record
+            let data = match indexer.record(0) {
+                Ok(opt) => match opt {
+                    Some(v) => v,
+                    None => {
+                        assert!(false, "expected {:?} but got None", expected[0]);
+                        bail!("");
+                    }
+                },
+                Err(e) => {
+                    assert!(false, "{:?}", e);
+                    bail!(e);
+                }
+            };
+            assert_eq!(expected[0], data);
 
-//             let index = File::open(&indexer.index_path)?;
-//             let mut reader = BufReader::new(index);
-//             let mut buf_after: Vec<u8> = vec!();
-//             reader.read_to_end(&mut buf_after)?;
-//             assert_eq!(expected, buf_after.as_slice());
+            // test second record
+            let data = match indexer.record(1) {
+                Ok(opt) => match opt {
+                    Some(v) => v,
+                    None => {
+                        assert!(false, "expected {:?} but got None", expected[0]);
+                        bail!("")
+                    }
+                },
+                Err(e) => {
+                    assert!(false, "{:?}", e);
+                    bail!(e)
+                }
+            };
+            assert_eq!(expected[1], data);
 
-//             Ok(())
-//         });
-//     }
+            // test third record
+            let data = match indexer.record(2) {
+                Ok(opt) => match opt {
+                    Some(v) => v,
+                    None => {
+                        assert!(false, "expected {:?} but got None", expected[0]);
+                        bail!("")
+                    }
+                },
+                Err(e) => {
+                    assert!(false, "{:?}", e);
+                    bail!(e)
+                }
+            };
+            assert_eq!(expected[2], data);
+            Ok(())
+        });
+    }
 
-//     #[test]
-//     fn count_indexed() {
-//         with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
-//             create_fake_index(&indexer.index_path, false)?;
-//             assert_eq!(4u64, indexer.count_indexed()?);
-//             Ok(())
-//         });
-//     }
+    #[test]
+    fn record_without_fields() {
+        with_tmpdir_and_indexer(&|_, indexer| {
+            // init buffer
+            let (buf, record_count) = match fake_index_without_fields() {
+                Ok(v) => v,
+                Err(e) => {
+                    assert!(false, "{:?}", e);
+                    bail!(e)
+                }
+            };
+            create_file_with_bytes(&indexer.index_path, &buf)?;
 
-//     #[test]
-//     fn get_record_index() {
-//         with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
-//             create_fake_input(&indexer.input_path)?;
-//             create_fake_index(&indexer.index_path, false)?;
+            // init indexer and expected records
+            indexer.index_header.indexed = true;
+            indexer.index_header.indexed_count = record_count;
+            let expected = match fake_records_without_fields() {
+                Ok(v) => v,
+                Err(e) => {
+                    assert!(false, "{:?}", e);
+                    bail!(e)
+                }
+            };
 
-//             // first line
-//             let expected = IndexValue{
-//                 input_start_pos: 22,
-//                 input_end_pos: 45,
-//                 output_pos: 65,
-//                 match_flag: MatchFlag::Yes
-//             };
-//             match indexer.get_record_index(0)? {
-//                 Some(v) => assert_eq!(expected, v),
-//                 None => assert!(false, "should have return an IndexValue")
-//             }
+            // test first record
+            let data = match indexer.record(0) {
+                Ok(opt) => match opt {
+                    Some(v) => v,
+                    None => {
+                        assert!(false, "expected {:?} but got None", expected[0]);
+                        bail!("")
+                    }
+                },
+                Err(e) => {
+                    assert!(false, "{:?}", e);
+                    bail!(e)
+                }
+            };
+            assert_eq!(expected[0], data);
 
-//             // second line
-//             let expected = IndexValue{
-//                 input_start_pos: 46,
-//                 input_end_pos: 81,
-//                 output_pos: 327,
-//                 match_flag: MatchFlag::None
-//             };
-//             match indexer.get_record_index(1)? {
-//                 Some(v) => assert_eq!(expected, v),
-//                 None => assert!(false, "should have return an IndexValue")
-//             }
+            // test second record
+            let data = match indexer.record(1) {
+                Ok(opt) => match opt {
+                    Some(v) => v,
+                    None => {
+                        assert!(false, "expected {:?} but got None", expected[0]);
+                        bail!("")
+                    }
+                },
+                Err(e) => {
+                    assert!(false, "{:?}", e);
+                    bail!(e)
+                }
+            };
+            assert_eq!(expected[1], data);
 
-//             // third line
-//             let expected = IndexValue{
-//                 input_start_pos: 82,
-//                 input_end_pos: 107,
-//                 output_pos: 579,
-//                 match_flag: MatchFlag::No
-//             };
-//             match indexer.get_record_index(2)? {
-//                 Some(v) => assert_eq!(expected, v),
-//                 None => assert!(false, "should have return an IndexValue")
-//             }
+            // test third record
+            let data = match indexer.record(2) {
+                Ok(opt) => match opt {
+                    Some(v) => v,
+                    None => {
+                        assert!(false, "expected {:?} but got None", expected[0]);
+                        bail!("")
+                    }
+                },
+                Err(e) => {
+                    assert!(false, "{:?}", e);
+                    bail!(e)
+                }
+            };
+            assert_eq!(expected[2], data);
 
-//             Ok(())
-//         });
-//     }
+            Ok(())
+        });
+    }
 
-//     #[test]
-//     fn healthcheck_new_index() {
-//         with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
-//             create_file_with_bytes(&indexer.index_path, &[0u8; INDEX_HEADER_BYTES])?;
-//             assert_eq!(IndexStatus::New, indexer.healthcheck()?);
-//             Ok(())
-//         });
-//     }
+    #[test]
+    fn save_record_into_with_fields() {
+        with_tmpdir_and_indexer(&|_, indexer| {
+            // create index and check original value
+            let mut records = create_fake_index(&indexer.index_path, true, false)?;
+            add_fields(&mut indexer.record_header)?;
+            let pos = indexer.calc_record_pos(2);
+            let mut buf = [0u8; ADD_FIELDS_RECORD_BYTES];
+            let file = File::open(&indexer.index_path)?;
+            let mut reader = BufReader::new(file);
+            let mut old_bytes_before = vec!(0u8; pos as usize);
+            let mut old_bytes_after = vec!(0u8; ADD_FIELDS_RECORD_BYTES);
+            reader.read_exact(&mut old_bytes_before)?;
+            reader.read_exact(&mut buf)?;
+            reader.read_exact(&mut old_bytes_after)?;
+            let expected = [
+                // start_pos
+                0, 0, 0, 0, 0, 0, 0, 82u8,
+                // end_pos
+                0, 0, 0, 0, 0, 0, 0, 106u8,
+                // spent_time
+                0, 0, 0, 0, 0, 0, 0, 30u8,
+                // match flag
+                0,
+                // foo field
+                0, 0, 1u8, 77u8,
+                // bar field
+                0, 0, 0, 3u8, 51u8, 114u8, 100u8, 0, 0
+            ];
+            assert_eq!(expected, buf);
 
-//     #[test]
-//     fn healthcheck_hash_mismatch() {
-//         with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
-//             let mut buf = [0u8; INDEX_HEADER_BYTES];
+            // save record and check value
+            let expected = [
+                // start_pos
+                0, 0, 0, 0, 0, 0, 0, 12u8,
+                // end_pos
+                0, 0, 0, 0, 0, 0, 0, 25u8,
+                // spent_time
+                0, 0, 0, 0, 0, 0, 0, 43u8,
+                // match flag
+                b'Y',
+                // foo field
+                0, 0, 0, 11u8,
+                // bar field
+                0, 0, 0, 5u8, 104u8, 101u8, 108u8, 108u8, 111u8
+            ];
+            records[2].index.input_start_pos = 12;
+            records[2].index.input_end_pos = 25;
+            records[2].index.match_flag = MatchFlag::Yes;
+            records[2].index.spent_time = 43;
+            records[2].record.set("foo", Value::I32(11))?;
+            records[2].record.set("bar", Value::Str("hello".to_string()))?;
+            indexer.save_record(2, &records[2])?;
+            reader.seek(SeekFrom::Start(0))?;
+            let mut new_bytes_before = vec!(0u8; pos as usize);
+            let mut new_bytes_after = vec!(0u8; ADD_FIELDS_RECORD_BYTES);
+            reader.read_exact(&mut new_bytes_before)?;
+            reader.read_exact(&mut buf)?;
+            reader.read_exact(&mut new_bytes_after)?;
+            assert_eq!(old_bytes_before, new_bytes_before);
+            assert_eq!(expected, buf);
+            assert_eq!(old_bytes_after, new_bytes_after);
 
-//             // set valid_hash flag as true
-//             buf[9] = 1u8;
+            Ok(())
+        });
+    }
 
-//             // force hash bytes to be invalid
-//             buf[10] = 3u8;
+    #[test]
+    fn save_record_into_without_fields() {
+        with_tmpdir_and_indexer(&|_, indexer| {
+            // create index and check original value
+            let mut records = create_fake_index(&indexer.index_path, false, true)?;
+            let pos = indexer.calc_record_pos(2);
+            let mut buf = [0u8; IndexValue::BYTES];
+            let file = File::open(&indexer.index_path)?;
+            let mut reader = BufReader::new(file);
+            let mut old_bytes_before = vec!(0u8; pos as usize);
+            let mut old_bytes_after = vec!(0u8; IndexValue::BYTES);
+            reader.read_exact(&mut old_bytes_before)?;
+            reader.read_exact(&mut buf)?;
+            reader.read_exact(&mut old_bytes_after)?;
+            let expected = [
+                // start_pos
+                0, 0, 0, 0, 0, 0, 0, 82u8,
+                // end_pos
+                0, 0, 0, 0, 0, 0, 0, 106u8,
+                // spent_time
+                0, 0, 0, 0, 0, 0, 0, 0,
+                // match flag
+                0
+            ];
+            assert_eq!(expected, buf);
 
-//             create_file_with_bytes(&indexer.index_path, &buf)?;
-//             create_fake_input(&indexer.input_path)?;
-//             assert_eq!(IndexStatus::Corrupted, indexer.healthcheck()?);
-//             Ok(())
-//         });
-//     }
+            // save record and check value
+            let expected = [
+                // start_pos
+                0, 0, 0, 0, 0, 0, 0, 10u8,
+                // end_pos
+                0, 0, 0, 0, 0, 0, 0, 27u8,
+                // spent_time
+                0, 0, 0, 0, 0, 0, 0, 93u8,
+                // match flag
+                b'Y'
+            ];
+            records[2].index.input_start_pos = 10;
+            records[2].index.input_end_pos = 27;
+            records[2].index.match_flag = MatchFlag::Yes;
+            records[2].index.spent_time = 93;
+            indexer.save_record(2, &records[2])?;
+            reader.seek(SeekFrom::Start(0))?;
+            let mut new_bytes_before = vec!(0u8; pos as usize);
+            let mut new_bytes_after = vec!(0u8; IndexValue::BYTES);
+            reader.read_exact(&mut new_bytes_before)?;
+            reader.read_exact(&mut buf)?;
+            reader.read_exact(&mut new_bytes_after)?;
+            assert_eq!(old_bytes_before, new_bytes_before);
+            assert_eq!(expected, buf);
+            assert_eq!(old_bytes_after, new_bytes_after);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn find_unmatched() {
+        with_tmpdir_and_indexer(&|_, indexer| {
+            // create index
+            let mut records = create_fake_index(&indexer.index_path, true, false)?;
+            add_fields(&mut indexer.record_header)?;
+            indexer.index_header.indexed = true;
+            indexer.index_header.indexed_count = 4;
+
+            // find existing unmatched from start position
+            match indexer.find_unmatched(0) {
+                Ok(opt) => match opt {
+                    Some(v) => assert_eq!(2, v),
+                    None => assert!(false, "expected 2 but got None")
+                },
+                Err(e) => assert!(false, "{:?}", e)
+            }
+
+            // find non-existing unmatched from starting point
+            records[2].index.match_flag = MatchFlag::Yes;
+            indexer.save_record(2, &records[2])?;
+            match indexer.find_unmatched(3) {
+                Ok(opt) => match opt {
+                    Some(v) => assert!(false, "expected None but got {:?}", v),
+                    None => assert!(true, "")
+                },
+                Err(e) => assert!(false, "{:?}", e)
+            }
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn find_unmatched_with_offset() {
+        with_tmpdir_and_indexer(&|_, indexer| {
+            // create index and check original value
+            create_fake_index(&indexer.index_path, true, false)?;
+            add_fields(&mut indexer.record_header)?;
+            indexer.index_header.indexed = true;
+            indexer.index_header.indexed_count = 4;
+
+            // find existing unmatched with offset
+            match indexer.find_unmatched(1) {
+                Ok(opt) => match opt {
+                    Some(v) => assert_eq!(2, v),
+                    None => assert!(false, "expected 2 but got None")
+                },
+                Err(e) => assert!(false, "{:?}", e)
+            }
+
+            // find non-existing unmatched with offset
+            match indexer.find_unmatched(3) {
+                Ok(opt) => match opt {
+                    Some(v) => assert!(false, "expected None but got {:?}", v),
+                    None => assert!(true, "")
+                },
+                Err(e) => assert!(false, "{:?}", e)
+            }
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn find_unmatched_with_non_indexed() {
+        with_tmpdir_and_indexer(&|_, indexer| {
+            // create index and check original value
+            create_fake_index(&indexer.index_path, true, false)?;
+            add_fields(&mut indexer.record_header)?;
+            indexer.index_header.indexed_count = 4;
+
+            // find existing unmatched with offset
+            match indexer.find_unmatched(1) {
+                Ok(opt) => assert!(false, "expected error but got {:?}", opt),
+                Err(e) => match e.downcast::<ParseError>(){
+                    Ok(ex) => match ex {
+                        ParseError::Unavailable(status) => match status {
+                            IndexStatus::Incomplete => {},
+                            s => assert!(false, "expected ParseError::Unavailable(Incomplete) but got: {:?}", s)
+                        },
+                        err => assert!(false, "{:?}", err)
+                    },
+                    Err(ex) => assert!(false, "{:?}", ex)
+                }
+            }
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn find_unmatched_with_offset_overflow() {
+        with_tmpdir_and_indexer(&|_, indexer| {
+            // create index and check original value
+            create_fake_index(&indexer.index_path, true, false)?;
+            add_fields(&mut indexer.record_header)?;
+            indexer.index_header.indexed = true;
+            indexer.index_header.indexed_count = 2;
+
+            // find existing unmatched with offset
+            match indexer.find_unmatched(5) {
+                Ok(opt) => match opt {
+                    Some(v) => assert!(false, "expected None but got {:?}", v),
+                    None => assert!(true, "")
+                },
+                Err(e) => assert!(false, "{:?}", e)
+            }
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn healthcheck_new_index() {
+        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+            create_fake_input(&indexer.input_path)?;
+
+            // test index status
+            let expected = IndexStatus::New;
+            match indexer.healthcheck() {
+                Ok(status) => assert_eq!(expected , status),
+                Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+            }
+
+            // test fake hash
+            let expected = fake_input_hash();
+            match indexer.index_header.hash {
+                Some(hash) => assert_eq!(expected, hash),
+                None => assert!(false, "expected a hash but got None")
+            }
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn healthcheck_new_index_with_empty_file() {
+        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+            create_fake_input(&indexer.input_path)?;
+
+            // test index status
+            indexer.new_index_writer(true)?;
+            let expected = IndexStatus::New;
+            match indexer.healthcheck() {
+                Ok(status) => assert_eq!(expected , status),
+                Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+            }
+
+            // test fake hash
+            let expected = fake_input_hash();
+            match indexer.index_header.hash {
+                Some(hash) => assert_eq!(expected, hash),
+                None => assert!(false, "expected a hash but got None")
+            }
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn healthcheck_corrupted_headers() {
+        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+            let buf = [0u8; 5];
+            create_file_with_bytes(&indexer.index_path, &buf)?;
+            create_fake_input(&indexer.input_path)?;
+            let expected = IndexStatus::Corrupted;
+            match indexer.healthcheck() {
+                Ok(status) => assert_eq!(expected , status),
+                Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+            }
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn healthcheck_hash_mismatch() {
+        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+            let mut buf = [0u8; IndexHeader::BYTES];
+            let mut writer = &mut buf as &mut [u8];
+            let mut header = IndexHeader::new();
+            header.hash = Some([3u8; HASH_SIZE]);
+            header.write_to(&mut writer)?;
+
+            create_file_with_bytes(&indexer.index_path, &buf)?;
+            create_fake_input(&indexer.input_path)?;
+            assert_eq!(IndexStatus::Corrupted, indexer.healthcheck()?);
+            Ok(())
+        });
+    }
     
-//     #[test]
-//     fn healthcheck_incomplete_corrupted() {
-//         with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
-//             let mut buf = [0u8; INDEX_HEADER_BYTES+5];
+    #[test]
+    fn healthcheck_incomplete_corrupted() {
+        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+            let mut buf = [0u8; IndexHeader::BYTES+EMPTY_RECORD_HEADER_BYTES+5];
+            let mut writer = &mut buf as &mut [u8];
+            let mut header = IndexHeader::new();
+            header.indexed_count = 10;
+            header.hash = Some(fake_input_hash());
+            header.write_to(&mut writer)?;
 
-//             // set indexed flag as false
-//             buf[0] = 0u8;
-
-//             // set valid_hash flag as true
-//             buf[9] = 1u8;
-
-//             // set fake input file hash value
-//             let buf_hash = &mut buf[10..10+HASH_SIZE];
-//             buf_hash.copy_from_slice(fake_input_hash().as_slice());
-
-//             create_file_with_bytes(&indexer.index_path, &buf)?;
-//             create_fake_input(&indexer.input_path)?;
-//             assert_eq!(IndexStatus::Corrupted, indexer.healthcheck()?);
-//             Ok(())
-//         });
-//     }
+            create_file_with_bytes(&indexer.index_path, &buf)?;
+            create_fake_input(&indexer.input_path)?;
+            assert_eq!(IndexStatus::Corrupted, indexer.healthcheck()?);
+            Ok(())
+        });
+    }
     
-//     #[test]
-//     fn healthcheck_incomplete_valid() {
-//         with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
-//             let mut buf = [0u8; INDEX_HEADER_BYTES+INDEX_VALUE_BYTES];
+    #[test]
+    fn healthcheck_incomplete_valid() {
+        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+            let mut buf = [0u8; IndexHeader::BYTES+EMPTY_RECORD_HEADER_BYTES+FAKE_RECORDS_WITHOUT_FIELDS_BYTES];
+            let mut writer = &mut buf as &mut [u8];
+            let mut header = IndexHeader::new();
+            header.indexed_count = 3;
+            header.hash = Some(fake_input_hash());
+            header.write_to(&mut writer)?;
 
-//             // set indexed flag as false
-//             buf[0] = 0u8;
-
-//             // set valid_hash flag as true
-//             buf[9] = 1u8;
-
-//             // set fake input file hash value
-//             let buf_hash = &mut buf[10..10+HASH_SIZE];
-//             buf_hash.copy_from_slice(fake_input_hash().as_slice());
-
-//             // set fake index value
-//             let buf_value = &mut buf[10+HASH_SIZE..10+HASH_SIZE+INDEX_VALUE_BYTES];
-//             buf_value.copy_from_slice(&build_value_bytes(10, 20, 21, b'Y'));
-
-//             create_file_with_bytes(&indexer.index_path, &buf)?;
-//             create_fake_input(&indexer.input_path)?;
-//             assert_eq!(IndexStatus::Incomplete, indexer.healthcheck()?);
-//             Ok(())
-//         });
-//     }
+            create_file_with_bytes(&indexer.index_path, &buf)?;
+            create_fake_input(&indexer.input_path)?;
+            assert_eq!(IndexStatus::Incomplete, indexer.healthcheck()?);
+            Ok(())
+        });
+    }
     
-//     #[test]
-//     fn healthcheck_indexed_corrupted() {
-//         with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
-//             let mut buf = [0u8; INDEX_HEADER_BYTES];
+    #[test]
+    fn healthcheck_indexed_corrupted() {
+        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+            let mut buf = [0u8; IndexHeader::BYTES+EMPTY_RECORD_HEADER_BYTES+5];
+            let mut writer = &mut buf as &mut [u8];
+            let mut header = IndexHeader::new();
+            header.indexed = true;
+            header.indexed_count = 8;
+            header.hash = Some(fake_input_hash());
+            header.write_to(&mut writer)?;
 
-//             // set indexed flag as true
-//             buf[0] = 1u8;
-
-//             // force indexed_count to be invalid
-//             let buf_indexed_count = &mut buf[1..1+POSITION_SIZE];
-//             buf_indexed_count.copy_from_slice(&10000u64.to_be_bytes());
-
-//             // set valid_hash flag as true
-//             buf[9] = 1u8;
-
-//             // set fake input file hash value
-//             let buf_hash = &mut buf[10..10+HASH_SIZE];
-//             buf_hash.copy_from_slice(fake_input_hash().as_slice());
-
-//             create_file_with_bytes(&indexer.index_path, &buf)?;
-//             create_fake_input(&indexer.input_path)?;
-//             assert_eq!(IndexStatus::Corrupted, indexer.healthcheck()?);
-//             Ok(())
-//         });
-//     }
+            create_file_with_bytes(&indexer.index_path, &buf)?;
+            create_fake_input(&indexer.input_path)?;
+            assert_eq!(IndexStatus::Corrupted, indexer.healthcheck()?);
+            Ok(())
+        });
+    }
     
-//     #[test]
-//     fn healthcheck_indexed_valid() {
-//         with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
-//             create_fake_index(&indexer.index_path, false)?;
-//             create_fake_input(&indexer.input_path)?;
-//             assert_eq!(IndexStatus::Indexed, indexer.healthcheck()?);
-//             Ok(())
-//         });
-//     }
+    #[test]
+    fn healthcheck_indexed_valid() {
+        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+            create_fake_index(&indexer.index_path, true, false)?;
+            create_fake_input(&indexer.input_path)?;
+            assert_eq!(IndexStatus::Indexed, indexer.healthcheck()?);
+            Ok(())
+        });
+    }
 
-//     #[test]
-//     fn last_indexed_record() {
-//         with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
-//             create_fake_index(&indexer.index_path, false)?;
-//             let expected = Some(IndexValue{
-//                 input_start_pos: 108,
-//                 input_end_pos: 140,
-//                 output_pos: 838,
-//                 match_flag: MatchFlag::None
-//             });
+    #[test]
+    fn save_index_header() {
+        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+            // create index file and read index header data
+            create_fake_index(&indexer.index_path, true, false)?;
+            let mut reader = indexer.new_index_reader()?;
+            let mut expected = [0u8; IndexHeader::BYTES];
+            reader.read_exact(&mut expected)?;
+            reader.seek(SeekFrom::Start(0))?;
+            indexer.index_header.load_from(&mut reader)?;
 
-//             indexer.header.indexed_count = 4;
-//             assert_eq!(expected, indexer.last_indexed_record()?);
+            // test save index header
+            let mut buf = [0u8; IndexHeader::BYTES];
+            let wrt = &mut buf as &mut [u8];
+            let mut writer = Cursor::new(wrt);
+            if let Err(e) = indexer.save_index_header(&mut writer) {
+                assert!(false, "expected success but got error: {:?}", e);
+            };
+            assert_eq!(expected, buf);
             
-//             Ok(())
-//         });
-//     }
+            Ok(())
+        });
+    }
 
-//     #[test]
-//     fn last_indexed_record_with_zero_indexed() {
-//         with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
-//             create_fake_index(&indexer.index_path, false)?;
-//             indexer.header.indexed_count = 0;
-//             assert_eq!(None, indexer.last_indexed_record()?);
+    #[test]
+    fn index_records() {
+        with_tmpdir_and_indexer(&|dir, indexer| -> Result<()> {
+            create_fake_input(&indexer.input_path)?;
+            indexer.index_header.input_type = InputType::CSV;
+
+            // add record fields and index records
+            add_fields(&mut indexer.record_header)?;
+            if let Err(e) = indexer.index() {
+                assert!(false, "expected success but got error: {:?}", e);
+            }
+
+            // create expected index
+            let tmp_path = dir.path().join("test.fmindex");
+            let file = OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .write(true)
+                .open(&tmp_path)?;
+            let mut writer = BufWriter::new(file);
+            write_fake_index(&mut writer, true, true)?;
+            writer.flush()?;
+
+            // read expected index bytes
+            let file = File::open(&tmp_path)?;
+            let mut reader = BufReader::new(file);
+            let mut expected = Vec::new();
+            reader.read_to_end(&mut expected)?;
             
-//             Ok(())
-//         });
-//     }
 
-//     #[test]
-//     fn index_records() {
-//         with_tmpdir_and_indexer(&|_dir: &TempDir, indexer: &mut Indexer| -> Result<()> {
-//             create_fake_input(&indexer.input_path)?;
-
-//             // index records
-//             indexer.index()?;
-
-//             // validate index bytes
-//             let expected = fake_index_bytes(true);
-//             let file = File::open(&indexer.index_path)?;
-//             let mut reader = BufReader::new(file);
-//             let mut buf: Vec<u8> = vec!();
-//             reader.read_to_end(&mut buf)?;
-//             assert_eq!(expected, buf);
+            // validate index bytes
+            let file = File::open(&indexer.index_path)?;
+            let mut reader = BufReader::new(file);
+            let mut buf = Vec::new();
+            reader.read_to_end(&mut buf)?;
+            assert_eq!(expected, buf);
             
-//             // validate output bytes
-//             let expected = fake_output_bytes();
-//             let file = File::open(&indexer.output_path)?;
-//             let mut reader = BufReader::new(file);
-//             let mut buf: Vec<u8> = vec!();
-//             reader.read_to_end(&mut buf)?;
-//             assert_eq!(expected, buf);
-            
-//             Ok(())
-//         });
-//     }
+            Ok(())
+        });
+    }
 }

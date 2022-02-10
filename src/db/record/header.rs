@@ -568,7 +568,7 @@ impl Header {
         let mut record = Record::new();
 
         for field in self._list.iter() {
-            record.add(field, Value::Default)?;
+            record.add(&field._name, Value::Default)?;
         }
         Ok(record)
     }
@@ -583,7 +583,7 @@ impl Header {
 
         for field in self._list.iter() {
             let value = field._value_type.read_value(reader)?;
-            record.add(field, value)?;
+            record.add(&field._name, value)?;
         }
         Ok(record)
     }
@@ -603,7 +603,9 @@ impl Header {
                 None => bail!("invalid value index! this should never happen, please check \
                     the record \"len()\" function")
             };
-            field._value_type.write_value(writer, value)?;
+            if let Err(e) = field._value_type.write_value(writer, value) {
+                bail!("error saving field \"{}\": {}", &field._name, e);
+            }
         }
         Ok(())
     }
@@ -3011,11 +3013,11 @@ mod tests {
 
             // test new record
             let mut expected = Record::new();
-            if let Err(e) = expected.add(&header._list[0], Value::Default) {
+            if let Err(e) = expected.add("foo", Value::Default) {
                 assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
                 return;
             }
-            if let Err(e) = expected.add(&header._list[1], Value::Default) {
+            if let Err(e) = expected.add("bar", Value::Default) {
                 assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
                 return;
             }
@@ -3061,27 +3063,15 @@ mod tests {
 
             // create expected record
             let mut expected = Record::new();
-            let field = Field{
-                _name: "foo".to_string(),
-                _value_type: FieldType::U64
-            };
-            if let Err(e) = expected.add(&field, Value::U64(453434523432543685u64)) {
+            if let Err(e) = expected.add("foo", Value::U64(453434523432543685u64)) {
                 assert!(false, "expected to add \"foo\" field but got error: {:?}", e);
                 return;
             }
-            let field = Field{
-                _name: "bar".to_string(),
-                _value_type: FieldType::Str(10)
-            };
-            if let Err(e) = expected.add(&field, Value::Str("hello".to_string())) {
+            if let Err(e) = expected.add("bar", Value::Str("hello".to_string())) {
                 assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
                 return;
             }
-            let field = Field{
-                _name: "abc".to_string(),
-                _value_type: FieldType::I16
-            };
-            if let Err(e) = expected.add(&field, Value::I16(2345i16)) {
+            if let Err(e) = expected.add("abc", Value::I16(2345i16)) {
                 assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
                 return;
             }
@@ -3123,27 +3113,15 @@ mod tests {
 
             // create record
             let mut record = Record::new();
-            let field = Field{
-                _name: "foo".to_string(),
-                _value_type: FieldType::F32
-            };
-            if let Err(e) = record.add(&field, Value::F32(4534345.345f32)) {
+            if let Err(e) = record.add("foo", Value::F32(4534345.345f32)) {
                 assert!(false, "expected to add \"foo\" field but got error: {:?}", e);
                 return;
             }
-            let field = Field{
-                _name: "bar".to_string(),
-                _value_type: FieldType::Str(12)
-            };
-            if let Err(e) = record.add(&field, Value::Str("world!".to_string())) {
+            if let Err(e) = record.add("bar", Value::Str("world!".to_string())) {
                 assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
                 return;
             }
-            let field = Field{
-                _name: "abc".to_string(),
-                _value_type: FieldType::U64
-            };
-            if let Err(e) = record.add(&field, Value::U64(3498570378509327509u64)) {
+            if let Err(e) = record.add("abc", Value::U64(3498570378509327509u64)) {
                 assert!(false, "expected to add \"bar\" field but got error: {:?}", e);
                 return;
             }

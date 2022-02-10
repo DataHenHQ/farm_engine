@@ -45,7 +45,7 @@ pub trait ExporterWriter {
     fn write_data(&mut self, fields: &[ExportField], input_data: JSMap<String, JSValue>, indexer_data: Data) -> Result<()>;
 }
 
-impl<T: ExporterWriter> ExporterWriter for &'_ T {
+impl<T: ExporterWriter> ExporterWriter for &'_ mut T {
     fn write(&mut self, text: &str) -> Result<()> {
         (**self).write(text)
     }
@@ -60,7 +60,7 @@ impl<T: ExporterWriter> ExporterWriter for &'_ T {
 }
 
 pub struct ExporterCSVWriter<W: Write> {
-    writer: csv::Writer<W>
+    pub writer: csv::Writer<W>
 }
 
 impl<W: Write> ExporterCSVWriter<W> {
@@ -93,7 +93,7 @@ impl<W: Write> ExporterCSVWriter<W> {
 }
 
 impl<W: Write> ExporterWriter for ExporterCSVWriter<W> {
-    fn write(&mut self, text: &str) -> Result<()> {
+    fn write(&mut self, _: &str) -> Result<()> {
         unimplemented!()
     }
 
@@ -110,7 +110,7 @@ impl<W: Write> ExporterWriter for ExporterCSVWriter<W> {
 }
 
 pub struct ExporterJSONWriter<'w, W: 'w> {
-    writer: &'w mut W
+    pub writer: &'w mut W
 }
 
 impl<'w, W: Write> ExporterJSONWriter<'w, W> {

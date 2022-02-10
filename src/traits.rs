@@ -1,5 +1,4 @@
 use std::io::{Read, Write};
-use serde_json::{Map as JSMap, Value as JSValue};
 use anyhow::{bail, Result};
 use crate::error::ParseError;
 
