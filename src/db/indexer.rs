@@ -65,7 +65,8 @@ pub struct Indexer {
 impl Indexer {
     /// Generates a regex expression to validate the index file extension.
     pub fn file_extension_regex() -> Regex {
-        Regex::new(format!(r"(?i)\.{}$", FILE_EXTENSION)).unwrap()
+        let expression = format!(r"(?i)\.{}$", FILE_EXTENSION);
+        Regex::new(&expression).unwrap()
     }
 
     /// Calculate the target value position at the index file.
@@ -260,7 +261,7 @@ impl Indexer {
             }
         };
         
-        // validate headers
+        // validate input hash match
         match self.header.hash {
             Some(saved_hash) => {
                 // validate input file hash
@@ -368,7 +369,6 @@ impl Indexer {
     /// * `is_first` - `true` when the input reader is set at position 0.
     fn index_csv(&mut self, input_rdr: impl Read, index_wrt: &mut (impl Seek + Write), is_first: bool) -> Result<()> {
         // index records
-        let mut value = Value::new();
         let mut is_first = is_first;
         let mut input_rdr_nav = self.new_input_reader()?;
         let mut input_csv = csv::ReaderBuilder::new()
@@ -390,7 +390,7 @@ impl Indexer {
             }
 
             // create index value
-            value = match item.unwrap() {
+            let value = match item.unwrap() {
                 Ok(v) => self.index_csv_record(&iter, v, &mut input_rdr_nav)?,
                 Err(e) => bail!(ParseError::from(e))
             };
@@ -732,8 +732,8 @@ mod tests {
     }
 
     #[test]
-    fn calc_record_pos_without_fields() {
-        assert_eq!(112, Indexer::calc_value_pos(2));
+    fn calc_record_pos() {
+        assert_eq!(108, Indexer::calc_value_pos(2));
     }
 
     #[test]
@@ -952,7 +952,9 @@ mod tests {
             values[2].input_end_pos = 27;
             values[2].match_flag = MatchFlag::Yes;
             values[2].spent_time = 93;
-            indexer.save_value(2, &values[2])?;
+            if let Err(e) = indexer.save_value(2, &values[2]) {
+                assert!(false, "expected success but got error: {:?}", e)
+            }
             reader.seek(SeekFrom::Start(0))?;
             let mut new_bytes_before = vec!(0u8; pos as usize);
             let mut new_bytes_after = [0u8; Value::BYTES];
@@ -1000,7 +1002,7 @@ mod tests {
     }
 
     #[test]
-    fn find_unmatched_with_offset() {
+    fn find_pending_with_offset() {
         with_tmpdir_and_indexer(&|_, indexer| {
             // create index and check original value
             create_fake_index(&indexer.index_path, false)?;
@@ -1030,7 +1032,7 @@ mod tests {
     }
 
     #[test]
-    fn find_unmatched_with_non_indexed() {
+    fn find_pending_with_non_indexed() {
         with_tmpdir_and_indexer(&|_, indexer| {
             // create index and check original value
             create_fake_index(&indexer.index_path, false)?;
@@ -1056,7 +1058,7 @@ mod tests {
     }
 
     #[test]
-    fn find_unmatched_with_offset_overflow() {
+    fn find_pending_with_offset_overflow() {
         with_tmpdir_and_indexer(&|_, indexer| {
             // create index and check original value
             create_fake_index(&indexer.index_path, false)?;
@@ -1149,7 +1151,7 @@ mod tests {
 
             create_file_with_bytes(&indexer.index_path, &buf)?;
             create_fake_input(&indexer.input_path)?;
-            assert_eq!(Status::Corrupted, indexer.healthcheck()?);
+            assert_eq!(Status::WrongInputFile, indexer.healthcheck()?);
             Ok(())
         });
     }

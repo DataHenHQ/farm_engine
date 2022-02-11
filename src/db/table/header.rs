@@ -68,8 +68,8 @@ impl Header {
         carry += u64::BYTES;
 
         // save table name
-        let name_value = Value::Str(self._name);
-        let name_writer = &mut buf[carry..carry+TABLE_NAME_FIELD.value_byte_size()] as &mut [u8];
+        let name_value = Value::Str(self._name.clone());
+        let mut name_writer = &mut buf[carry..carry+TABLE_NAME_FIELD.value_byte_size()] as &mut [u8];
         TABLE_NAME_FIELD.write_value(&mut name_writer, &name_value).unwrap();
 
         buf
@@ -212,7 +212,8 @@ mod tests {
     #[test]
     fn new_with_invalid_name() {
         let expected = "table name must be shorter than 50 bytes";
-        let invalid_name = String::from_utf8_lossy(vec![b'a'; 51]);
+        let buf = vec![b'a'; 51];
+        let invalid_name = String::from_utf8_lossy(buf.as_slice());
         match Header::new(&invalid_name) {
             Ok(v) => assert!(false, "expected error but got {:?}", v),
             Err(e) => assert_eq!(expected, e.to_string())
@@ -222,11 +223,11 @@ mod tests {
     #[test]
     fn as_bytes() {
         // first test
-        let mut expected: [u8; Header::BYTES] = [
+        let expected: [u8; Header::BYTES] = [
             // magic number
-            100, 97, 116, 97, 104, 101, 110, 95, 105, 100, 120,
+            100, 97, 116, 97, 104, 101, 110, 95, 116, 98, 108,
             // version
-            0, 0, 0, 2,
+            0, 0, 0, 1,
             // record count = 2311457452320998632
             32, 19, 242, 78, 103, 5, 196, 232,
             // name size
@@ -247,9 +248,9 @@ mod tests {
         // second test
         let expected: [u8; Header::BYTES] = [
             // magic number
-            100, 97, 116, 97, 104, 101, 110, 95, 105, 100, 120,
+            100, 97, 116, 97, 104, 101, 110, 95, 116, 98, 108,
             // version
-            0, 0, 0, 2,
+            0, 0, 0, 1,
             // record count = 4525325654675485867
             62, 205, 47, 180, 235, 228, 244, 171,
             // name size

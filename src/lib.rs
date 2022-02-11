@@ -3,14 +3,24 @@ pub mod helper;
 pub mod traits;
 pub mod db;
 
-use std::fs::File;
-use std::io::{Seek, SeekFrom, Read, BufReader};
+use std::fs::{File, OpenOptions};
+use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
 use std::path::PathBuf;
 use sha3::{Digest, Sha3_256};
 use db::indexer::header::HASH_SIZE;
 use anyhow::{bail, Result};
 
 const BUF_SIZE: u64 = 4096;
+
+/// Fill function action.
+#[derive(Debug, PartialEq)]
+pub enum FillAction {
+    Created,
+    Fill,
+    Truncated,
+    Bigger,
+    Skip
+}
 
 /// Get a file size.
 /// 
@@ -27,6 +37,70 @@ pub fn file_size(path: &PathBuf) -> Result<u64> {
     let mut reader = BufReader::new(file);
     reader.seek(SeekFrom::End(0))?;
     Ok(reader.stream_position()?)
+}
+
+/// Fill a file with zero byte until the target size or ignore if
+/// bigger. Return true if file is bigger.
+/// 
+/// # Arguments
+/// 
+/// * `path` - File path to fill.
+/// * `target_size` - Target file size in bytes.
+/// * `truncate` - If `true` then it truncates de file and fill it.
+pub fn fill_file(path: &PathBuf, target_size: u64, truncate: bool) -> std::io::Result<FillAction> {
+    let mut action = FillAction::Fill;
+    let file = if truncate {
+        OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(path)?
+    } else {
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .write(true)
+            .open(path)?
+    };
+
+    // get file size
+    file.sync_all()?;
+    let mut size = file.metadata()?.len();
+
+    // change default action to created when new file
+    if size < 1 {
+        action = FillAction::Created;
+    }
+
+    // validate file current size vs target size
+    if truncate {
+        action = FillAction::Truncated;
+    } else {
+        if target_size < size {
+            // file is bigger, return true
+            return Ok(FillAction::Bigger);
+        }
+        if target_size == size {
+            return Ok(FillAction::Skip);
+        }
+    }
+
+    // fill file with zeros until target size is match
+    let buf_size = 4096u64;
+    let buf = [0u8; 4096];
+    let mut wrt = BufWriter::new(file);
+    while size + buf_size < target_size {
+        wrt.write_all(&buf)?;
+        size += buf_size;
+        wrt.flush()?;
+    }
+    let remaining = (target_size - size) as usize;
+    if remaining > 0 {
+        wrt.write_all(&buf[..remaining])?;
+    }
+    wrt.flush()?;
+
+    Ok(action)
 }
 
 /// Generates a hash value from a file contents.
@@ -89,6 +163,153 @@ mod tests {
                 Ok(v) => assert!(false, "expected an error but got {:?}", v),
                 Err(e) => assert_eq!(expected, e.to_string())
             }
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn fill_file_non_exists() {
+        with_tmpdir(&|dir| -> Result<()> {
+            let path = dir.path().join("my_file");
+            
+            // fill file
+            match fill_file(&path, 20, false) {
+                Ok(action) => assert_eq!(FillAction::Created, action),
+                Err(e) => assert!(false, "expected FillAction::Created but got error: {:?}", e)
+            }
+
+            // read file after fill
+            let file = File::open(&path)?;
+            let mut reader = BufReader::new(file);
+            let mut buf: Vec<u8> = vec!();
+            reader.read_to_end(&mut buf)?;
+
+            // compare
+            let expected = [0u8; 20].to_vec();
+            assert_eq!(expected, buf);
+
+            // drop file
+            drop(path);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn fill_file_smaller() {
+        with_tmpdir(&|dir| -> Result<()> {
+            // create test file
+            let path = dir.path().join("my_file");
+            let buf: [u8; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+            create_file_with_bytes(&path, &buf)?;
+
+            // fill file
+            match fill_file(&path, 15, false) {
+                Ok(action) => assert_eq!(FillAction::Fill, action),
+                Err(e) => assert!(false, "expected FillAction::Fill but got error: {:?}", e)
+            }
+
+            // read file after fill
+            let file = File::open(&path)?;
+            let mut reader = BufReader::new(file);
+            let mut buf: Vec<u8> = vec!();
+            reader.read_to_end(&mut buf)?;
+
+            // compare
+            let expected = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 0, 0, 0, 0].to_vec();
+            assert_eq!(expected, buf);
+
+            // drop test file
+            drop(path);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn fill_file_bigger() {
+        with_tmpdir(&|dir| -> Result<()> {
+            // create test file
+            let path = dir.path().join("my_file");
+            let buf: [u8; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+            create_file_with_bytes(&path, &buf)?;
+
+            // fill file
+            match fill_file(&path, 10, false) {
+                Ok(action) => assert_eq!(FillAction::Bigger, action),
+                Err(e) => assert!(false, "expected FillAction::Bigger but got error: {:?}", e)
+            }
+
+            // read file afer fill
+            let file = File::open(&path)?;
+            let mut reader = BufReader::new(file);
+            let mut buf: Vec<u8> = vec!();
+            reader.read_to_end(&mut buf)?;
+
+            // compare
+            let expected = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].to_vec();
+            assert_eq!(expected, buf);
+
+            // drop test file
+            drop(path);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn fill_file_equal() {
+        with_tmpdir(&|dir| -> Result<()> {
+            // create test file
+            let path = dir.path().join("my_file");
+            let buf: [u8; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+            create_file_with_bytes(&path, &buf)?;
+
+            // fill file
+            match fill_file(&path, 15, false) {
+                Ok(action) => assert_eq!(FillAction::Skip, action),
+                Err(e) => assert!(false, "expected FillAction::Skip but got error: {:?}", e)
+            }
+
+            // read file after fill
+            let file = File::open(&path)?;
+            let mut reader = BufReader::new(file);
+            let mut buf: Vec<u8> = vec!();
+            reader.read_to_end(&mut buf)?;
+
+            // compare
+            let expected = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15].to_vec();
+            assert_eq!(expected, buf);
+
+            // drop test file
+            drop(path);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn fill_file_truncate() {
+        with_tmpdir(&|dir| -> Result<()> {
+            // create test file
+            let path = dir.path().join("my_file");
+            let buf: [u8; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+            create_file_with_bytes(&path, &buf)?;
+
+            // fill file
+            match fill_file(&path, 10, true) {
+                Ok(action) => assert_eq!(FillAction::Truncated, action),
+                Err(e) => assert!(false, "expected FillAction::Truncated but got error: {:?}", e)
+            }
+
+            // read file after fill
+            let file = File::open(&path)?;
+            let mut reader = BufReader::new(file);
+            let mut buf: Vec<u8> = vec!();
+            reader.read_to_end(&mut buf)?;
+
+            // compare
+            let expected = [0u8; 10].to_vec();
+            assert_eq!(expected, buf);
+
+            // drop test file
+            drop(path);
             Ok(())
         });
     }

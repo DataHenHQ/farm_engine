@@ -186,7 +186,7 @@ impl<'w, W: Write> ExporterWriter for ExporterJSONWriter<'w, W> {
 }
 
 /// Represent an exporter instance.
-struct Exporter<'s> {
+pub struct Exporter<'s> {
     /// Data source.
     pub source: &'s Source,
 
@@ -201,7 +201,7 @@ impl<'s> Exporter<'s> {
     /// 
     /// * `source` - Data source.
     /// * `file_type` - Output file type.
-    fn new(source: &'s Source, file_type: ExportFileType) -> Self {
+    pub fn new(source: &'s Source, file_type: ExportFileType) -> Self {
         Self{
             source,
             file_type
@@ -235,8 +235,7 @@ impl<'s> Exporter<'s> {
 
         // create the table reader and move to first record
         let mut table_rdr = self.source.table.new_reader()?;
-        let pos = table.calc_record_pos(0);
-        let record_size = table.size;
+        let pos = self.source.table.calc_record_pos(0);
         table_rdr.seek(SeekFrom::Start(pos))?;
 
         // create input CSV reader
@@ -252,30 +251,13 @@ impl<'s> Exporter<'s> {
             let export_data = ExportData{
                 input: result?,
                 index: IndexValue::read_from(&mut index_rdr)?,
-                record: table.read_record_from()
+                record: self.source.table.record_header.read_record(&mut table_rdr)?
             };
 
             // write data
             writer.write_data(fields, export_data)?;
         };
         Ok(())
-    }
-
-    /// Export the input plus records data into a json writer.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `writer` - Byte writer.
-    /// * `fields` - List of fields to export.
-    fn export_from_json(&self, writer: &mut impl ExporterWriter, fields: &[ExportField]) -> Result<()> {
-        // // write array start
-        // write!(writer, "[")?;
-
-        unimplemented!()
-
-        // // write array end
-        // write!(writer, "]");
-        // Ok(())
     }
 
     /// Export the source data into a writer.
@@ -303,10 +285,7 @@ impl<'s> Exporter<'s> {
                         &mut exporter_writer,
                         fields
                     ),
-                    InputType::JSON => self.export_from_json(
-                        &mut exporter_writer,
-                        fields
-                    ),
+                    InputType::JSON => unimplemented!(),
                     InputType::Unknown => bail!("unsupported input file type")
                 }
             },
@@ -319,10 +298,7 @@ impl<'s> Exporter<'s> {
                         &mut exporter_writer,
                         fields
                     ),
-                    InputType::JSON => self.export_from_json(
-                        &mut exporter_writer,
-                        fields
-                    ),
+                    InputType::JSON => unimplemented!(),
                     InputType::Unknown => bail!("unsupported input file type")
                 }
             }
@@ -341,7 +317,7 @@ impl<'s> Exporter<'s> {
             .create(true)
             .open(&output_path)?;
         let mut writer = BufWriter::new(file);
-        self.export_to(&mut writer, fields: &[ExportField])
+        self.export_to(&mut writer, fields)
     }
 }
 
