@@ -10,7 +10,7 @@ pub enum ParseError {
     #[error("invalid byte slice value")]
     InvalidValue,
     #[error("unavailable due status \"{}\"", .0)]
-    Unavailable(crate::db::indexer::IndexStatus),
+    Unavailable(crate::db::indexer::Status),
     #[error("retry limit reached")]
     RetryLimit,
     #[error(transparent)]

@@ -287,7 +287,6 @@ pub mod test_helper {
             input_type
         }.as_bytes()
     }
-
 }
 
 #[cfg(test)]
@@ -453,7 +452,7 @@ mod tests {
             let buf = build_header_bytes(true, &hash, true, 4535435, InputType::JSON);
             let mut reader = &buf as &[u8];
             if let Err(e) = header.load_from(&mut reader) {
-                assert!(false, "shouldn't error out but got error: {:?}", e);
+                assert!(false, "expected success but got error: {:?}", e);
                 return;
             };
             assert_eq!(expected, header);
@@ -474,7 +473,7 @@ mod tests {
             let buf = build_header_bytes(false, &[], false, 6572646535124, InputType::JSON);
             let mut reader = &buf as &[u8];
             if let Err(e) = header.load_from(&mut reader) {
-                assert!(false, "shouldn't error out but got error: {:?}", e);
+                assert!(false, "expected success but got error: {:?}", e);
                 return;
             };
             assert_eq!(expected, header);
@@ -515,7 +514,7 @@ mod tests {
             let value = match Header::from_byte_slice(&buf) {
                 Ok(v) => v,
                 Err(e) => {
-                    assert!(false, "shouldn't error out but got error: {:?}", e);
+                    assert!(false, "expected success but got error: {:?}", e);
                     return;
                 }
             };
@@ -532,7 +531,7 @@ mod tests {
             let value = match Header::from_byte_slice(&buf) {
                 Ok(v) => v,
                 Err(e) => {
-                    assert!(false, "shouldn't error out but got error: {:?}", e);
+                    assert!(false, "expected success but got error: {:?}", e);
                     return;
                 }
             };
@@ -554,7 +553,7 @@ mod tests {
             let value = match Header::read_from(&mut reader) {
                 Ok(v) => v,
                 Err(e) => {
-                    assert!(false, "shouldn't error out but got error: {:?}", e);
+                    assert!(false, "expected success but got error: {:?}", e);
                     return;
                 }
             };
@@ -572,7 +571,7 @@ mod tests {
             let value = match Header::read_from(&mut reader) {
                 Ok(v) => v,
                 Err(e) => {
-                    assert!(false, "shouldn't error out but got error: {:?}", e);
+                    assert!(false, "expected success but got error: {:?}", e);
                     return;
                 }
             };
@@ -592,8 +591,8 @@ mod tests {
             let buf = build_header_bytes(true, &hash, false, 32412342134234, InputType::CSV);
             let value = match Header::try_from(&buf[..]) {
                 Ok(v) => v,
-                Err(_) => {
-                    assert!(false, "shouldn't error out");
+                Err(e) => {
+                    assert!(false, "expected success but got error: {:?}", e);
                     return;
                 }
             };
@@ -609,8 +608,8 @@ mod tests {
             let buf = build_header_bytes(false, &[], true, 56535423143214, InputType::JSON);
             let value = match Header::try_from(&buf[..]) {
                 Ok(v) => v,
-                Err(_) => {
-                    assert!(false, "shouldn't error out");
+                Err(e) => {
+                    assert!(false, "expected success but got error: {:?}", e);
                     return;
                 }
             };
