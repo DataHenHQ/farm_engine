@@ -2,12 +2,13 @@ pub mod header;
 pub mod record;
 
 use anyhow::{bail, Result};
+use regex::Regex;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
 use std::path::PathBuf;
-use thiserror::Error;
 use crate::{file_size, fill_file};
+use crate::error::TableError;
 use crate::traits::{ByteSized, LoadFrom, WriteTo};
 use header::Header;
 use record::header::{Header as RecordHeader};
@@ -39,17 +40,8 @@ impl Display for Status{
     }
 }
 
-/// Table error.
-#[derive(Error, Debug)]
-pub enum TableError {
-    #[error("the table doesn't have any fields")]
-    NoFields,
-    #[error("unavailable due status \"{}\"", .0)]
-    Unavailable(Status)
-}
-
 /// Table engine.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Table {
     /// Table file path.
     pub path: PathBuf,
@@ -62,6 +54,12 @@ pub struct Table {
 }
 
 impl Table {
+    /// Generates a regex expression to validate the index file extension.
+    pub fn file_extension_regex() -> Regex {
+        let expression = format!(r"(?i)\.{}$", FILE_EXTENSION);
+        Regex::new(&expression).unwrap()
+    }
+
     /// Create a new table instance.
     /// 
     /// # Arguments
@@ -244,7 +242,7 @@ impl Table {
     /// # Arguments
     /// 
     /// * `writer` - Byte writer.
-    fn save_headers(&self, writer: &mut (impl Write + Seek)) -> Result<()> {
+    pub fn save_headers(&self, writer: &mut (impl Write + Seek)) -> Result<()> {
         writer.flush()?;
         let old_pos = writer.stream_position()?;
         writer.rewind()?;
@@ -529,6 +527,14 @@ mod tests {
     use crate::db::table::header::test_helper::build_header_bytes;
 
     #[test]
+    fn file_extension_regex() {
+        let rx = Table::file_extension_regex();
+        assert!(rx.is_match("hello.fmtable"), "expected to match \"hello.fmtable\" but got false");
+        assert!(rx.is_match("/path/to/hello.fmtable"), "expected to match \"/path/to/hello.fmtable\" but got false");
+        assert!(!rx.is_match("hello.table"), "expected to not match \"hello.table\" but got true");
+    }
+
+    #[test]
     fn new() {
         let header = Header::new("my_table").unwrap();
         let expected = Table{
@@ -797,11 +803,37 @@ mod tests {
     }
 
     #[test]
+    fn save_record_into_smaller_file() {
+        with_tmpdir_and_table(&|_, table| {
+            // create table
+            let mut records = create_fake_table(&table.path, false)?;
+            add_fields(&mut table.record_header)?;
+
+            // set record count to trigger the error
+            table.header.record_count = 1;
+
+            // test
+            let expected = "can't write or append the record, the table file is too small";
+            records[2].set("foo", Value::I32(11))?;
+            records[2].set("bar", Value::Str("hello".to_string()))?;
+            match table.save_record(2, &records[2]) {
+                Ok(v) => assert!(false, "expected error but got {:?}", v),
+                Err(e) => assert_eq!(expected, e.to_string())
+            }
+            
+            Ok(())
+        });
+    }
+
+    #[test]
     fn save_record_into_with_fields() {
         with_tmpdir_and_table(&|_, table| {
             // create table and check original value
             let mut records = create_fake_table(&table.path, false)?;
             add_fields(&mut table.record_header)?;
+            table.header.record_count = records.len() as u64;
+
+            // read old record value
             let pos = table.calc_record_pos(2);
             let mut buf = [0u8; ADD_FIELDS_RECORD_BYTES];
             let file = File::open(&table.path)?;
@@ -819,7 +851,7 @@ mod tests {
             ];
             assert_eq!(expected, buf);
 
-            // save record and check value
+            // save record and check saved record value
             let expected = [
                 // foo field
                 0, 0, 0, 11u8,
@@ -964,10 +996,10 @@ mod tests {
             // create table file and read table header data
             create_fake_table(&table.path, false)?;
             let mut reader = table.new_reader()?;
-            let size = Header::BYTES + table.record_header.size_as_bytes() as usize;
+            let size = Header::BYTES + 122;
             let mut expected = vec![0u8; size];
             reader.read_exact(&mut expected)?;
-            reader.seek(SeekFrom::Start(0))?;
+            reader.rewind()?;
             table.header.load_from(&mut reader)?;
             table.record_header.load_from(&mut reader)?;
 

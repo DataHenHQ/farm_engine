@@ -3,15 +3,17 @@ pub mod value;
 
 use anyhow::{bail, Result};
 use regex::Regex;
+use serde_json::{Map as JSMap, Value as JSValue};
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
 use std::path::PathBuf;
 use crate::error::ParseError;
 use crate::{file_size, generate_hash};
+use crate::error::IndexError;
 use crate::traits::{ByteSized, LoadFrom, ReadFrom, WriteTo};
 use header::{Header, InputType};
-use value::{MatchFlag, Value};
+use value::{MatchFlag, Data, Value};
 
 /// Indexer version.
 pub const VERSION: u32 = 2;
@@ -47,7 +49,7 @@ impl Display for Status{
 }
 
 /// Indexer engine.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Indexer {
     /// Input file path.
     pub input_path: PathBuf,
@@ -59,7 +61,10 @@ pub struct Indexer {
     pub header: Header,
 
     /// Indexing batch size before updating the index header.
-    pub batch_size: u64
+    pub batch_size: u64,
+
+    /// Input field name list.
+    pub input_fields: Vec<String>,
 }
 
 impl Indexer {
@@ -91,7 +96,8 @@ impl Indexer {
             input_path,
             index_path,
             header,
-            batch_size: DEFAULT_BATCH_SIZE
+            batch_size: DEFAULT_BATCH_SIZE,
+            input_fields: Vec::new()
         }
     }
 
@@ -141,7 +147,7 @@ impl Indexer {
     /// * `index` - Record index.
     pub fn seek_value_from(&self, reader: &mut (impl Read + Seek), index: u64, force: bool) -> Result<Option<Value>> {
         if !force && !self.header.indexed {
-            bail!("input file must be indexed before reading records")
+            bail!("input file must be indexed before reading values")
         }
         if self.header.indexed_count > index {
             let pos = Self::calc_value_pos(index);
@@ -162,6 +168,80 @@ impl Indexer {
         self.seek_value_from(&mut reader, index, false)
     }
 
+    /// Parse the input record from an index value as CSV.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `value` - Index value
+    fn parse_csv_input(&self, value: &Value) -> Result<JSMap<String, JSValue>> {
+        // create CSV headers
+        let mut buf = Vec::new();
+        let limit = self.input_fields.len();
+        if limit < 1 {
+            bail!(IndexError::NoInputFields)
+        }
+        buf.extend_from_slice(self.input_fields[0].as_bytes());
+        if limit > 1 {
+            for i in 1..limit {
+                buf.push(b',');
+                buf.extend(self.input_fields[i].as_bytes());
+            }
+        }
+        buf.push(b'\n');
+
+        // read input record
+        let mut reader = self.new_input_reader()?;
+        buf.append(&mut value.read_input_from(&mut reader)?);
+
+        // deserialize CSV string object into a JSON map
+        let mut csv_reader = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .flexible(true)
+            .from_reader(buf.as_slice());
+        match csv_reader.deserialize().next() {
+            Some(result) => match result {
+                Ok(record) => Ok(record),
+                Err(e) => {
+                    eprintln!(
+                        "Couldn't parse input record at byte position {}: {}",
+                        value.input_start_pos,
+                        e
+                    );
+                    bail!(ParseError::InvalidFormat)
+                }
+            },
+            None => bail!(ParseError::InvalidValue)
+        }
+    }
+
+    /// Parse the input record from an index value as JSON.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `value` - Index value
+    fn parse_json_input(&self, value: &Value) -> Result<JSMap<String, JSValue>> {
+        let mut reader = self.new_input_reader()?;
+        let buf = value.read_input_from(&mut reader)?;
+        Ok(serde_json::from_reader(buf.as_slice())?)
+    }
+
+    /// Parse the input record from an index value.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `value` - Index value
+    pub fn parse_input(&self, value: &Value) -> Result<JSMap<String, JSValue>> {
+        if !self.header.indexed {
+            bail!("input file must be indexed before parsing and input value")
+        }
+
+        match self.header.input_type {
+            InputType::CSV => self.parse_csv_input(value),
+            InputType::JSON => self.parse_json_input(value),
+            InputType::Unknown => bail!("not supported input file type")
+        }
+    }
+
     /// Updates or append an index value into the index file.
     /// 
     /// # Arguments
@@ -177,6 +257,21 @@ impl Indexer {
         Ok(())
     }
 
+    /// Updates or append an index value data into the index file.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `index` - Value index.
+    /// * `data` - Index value data to save.
+    pub fn save_data(&self, index: u64, data: &Data) -> Result<()> {
+        let pos = Self::calc_value_pos(index) + Value::DATA_OFFSET as u64;
+        let mut writer = self.new_index_writer(false)?;
+        writer.seek(SeekFrom::Start(pos))?;
+        data.write_to(&mut writer)?;
+        writer.flush()?;
+        Ok(())
+    }
+
     /// Return the index of the closest non-processed value.
     /// 
     /// # Arguments
@@ -185,7 +280,7 @@ impl Indexer {
     pub fn find_pending(&self, from_index: u64) -> Result<Option<u64>> {
         // validate indexed
         if !self.header.indexed {
-            bail!(ParseError::Unavailable(Status::Incomplete));
+            bail!(IndexError::Unavailable(Status::Incomplete));
         }
 
         // validate index size
@@ -302,7 +397,7 @@ impl Indexer {
     /// # Arguments
     /// 
     /// * `writer` - Byte writer.
-    fn save_index_header(&self, writer: &mut (impl Write + Seek)) -> Result<()> {
+    pub fn save_header(&self, writer: &mut (impl Write + Seek)) -> Result<()> {
         writer.flush()?;
         let old_pos = writer.stream_position()?;
         writer.rewind()?;
@@ -310,6 +405,34 @@ impl Indexer {
         writer.flush()?;
         writer.seek(SeekFrom::Start(old_pos))?;
         Ok(())
+    }
+
+    /// Loads fields names from a CSV input file.
+    fn load_input_csv_fields(&mut self) -> Result<()> {
+        let reader = self.new_input_reader()?;
+        let mut csv_reader = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .from_reader(reader);
+        let mut fields = Vec::new();
+        for field in csv_reader.headers()? {
+            fields.push(field.to_string());
+        }
+        self.input_fields = fields;
+        Ok(())
+    }
+
+    /// Loads fields names from a CSV input file.
+    fn load_input_json_fields(&mut self) -> Result<()> {
+        unimplemented!()
+    }
+
+    /// Loads the input fields.
+    pub fn load_input_fields(&mut self) -> Result<()> {
+        match self.header.input_type {
+            InputType::CSV => self.load_input_csv_fields(),
+            InputType::JSON => self.load_input_json_fields(),
+            InputType::Unknown => bail!("not supported input file type")
+        }
     }
 
     /// Process a CSV item into an Value.
@@ -354,8 +477,10 @@ impl Indexer {
         Ok(Value{
             input_start_pos: start_pos,
             input_end_pos: end_pos,
-            spent_time: 0,
-            match_flag: MatchFlag::None
+            data: Data{
+                spent_time: 0,
+                match_flag: MatchFlag::None
+            }
         })
     }
 
@@ -376,38 +501,37 @@ impl Indexer {
             .flexible(true)
             .from_reader(input_rdr);
         let mut iter = input_csv.records();
-        loop {
-            // break when no more items
-            let item = iter.next();
-            if item.is_none() {
-                break;
-            }
+        'records: loop {
+            match iter.next() {
+                None => break 'records,
+                Some(item) => {
+                    // skip CSV headers
+                    if is_first {
+                        is_first = false;
+                        continue 'records;
+                    }
 
-            // skip CSV headers
-            if is_first {
-                is_first = false;
-                continue;
-            }
+                    // create index value
+                    let value = match item {
+                        Ok(v) => self.index_csv_record(&iter, v, &mut input_rdr_nav)?,
+                        Err(e) => bail!(e)
+                    };
 
-            // create index value
-            let value = match item.unwrap() {
-                Ok(v) => self.index_csv_record(&iter, v, &mut input_rdr_nav)?,
-                Err(e) => bail!(ParseError::from(e))
-            };
+                    // write index value for this record
+                    value.write_to(index_wrt)?;
+                    self.header.indexed_count += 1;
 
-            // write index value for this record
-            value.write_to(index_wrt)?;
-            self.header.indexed_count += 1;
-
-            // save headers every batch
-            if self.header.indexed_count % self.batch_size < 1 {
-                self.save_index_header(index_wrt)?;
+                    // save headers every batch
+                    if self.header.indexed_count % self.batch_size < 1 {
+                        self.save_header(index_wrt)?;
+                    }
+                }
             }
         }
 
         // write headers
         self.header.indexed = true;
-        self.save_index_header(index_wrt)?;
+        self.save_header(index_wrt)?;
 
         Ok(())
     }
@@ -423,7 +547,10 @@ impl Indexer {
         // perform index healthcheck
         match self.healthcheck() {
             Ok(v) => match v {
-                Status::Indexed => return Ok(()),
+                Status::Indexed => {
+                    self.load_input_fields()?;
+                    return Ok(())
+                },
                 Status::Incomplete => {
                     // read last indexed record or create the index file
                     let mut reader = self.new_index_reader()?;
@@ -443,12 +570,13 @@ impl Indexer {
                     self.header.write_to(&mut index_wrt)?;
                     index_wrt.flush()?;
                 }
-                vu => bail!(ParseError::Unavailable(vu))
+                vu => bail!(IndexError::Unavailable(vu))
             },
             Err(e) => return Err(e)
         }
 
         // index input file
+        self.load_input_fields()?;
         match self.header.input_type {
             InputType::CSV => self.index_csv(&mut input_rdr, &mut index_wrt, is_first),
             InputType::JSON => unimplemented!(),
@@ -519,24 +647,30 @@ pub mod test_helper {
         values.push(Value{
             input_start_pos: 50,
             input_end_pos: 100,
-            match_flag: MatchFlag::Yes,
-            spent_time: 150
+            data: Data{
+                match_flag: MatchFlag::Yes,
+                spent_time: 150
+            }
         });
 
         // add second value
         values.push(Value{
             input_start_pos: 200,
             input_end_pos: 250,
-            match_flag: MatchFlag::None,
-            spent_time: 300
+            data: Data{
+                match_flag: MatchFlag::None,
+                spent_time: 300
+            }
         });
 
         // add third value
         values.push(Value{
             input_start_pos: 350,
             input_end_pos: 400,
-            match_flag: MatchFlag::Skip,
-            spent_time: 450
+            data: Data{
+                match_flag: MatchFlag::Skip,
+                spent_time: 450
+            }
         });
 
         Ok(values)
@@ -611,8 +745,8 @@ pub mod test_helper {
         value.input_start_pos = 22;
         value.input_end_pos = 44;
         if !unprocessed {
-            value.match_flag = MatchFlag::Yes;
-            value.spent_time = 23;
+            value.data.match_flag = MatchFlag::Yes;
+            value.data.spent_time = 23;
         }
         value.write_to(writer)?;
         values.push(value);
@@ -622,8 +756,8 @@ pub mod test_helper {
         value.input_start_pos = 46;
         value.input_end_pos = 80;
         if !unprocessed {
-            value.match_flag = MatchFlag::No;
-            value.spent_time = 25;
+            value.data.match_flag = MatchFlag::No;
+            value.data.spent_time = 25;
         }
         value.write_to(writer)?;
         values.push(value);
@@ -633,8 +767,8 @@ pub mod test_helper {
         value.input_start_pos = 82;
         value.input_end_pos = 106;
         if !unprocessed {
-            value.match_flag = MatchFlag::None;
-            value.spent_time = 30;
+            value.data.match_flag = MatchFlag::None;
+            value.data.spent_time = 30;
         }
         value.write_to(writer)?;
         values.push(value);
@@ -644,8 +778,8 @@ pub mod test_helper {
         value.input_start_pos = 108;
         value.input_end_pos = 139;
         if !unprocessed {
-            value.match_flag = MatchFlag::Skip;
-            value.spent_time = 41;
+            value.data.match_flag = MatchFlag::Skip;
+            value.data.spent_time = 41;
         }
         value.write_to(writer)?;
         values.push(value);
@@ -704,6 +838,7 @@ pub mod test_helper {
 mod tests {
     use super::*;
     use test_helper::*;
+    use serde_json::Number as JSNumber;
     use std::io::Cursor;
     use crate::test_helper::*;
     use crate::db::indexer::header::{HASH_SIZE};
@@ -725,7 +860,8 @@ mod tests {
             input_path: "my_input.csv".into(),
             index_path: "my_index.fmidx".into(),
             header,
-            batch_size: DEFAULT_BATCH_SIZE
+            batch_size: DEFAULT_BATCH_SIZE,
+            input_fields: Vec::new()
         };
         let indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::JSON);
         assert_eq!(expected, indexer);
@@ -912,7 +1048,67 @@ mod tests {
     }
 
     #[test]
-    fn save_value_into() {
+    fn parse_csv_input() {
+        with_tmpdir_and_indexer(&|_, indexer| {
+            // create input and setup indexer
+            create_fake_input(&indexer.input_path)?;
+            indexer.input_fields = vec![
+                "name".to_string(),
+                "size".to_string(),
+                "price".to_string(),
+                "color".to_string()
+            ];
+            let value = Value{
+                input_start_pos: 46,
+                input_end_pos: 80,
+                data: Data{
+                    spent_time: 0,
+                    match_flag: MatchFlag::None
+                }
+            };
+            
+            // test
+            let mut expected = JSMap::new();
+            expected.insert("name".to_string(), JSValue::String("keyboard".to_string()));
+            expected.insert("size".to_string(), JSValue::String("medium".to_string()));
+            expected.insert("price".to_string(), JSValue::Number(JSNumber::from_f64(23.45f64).unwrap()));
+            expected.insert("color".to_string(), JSValue::String("black\nwhite".to_string()));
+            match indexer.parse_csv_input(&value) {
+                Ok(v) => assert_eq!(expected, v),
+                Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+            }
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn parse_csv_input_without_input_fields() {
+        with_tmpdir_and_indexer(&|_, indexer| {
+            // create input
+            create_fake_input(&indexer.input_path)?;
+            let value = Value{
+                input_start_pos: 46,
+                input_end_pos: 80,
+                data: Data{
+                    spent_time: 0,
+                    match_flag: MatchFlag::None
+                }
+            };
+            
+            // test
+            let expected = "the input doesn't have any fields";
+            match indexer.parse_csv_input(&value) {
+                Ok(v) => assert!(false, "expected error but got {:?}", v),
+                Err(e) => assert_eq!(expected, e.to_string())
+            }
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn save_value() {
         with_tmpdir_and_indexer(&|_, indexer| {
             // create index and check original value
             let mut values = create_fake_index(&indexer.index_path, true)?;
@@ -950,9 +1146,65 @@ mod tests {
             ];
             values[2].input_start_pos = 10;
             values[2].input_end_pos = 27;
-            values[2].match_flag = MatchFlag::Yes;
-            values[2].spent_time = 93;
+            values[2].data.match_flag = MatchFlag::Yes;
+            values[2].data.spent_time = 93;
             if let Err(e) = indexer.save_value(2, &values[2]) {
+                assert!(false, "expected success but got error: {:?}", e)
+            }
+            reader.seek(SeekFrom::Start(0))?;
+            let mut new_bytes_before = vec!(0u8; pos as usize);
+            let mut new_bytes_after = [0u8; Value::BYTES];
+            reader.read_exact(&mut new_bytes_before)?;
+            reader.read_exact(&mut buf)?;
+            reader.read_exact(&mut new_bytes_after)?;
+            assert_eq!(old_bytes_before, new_bytes_before);
+            assert_eq!(expected, buf);
+            assert_eq!(old_bytes_after, new_bytes_after);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn save_data() {
+        with_tmpdir_and_indexer(&|_, indexer| {
+            // create index and check original value
+            let mut values = create_fake_index(&indexer.index_path, true)?;
+            let pos = Indexer::calc_value_pos(2);
+            let mut buf = [0u8; Value::BYTES];
+            let file = File::open(&indexer.index_path)?;
+            let mut reader = BufReader::new(file);
+            let mut old_bytes_before = vec!(0u8; pos as usize);
+            let mut old_bytes_after = [0u8; Value::BYTES];
+            reader.read_exact(&mut old_bytes_before)?;
+            reader.read_exact(&mut buf)?;
+            reader.read_exact(&mut old_bytes_after)?;
+            let expected = [
+                // start_pos
+                0, 0, 0, 0, 0, 0, 0, 82u8,
+                // end_pos
+                0, 0, 0, 0, 0, 0, 0, 106u8,
+                // spent_time
+                0, 0, 0, 0, 0, 0, 0, 0,
+                // match flag
+                0
+            ];
+            assert_eq!(expected, buf);
+
+            // save value and check value
+            let expected = [
+                // start_pos
+                0, 0, 0, 0, 0, 0, 0, 82u8,
+                // end_pos
+                0, 0, 0, 0, 0, 0, 0, 106u8,
+                // spent_time
+                0, 0, 0, 0, 0, 0, 0, 93u8,
+                // match flag
+                b'Y'
+            ];
+            values[2].data.match_flag = MatchFlag::Yes;
+            values[2].data.spent_time = 93;
+            if let Err(e) = indexer.save_data(2, &values[2].data) {
                 assert!(false, "expected success but got error: {:?}", e)
             }
             reader.seek(SeekFrom::Start(0))?;
@@ -987,7 +1239,7 @@ mod tests {
             }
 
             // find non-existing unmatched from starting point
-            values[2].match_flag = MatchFlag::Yes;
+            values[2].data.match_flag = MatchFlag::Yes;
             indexer.save_value(2, &values[2])?;
             match indexer.find_pending(3) {
                 Ok(opt) => match opt {
@@ -1041,9 +1293,9 @@ mod tests {
             // find existing unmatched with offset
             match indexer.find_pending(1) {
                 Ok(opt) => assert!(false, "expected error but got {:?}", opt),
-                Err(e) => match e.downcast::<ParseError>(){
+                Err(e) => match e.downcast::<IndexError>(){
                     Ok(ex) => match ex {
-                        ParseError::Unavailable(status) => match status {
+                        IndexError::Unavailable(status) => match status {
                             Status::Incomplete => {},
                             s => assert!(false, "expected ParseError::Unavailable(Incomplete) but got: {:?}", s)
                         },
@@ -1219,7 +1471,7 @@ mod tests {
     }
 
     #[test]
-    fn save_index_header() {
+    fn save_header() {
         with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
             // create index file and read index header data
             create_fake_index(&indexer.index_path, false)?;
@@ -1233,7 +1485,7 @@ mod tests {
             let mut buf = [0u8; Header::BYTES];
             let wrt = &mut buf as &mut [u8];
             let mut writer = Cursor::new(wrt);
-            if let Err(e) = indexer.save_index_header(&mut writer) {
+            if let Err(e) = indexer.save_header(&mut writer) {
                 assert!(false, "expected success but got error: {:?}", e);
             };
             assert_eq!(expected, buf);
@@ -1243,7 +1495,44 @@ mod tests {
     }
 
     #[test]
-    fn index_records() {
+    fn load_input_csv_fields() {
+        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+            let expected = vec![
+                "name".to_string(),
+                "size".to_string(),
+                "price".to_string(),
+                "color".to_string()
+            ];
+            create_fake_input(&indexer.input_path)?;
+            if let Err(e) = indexer.load_input_csv_fields() {
+                assert!(false, "expected success but got error: {:?}", e)
+            }
+            assert_eq!(expected, indexer.input_fields);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn load_input_fields_as_csv() {
+        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+            let expected = vec![
+                "name".to_string(),
+                "size".to_string(),
+                "price".to_string(),
+                "color".to_string()
+            ];
+            create_fake_input(&indexer.input_path)?;
+            if let Err(e) = indexer.load_input_csv_fields() {
+                assert!(false, "expected success but got error: {:?}", e)
+            }
+            assert_eq!(expected, indexer.input_fields);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn index_new() {
         with_tmpdir_and_indexer(&|dir, indexer| -> Result<()> {
             create_fake_input(&indexer.input_path)?;
             indexer.header.input_type = InputType::CSV;
@@ -1270,13 +1559,51 @@ mod tests {
             let mut expected = Vec::new();
             reader.read_to_end(&mut expected)?;
             
-
             // validate index bytes
             let file = File::open(&indexer.index_path)?;
             let mut reader = BufReader::new(file);
             let mut buf = Vec::new();
             reader.read_to_end(&mut buf)?;
             assert_eq!(expected, buf);
+
+            // validate input fields
+            let expected = vec![
+                "name".to_string(),
+                "size".to_string(),
+                "price".to_string(),
+                "color".to_string()
+            ];
+            assert_eq!(expected, indexer.input_fields);
+            
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn index_existing() {
+        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+            create_fake_input(&indexer.input_path)?;
+            create_fake_index(&indexer.index_path, true)?;
+
+            // index input file
+            if let Err(e) = indexer.index() {
+                assert!(false, "expected success but got error: {:?}", e);
+            }
+
+            // create expected index
+            let mut expected = Indexer::new(
+                indexer.input_path.clone(),
+                indexer.index_path.clone(),
+                InputType::CSV
+            );
+            expected.input_fields.push("name".to_string());
+            expected.input_fields.push("size".to_string());
+            expected.input_fields.push("price".to_string());
+            expected.input_fields.push("color".to_string());
+            expected.header.indexed = true;
+            expected.header.hash = Some(fake_input_hash());
+            expected.header.indexed_count = 4;
+            assert_eq!(&mut expected, indexer);
             
             Ok(())
         });

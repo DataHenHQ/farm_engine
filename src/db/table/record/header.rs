@@ -319,7 +319,7 @@ impl WriteTo for FieldType {
 }
 
 /// Represents a field.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Field {
     _name: String,
     _value_type: FieldType
@@ -410,7 +410,7 @@ impl WriteTo for Field {
 }
 
 /// Represent the record header. Byte format: `<field_count:1><fields:?>`
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Header {
     _list: Vec<Field>,
     _map: HashMap<String, usize>,

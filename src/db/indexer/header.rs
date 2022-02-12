@@ -75,7 +75,7 @@ impl WriteAsBytes for InputType {
 }
 
 //// Describes an Indexer file header.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Header {
     /// `true` when the input file has been indexed successfully.
     pub indexed: bool,

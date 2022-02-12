@@ -91,8 +91,70 @@ impl WriteAsBytes for MatchFlag {
         }
 
         // save value as bytes
-        buf.copy_from_slice(&[self.into()]);
+        buf[0] = self.into();
 
+        Ok(())
+    }
+}
+
+impl WriteTo for MatchFlag {
+    fn write_to(&self, writer: &mut impl Write) -> Result<()> {
+        writer.write_all(&[self.into()])?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Data {
+    /// Match flag for the value.
+    pub match_flag: MatchFlag,
+
+    /// Spent time to resolve. The time unit must be handle by the dev.
+    pub spent_time: u64
+}
+
+impl Data {
+    /// Creates a new data instance.
+    pub fn new() -> Self {
+        Data{
+            match_flag: MatchFlag::None,
+            spent_time: 0
+        }
+    }
+}
+
+impl ByteSized for Data {
+    /// Index data size in bytes.
+    /// 
+    /// Byte format
+    /// `<spent_time:8><match:1>`
+    const BYTES: usize = 9;
+}
+
+impl WriteAsBytes for Data {
+    fn write_as_bytes(&self, buf: &mut [u8]) -> Result<()> {
+        // validate value size
+        if buf.len() != Self::BYTES {
+            bail!(ParseError::InvalidSize);
+        }
+
+        // save spent_time
+        self.spent_time.write_as_bytes(&mut buf[..u64::BYTES])?;
+
+        // save match flag
+        buf[u64::BYTES] = self.match_flag.into();
+
+        Ok(())
+    }
+}
+
+impl WriteTo for Data {
+    fn write_to(&self, writer: &mut impl Write) -> Result<()> {
+        // write spent time
+        self.spent_time.write_to(writer)?;
+
+        // write match flag
+        self.match_flag.write_to(writer)?;
         Ok(())
     }
 }
@@ -106,24 +168,26 @@ pub struct Value {
     /// Input file end position for the record.
     pub input_end_pos: u64,
 
-    /// Match flag for the record.
-    pub match_flag: MatchFlag,
-
-    /// Spent time to resolve. The time unit must be handle by the dev.
-    pub spent_time: u64
+    /// Index data.
+    pub data: Data
 }
 
 impl Value {
     /// Match flag byte index when as bytes.
     pub const MATCH_FLAG_BYTE_INDEX: usize = 24;
 
+    /// Data byte offset.
+    pub const DATA_OFFSET: usize = u64::BYTES*2;
+
     /// Creates a new value.
     pub fn new() -> Self {
         Self{
             input_start_pos: 0,
             input_end_pos: 0,
-            spent_time: 0,
-            match_flag: MatchFlag::None
+            data: Data{
+                spent_time: 0,
+                match_flag: MatchFlag::None
+            }
         }
     }
 
@@ -141,11 +205,7 @@ impl Value {
         carry += u64::BYTES;
 
         // save spent time
-        self.spent_time.write_as_bytes(&mut buf[carry..carry+u64::BYTES]).unwrap();
-        carry += u64::BYTES;
-
-        // save match flag
-        buf[carry] = self.match_flag.into();
+        self.data.write_as_bytes(&mut buf[carry..carry+Data::BYTES]).unwrap();
         buf
     }
 
@@ -167,8 +227,8 @@ impl ByteSized for Value {
     /// Index value size in bytes.
     /// 
     /// Byte format
-    /// `<input_start_pos:8><input_end_pos:8><spent_time:8><match:1>`
-    const BYTES: usize = 25;
+    /// `<input_start_pos:8><input_end_pos:8><data:9>`
+    const BYTES: usize = 16 + Data::BYTES;
 }
 
 impl LoadFrom for Value {
@@ -196,8 +256,8 @@ impl LoadFrom for Value {
         // record index value data
         self.input_start_pos = input_start_pos;
         self.input_end_pos = input_end_pos;
-        self.spent_time = spent_time;
-        self.match_flag = match_flag;
+        self.data.spent_time = spent_time;
+        self.data.match_flag = match_flag;
 
         Ok(())
     }
@@ -246,6 +306,19 @@ pub mod test_helper {
     /// 
     /// # Arguments
     /// 
+    /// * `spent_time` - Time spent to resolve the record.
+    /// * `match_flag` - Resolve action.
+    pub fn build_data_bytes(spent_time: u64, match_flag: u8) -> [u8; Data::BYTES] {
+        let mut buf = [0u8; Data::BYTES];
+        spent_time.write_as_bytes(&mut buf[0..u64::BYTES]).unwrap();
+        buf[u64::BYTES] = match_flag;
+        buf
+    }
+
+    /// Build a index value as byte slice from the values provided.
+    /// 
+    /// # Arguments
+    /// 
     /// * `input_start_pos` - Start byte position on the original source.
     /// * `input_end_pos` - Start byte position on the original source.
     /// * `spent_time` - Time spent to resolve the record.
@@ -254,8 +327,10 @@ pub mod test_helper {
         Value{
             input_start_pos,
             input_end_pos,
-            spent_time,
-            match_flag: MatchFlag::try_from(match_flag).unwrap()
+            data: Data{
+                spent_time,
+                match_flag: MatchFlag::try_from(match_flag).unwrap()
+            }
         }.as_bytes()
     }
 }
@@ -266,6 +341,11 @@ mod tests {
 
     mod match_flag {
         use super::*;
+
+        #[test]
+        fn byte_sized() {
+            assert_eq!(1, MatchFlag::BYTES)
+        }
 
         #[test]
         fn try_from_u8() {
@@ -314,6 +394,128 @@ mod tests {
             assert_eq!("Skip", MatchFlag::Skip.to_string());
             assert_eq!("", MatchFlag::None.to_string());
         }
+
+        #[test]
+        fn write_as_bytes() {
+            let mut buf = [0u8];
+
+            // test Yes
+            let expected = [b'Y'];
+            match MatchFlag::Yes.write_as_bytes(&mut buf) {
+                Ok(()) => assert_eq!(expected, buf),
+                Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+            }
+
+            // test No
+            let expected = [b'N'];
+            match MatchFlag::No.write_as_bytes(&mut buf) {
+                Ok(()) => assert_eq!(expected, buf),
+                Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+            }
+
+            // test Skip
+            let expected = [b'S'];
+            match MatchFlag::Skip.write_as_bytes(&mut buf) {
+                Ok(()) => assert_eq!(expected, buf),
+                Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+            }
+
+            // test None
+            let expected = [0u8];
+            match MatchFlag::None.write_as_bytes(&mut buf) {
+                Ok(()) => assert_eq!(expected, buf),
+                Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+            }
+        }
+
+        #[test]
+        fn write_to() {
+            // test Yes
+            let expected = [b'Y'];
+            let mut buf = [0u8];
+            let mut writer = &mut buf as &mut [u8];
+            match MatchFlag::Yes.write_to(&mut writer) {
+                Ok(()) => assert_eq!(expected, buf),
+                Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+            }
+
+            // test No
+            let expected = [b'N'];
+            let mut buf = [0u8];
+            let mut writer = &mut buf as &mut [u8];
+            match MatchFlag::No.write_to(&mut writer) {
+                Ok(()) => assert_eq!(expected, buf),
+                Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+            }
+
+            // test Skip
+            let expected = [b'S'];
+            let mut buf = [0u8];
+            let mut writer = &mut buf as &mut [u8];
+            match MatchFlag::Skip.write_to(&mut writer) {
+                Ok(()) => assert_eq!(expected, buf),
+                Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+            }
+
+            // test None
+            let expected = [0u8];
+            let mut buf = [0u8];
+            let mut writer = &mut buf as &mut [u8];
+            match MatchFlag::None.write_to(&mut writer) {
+                Ok(()) => assert_eq!(expected, buf),
+                Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+            }
+        }
+    }
+
+    mod data {
+        use super::*;
+        use super::test_helper::*;
+
+        #[test]
+        fn new() {
+            let expected = Data{
+                match_flag: MatchFlag::None,
+                spent_time: 0
+            };
+            assert_eq!(expected, Data::new())
+        }
+
+        #[test]
+        fn byte_sized() {
+            assert_eq!(9, Data::BYTES)
+        }
+
+        #[test]
+        fn write_to_writer() {
+            // first random try
+            let expected = build_data_bytes(29034574985234, b'Y');
+            let data = &Data{
+                spent_time: 29034574985234,
+                match_flag: MatchFlag::Yes
+            };
+            let mut buf = [0u8; Value::BYTES];
+            let mut writer = &mut buf as &mut [u8];
+            if let Err(e) = data.write_to(&mut writer) {
+                assert!(false, "{:?}", e);
+                return;
+            };
+            assert_eq!(expected, buf);
+
+            // second random try
+            let expected = build_data_bytes(98734951983457, b'N');
+            let data = &Data{
+                spent_time: 98734951983457,
+                match_flag: MatchFlag::No
+            };
+            let mut buf = [0u8; Value::BYTES];
+            let mut writer = &mut buf as &mut [u8];
+            if let Err(e) = data.write_to(&mut writer) {
+                assert!(false, "{:?}", e);
+                return;
+            };
+            assert_eq!(expected, buf);
+        }
     }
 
     mod value {
@@ -326,8 +528,10 @@ mod tests {
                 Value{
                     input_start_pos: 0,
                     input_end_pos: 0,
-                    spent_time: 0,
-                    match_flag: MatchFlag::None
+                    data: Data{
+                        spent_time: 0,
+                        match_flag: MatchFlag::None
+                    }
                 },
                 Value::new()
             );
@@ -349,8 +553,10 @@ mod tests {
             let value = Value{
                 input_start_pos: 873745659509883168,
                 input_end_pos: 1525392381699644720,
-                spent_time: 2467513159661266491,
-                match_flag: MatchFlag::Yes
+                data: Data{
+                    spent_time: 2467513159661266491,
+                    match_flag: MatchFlag::Yes
+                }
             };
             assert_eq!(expected, value.as_bytes());
 
@@ -370,8 +576,10 @@ mod tests {
             let value = Value{
                 input_start_pos: 3253357124311606595,
                 input_end_pos: 8006085495575943007,
-                spent_time: 1881482523971164224,
-                match_flag: MatchFlag::No
+                data: Data{
+                    spent_time: 1881482523971164224,
+                    match_flag: MatchFlag::No
+                }
             };
             assert_eq!(expected, value.as_bytes());
         }
@@ -391,8 +599,10 @@ mod tests {
             let value = Value{
                 input_start_pos: 3,
                 input_end_pos: 6,
-                spent_time: 0,
-                match_flag: MatchFlag::None
+                data: Data{
+                    spent_time: 0,
+                    match_flag: MatchFlag::None
+                }
             };
             let expected = vec![23u8, 12u8, 25u8, 74u8];
             let buf = match value.read_input_from(&mut reader) {
@@ -410,25 +620,25 @@ mod tests {
         fn match_flag_byte_index() {
             // test Yes
             let mut value = Value::new();
-            value.match_flag = MatchFlag::Yes;
+            value.data.match_flag = MatchFlag::Yes;
             let buf = value.as_bytes();
             assert_eq!(b'Y', buf[Value::MATCH_FLAG_BYTE_INDEX]);
 
             // test No
             let mut value = Value::new();
-            value.match_flag = MatchFlag::No;
+            value.data.match_flag = MatchFlag::No;
             let buf = value.as_bytes();
             assert_eq!(b'N', buf[Value::MATCH_FLAG_BYTE_INDEX]);
 
             // test Skip
             let mut value = Value::new();
-            value.match_flag = MatchFlag::Skip;
+            value.data.match_flag = MatchFlag::Skip;
             let buf = value.as_bytes();
             assert_eq!(b'S', buf[Value::MATCH_FLAG_BYTE_INDEX]);
 
             // test None
             let mut value = Value::new();
-            value.match_flag = MatchFlag::None;
+            value.data.match_flag = MatchFlag::None;
             let buf = value.as_bytes();
             assert_eq!(0, buf[Value::MATCH_FLAG_BYTE_INDEX]);
         }
@@ -443,16 +653,20 @@ mod tests {
             let mut value = Value{
                 input_start_pos: 0,
                 input_end_pos: 0,
-                spent_time: 0,
-                match_flag: MatchFlag::None
+                data: Data{
+                    spent_time: 0,
+                    match_flag: MatchFlag::None
+                }
             };
 
             // first random try
             let expected = Value{
                 input_start_pos: 1400004,
                 input_end_pos: 2341234,
-                spent_time: 20777332,
-                match_flag: MatchFlag::Skip
+                data: Data{
+                    spent_time: 20777332,
+                    match_flag: MatchFlag::Skip
+                }
             };
             let buf = build_value_bytes(1400004, 2341234, 20777332, b'S');
             let mut reader = &buf as &[u8];
@@ -466,8 +680,10 @@ mod tests {
             let expected = Value{
                 input_start_pos: 445685221,
                 input_end_pos: 34656435243,
-                spent_time: 8427343298732,
-                match_flag: MatchFlag::None
+                data: Data{
+                    spent_time: 8427343298732,
+                    match_flag: MatchFlag::None
+                }
             };
             let buf = build_value_bytes(445685221, 34656435243, 8427343298732, 0);
             let mut reader = &buf as &[u8];
@@ -483,8 +699,10 @@ mod tests {
             let mut value = Value{
                 input_start_pos: 0,
                 input_end_pos: 0,
-                spent_time: 0,
-                match_flag: MatchFlag::None
+                data: Data{
+                    spent_time: 0,
+                    match_flag: MatchFlag::None
+                }
             };
 
             let expected = std::io::ErrorKind::UnexpectedEof;
@@ -505,8 +723,10 @@ mod tests {
             let expected = Value{
                 input_start_pos: 14321432,
                 input_end_pos: 456542532,
-                spent_time: 5463211,
-                match_flag: MatchFlag::No
+                data: Data{
+                    spent_time: 5463211,
+                    match_flag: MatchFlag::No
+                }
             };
             let buf = build_value_bytes(14321432, 456542532, 5463211, b'N');
             let value = match Value::from_byte_slice(&buf) {
@@ -522,8 +742,10 @@ mod tests {
             let expected = Value{
                 input_start_pos: 56745631532,
                 input_end_pos: 45245234,
-                spent_time: 11896524543541452385,
-                match_flag: MatchFlag::Yes
+                data: Data{
+                    spent_time: 11896524543541452385,
+                    match_flag: MatchFlag::Yes
+                }
             };
             let buf = build_value_bytes(56745631532, 45245234, 11896524543541452385, b'Y');
             let value = match Value::from_byte_slice(&buf) {
@@ -542,8 +764,10 @@ mod tests {
             let expected = Value{
                 input_start_pos: 14321432,
                 input_end_pos: 456542532,
-                spent_time: 5463211,
-                match_flag: MatchFlag::No
+                data: Data{
+                    spent_time: 5463211,
+                    match_flag: MatchFlag::No
+                }
             };
             let buf = build_value_bytes(14321432, 456542532, 5463211, b'N');
             let mut reader = &buf as &[u8];
@@ -560,8 +784,10 @@ mod tests {
             let expected = Value{
                 input_start_pos: 56745631532,
                 input_end_pos: 45245234,
-                spent_time: 11896524543541452385,
-                match_flag: MatchFlag::Yes
+                data: Data{
+                    spent_time: 11896524543541452385,
+                    match_flag: MatchFlag::Yes
+                }
             };
             let buf = build_value_bytes(56745631532, 45245234, 11896524543541452385, b'Y');
             let mut reader = &buf as &[u8];
@@ -581,8 +807,10 @@ mod tests {
             let expected = Value{
                 input_start_pos: 14321432,
                 input_end_pos: 456542532,
-                spent_time: 5463211,
-                match_flag: MatchFlag::No
+                data: Data{
+                    spent_time: 5463211,
+                    match_flag: MatchFlag::No
+                }
             };
             let buf = build_value_bytes(14321432, 456542532, 5463211, b'N');
             let value = match Value::try_from(&buf[..]) {
@@ -598,8 +826,10 @@ mod tests {
             let expected = Value{
                 input_start_pos: 56745631532,
                 input_end_pos: 45245234,
-                spent_time: 11896524543541452385,
-                match_flag: MatchFlag::Yes
+                data: Data{
+                    spent_time: 11896524543541452385,
+                    match_flag: MatchFlag::Yes
+                }
             };
             let buf = build_value_bytes(56745631532, 45245234, 11896524543541452385, b'Y');
             let value = match Value::try_from(&buf[..]) {
@@ -619,8 +849,10 @@ mod tests {
             let value = &Value{
                 input_start_pos: 32464573645,
                 input_end_pos: 2343534543,
-                spent_time: 29034574985234,
-                match_flag: MatchFlag::Yes
+                data: Data{
+                    spent_time: 29034574985234,
+                    match_flag: MatchFlag::Yes
+                }
             };
             let mut buf = [0u8; Value::BYTES];
             let mut writer = &mut buf as &mut [u8];
@@ -635,8 +867,10 @@ mod tests {
             let value = &Value{
                 input_start_pos: 789865473674,
                 input_end_pos: 83454327,
-                spent_time: 98734951983457,
-                match_flag: MatchFlag::No
+                data: Data{
+                    spent_time: 98734951983457,
+                    match_flag: MatchFlag::No
+                }
             };
             let mut buf = [0u8; Value::BYTES];
             let mut writer = &mut buf as &mut [u8];

@@ -1,11 +1,60 @@
 use anyhow::{bail, Result};
-// use path_absolutize::*;
+use serde_json::{Map as JSMap, Value as JSValue};
 use std::collections::HashMap;
-use std::ffi::{OsString};
-use super::indexer::Indexer;
+use std::fs::{File, OpenOptions};
+use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
+use std::path::PathBuf;
+use crate::fill_file;
+use crate::error::{ParseError, IndexError};
+use crate::traits::{ByteSized, ReadFrom, WriteTo};
+use super::indexer::{Indexer, Status as IndexStatus};
+use super::indexer::value::{MatchFlag, Data as IndexData, Value as IndexValue};
 use super::table::Table;
+use super::table::record::Record;
+
+/// Represents a data source single record.
+pub struct Data {
+    pub input: JSMap<String, JSValue>,
+    pub index: IndexData,
+    pub record: Record
+}
+
+/// Represents a source readers involved in a join operation.
+pub struct SourceJoinItem<R, T> {
+    pub index: R,
+    pub table: T
+}
+
+impl SourceJoinItem<BufReader<File>, BufReader<File>> {
+    /// Creates a new instance as reader from a source.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `source` - Source to create the readers from.
+    pub fn as_reader_from(source: &Source) -> Result<Self> {
+        Ok(Self{
+            index: source.index.new_index_reader()?,
+            table: source.table.new_reader()?
+        })
+    }
+}
+
+impl SourceJoinItem<BufWriter<File>, BufWriter<File>> {
+    /// Creates a new instance as writer from a source.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `source` - Source to create the writers from.
+    pub fn as_writer_from(source: &Source, create: bool) -> Result<Self> {
+        Ok(Self{
+            index: source.index.new_index_writer(create)?,
+            table: source.table.new_writer(create)?
+        })
+    }
+}
 
 /// Represents a data source.
+#[derive(Clone)]
 pub struct Source {
     /// Indexer.
     pub index: Indexer,
@@ -14,285 +63,262 @@ pub struct Source {
 }
 
 impl Source {
-    
+    /// Regenerates the index file based on the input file.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `override_on_error` - Overrides the index or table file if corrupted instead of error.
+    /// * `force_override` - Always creates a new table file with the current headers.
+    pub fn index(&mut self, override_on_error: bool, force_override: bool) -> Result<()> {
+        if let Err(e) = self.index.index() {
+            match e.downcast::<IndexError>() {
+                Ok(ex) => match ex {
+                    IndexError::Unavailable(status) => match status {
+                        IndexStatus::Indexing => bail!(IndexError::Unavailable(IndexStatus::Indexing)),
+                        _ => if override_on_error {
+                            // truncate the file then index again
+                            let file = OpenOptions::new()
+                                .create(true)
+                                .open(&self.index.index_path)?;
+                            file.set_len(0)?;
+                            self.index.index()?;
+                        }
+                    },
+                    err => bail!(err)
+                },
+                Err(ex) => bail!(ex)
+            }
+        }
+        if self.table.header.record_count < 1 {
+            self.table.header.record_count = self.index.header.indexed_count;
+        }
+        self.table.load_or_create(override_on_error, force_override)?;
+        Ok(())
+    }
 
-    // /// Validate an index path extension.
-    // /// 
-    // /// # Arguments
-    // /// 
-    // /// * `path` - Path to validate.
-    // pub fn validate_index_extension(path: &PathBuf, extension_regex: &Regex) -> bool {
-    //     let file_name = match path.file_name() {
-    //         Some(v) => match v.to_str() {
-    //             Some(s) => s,
-    //             None => return false
-    //         },
-    //         None => return false
-    //     };
-    //     extension_regex.is_match(file_name)
-    // }
+    /// Search the next unprocessed record an return the index if any.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `from_index` - Index offset from which start searching.
+    pub fn find_to_process(&self, from_index: u64) -> Result<Option<u64>> {
+        self.index.find_pending(from_index)
+    }
 
-    // /// Expands a path and add any index found into the path list.
-    // /// 
-    // /// # Arguments
-    // /// 
-    // /// * `raw_path` - Path to expand.
-    // /// * `path_list` - Path list to add the found paths into.
-    // fn expand_index_path(raw_path: &PathBuf, path_list: &mut Vec<PathBuf>, raw_excludes: &Vec<PathBuf>) -> Result<()> {
-    //     // canonalize the excluded paths
-    //     let mut excludes: Vec<PathBuf> = vec!();
-    //     for raw_exclude in raw_excludes {
-    //         excludes.push(raw_exclude.absolutize()?.to_path_buf());
-    //     }
+    /// Retrive a record input data from a specific index.
+    /// 
+    /// $ Arguments
+    /// 
+    /// * `index` - Record index.
+    pub fn data(&self, index: u64) -> Result<Option<Data>> {
+        let index_value = match self.index.value(index)? {
+            Some(v) => v,
+            None => return Ok(None)
+        };
+        let record = match self.table.record(index)? {
+            Some(v) => v,
+            None => return Ok(None)
+        };
+        let input_data = self.index.parse_input(&index_value)?;
+        Ok(Some(Data{
+            index: index_value.data,
+            record,
+            input: input_data
+        }))
+    }
 
-    //     // resolve symlink and relative paths
-    //     let path = raw_path.absolutize()?.to_path_buf();
+    /// Check if the source is indexed.
+    pub fn is_indexed(&self) -> bool {
+        // check that the index has been indexed
+        if !self.index.header.indexed {
+            return false;
+        }
 
-    //     // check for exclusion
-    //     for exclude in &excludes {
-    //         if path.eq(exclude) {
-    //             return Ok(())
-    //         }
-    //     }
+        // check that the indexed count match the record count
+        if self.index.header.indexed_count != self.table.header.record_count {
+            return false;
+        }
+        true
+    }
 
-    //     // check if single file
-    //     if path.is_file() {
-    //         // don't validate the file extension for explicit files,
-    //         // just add the index file
-    //         path_list.push(path);
-    //         return Ok(());
-    //     }
-        
-    //     // asume dir since the path is already canonizalized
-    //     let extension_regex = Self::index_extension_regex();
-    //     'dir_iter: for entry in path.read_dir()? {
-    //         let entry = entry?;
-    //         let file_path = entry.path();
+    /// Check if the source is compatible for joining with this source.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `source` - Source to check compatibility.
+    pub fn is_join_compatible(&self, source: &Source) -> (bool, &str) {
+        // ensure sources are indexed
+        if !self.is_indexed() || !source.is_indexed() {
+            return (false, "should be indexed");
+        }
 
-    //         // check for exclusion
-    //         for exclude in &excludes {
-    //             if file_path.eq(exclude) {
-    //                 continue 'dir_iter;
-    //             }
-    //         }
+        // ensure sources belong to the same input
+        if self.index.header.hash != source.index.header.hash {
+            return (false, "should have the same input hash")
+        }
 
-    //         // skip subdirectories
-    //         if file_path.is_dir() {
-    //             continue;
-    //         }
+        // ensure sources have the same record count
+        if self.index.header.indexed_count != source.index.header.indexed_count {
+            return (false, "indexed count doesn't match")
+        }
 
-    //         // skip non index files
-    //         if !Self::validate_index_extension(&file_path, &extension_regex) {
-    //             continue;
-    //         }
+        // ensure tables has the same fields count
+        if self.table.record_header.len() != source.table.record_header.len() {
+            return (false, "table field count doesn't match")
+        }
 
-    //         // add index file
-    //         path_list.push(file_path);
-    //     }
+        // ensure tables has the same fields
+        let limit = self.table.record_header.len();
+        if limit > 0 {
+            for i in 0..limit {
+                if self.table.record_header.get_by_index(i) != source.table.record_header.get_by_index(i) {
+                    return (false, "table fields doesn't match")
+                }
+            }
+        }
 
-    //     Ok(())
-    // }
+        return (true, "")
+    }
 
-    // /// Regenerates the index file based on the input file.
-    // pub fn index(&mut self) -> Result<()> {
-    //     self.indexer.index()
-    // }
+    /// Join index files into a single one using a >50% rule to decide on match flags.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `index_path` - Target index file path.
+    /// * `table_path` - Target table file path.
+    /// * `sources` - Source list to join.
+    pub fn join(index_path: PathBuf, table_path: PathBuf, sources: &[Source]) -> Result<Source> {
+        // validate source list size
+        let limit = sources.len();
+        if limit < 1 {
+            bail!("can't merge an empty source list")
+        }
+        if limit < 2 {
+            bail!("join requires at least 2 sources")
+        }
 
-    // /// Search the next unprocessed record if any.
-    // /// 
-    // /// # Arguments
-    // /// 
-    // /// * `from_index` - Index offset from which start searching.
-    // pub fn find_to_process(&self, from_index: u64) -> Result<Option<u64>> {
-    //     self.index.find_unmatched(from_index)
-    // }
+        // validate source list index and table
+        let err_msg = "source files can't be the same as the target files";
+        let target_file_paths = [&index_path, &table_path];
+        for path in target_file_paths {
+            if &sources[0].index.index_path == path || &sources[0].table.path == path {
+                bail!(err_msg)
+            }
+        }
+        for i in 1..limit {
+            // ensure all sources are indexed
+            let (compatible, reason) = sources[0].is_join_compatible(&sources[1]);
+            if !compatible {    
+                bail!("sources aren't join compatible: {}", reason)
+            }
+            
+            // ensure the target files aren't the same as any source
+            for path in target_file_paths {
+                if &sources[i].index.index_path == path || &sources[i].table.path == path {
+                    bail!(err_msg)
+                }
+            }
+        }
 
-    // /// Retrive a record input data from a specific index.
-    // /// 
-    // /// $ Arguments
-    // /// 
-    // /// * `index` - Record index.
-    // pub fn get_data(&self, index: u64) -> Result<serde_json::Value> {
-    //     let first_value = match self.index.record(0)? {
-    //         Some(v) => v,
-    //         None => return Ok(serde_json::Value::Null)
-    //     };
-    //     let value = match self.index.record(index)? {
-    //         Some(v) => v,
-    //         None => return Ok(serde_json::Value::Null)
-    //     };
+        // create target source
+        let mut target = sources[0].clone();
+        target.index.index_path = index_path;
+        target.table.path = table_path;
 
-    //     // build a fake CSV string
-    //     let file = File::open(&self.index.input_path)?;
-    //     let mut reader = BufReader::new(file);
-    //     let mut buf: Vec<u8> = vec![0u8; first_value.index.input_start_pos as usize];
-    //     reader.read_exact(&mut buf)?;
-    //     buf.push(b'\n');
-    //     reader.seek(SeekFrom::Start(value.index.input_start_pos))?;
-    //     let mut buf_value: Vec<u8> = vec![0u8; (value.index.input_end_pos - value.index.input_start_pos) as usize];
-    //     reader.read_exact(&mut buf_value)?;
-    //     // dbg!(String::from_utf8(buf_value.clone()).unwrap());
-    //     buf.append(&mut buf_value);
+        // create target writers
+        let index_pos = Indexer::calc_value_pos(0);
+        let table_pos = target.table.calc_record_pos(0);
+        let mut target_wrt = SourceJoinItem::as_writer_from(&target, true)?;
+        fill_file(&target.index.index_path, index_pos, false)?;
+        fill_file(&target.table.path, table_pos, false)?;
 
-    //     // read data
-    //     let mut reader = csv::ReaderBuilder::new()
-    //         .has_headers(true)
-    //         .flexible(true)
-    //         .from_reader(buf.as_slice());
+        // create readers
+        let mut readers = Vec::new();
+        for source in sources.iter() {
+            let mut source_rdr = SourceJoinItem::as_reader_from(source)?;
+            source_rdr.index.seek(SeekFrom::Start(index_pos))?;
+            source_rdr.table.seek(SeekFrom::Start(table_pos))?;
+            readers.push(source_rdr);
+        }
 
-    //     // deserialize CSV string object into a JSON object
-    //     if let Some(result) = reader.deserialize::<serde_json::Map<String, serde_json::Value>>().next() {
-    //         match result {
-    //             Ok(record) => {
-    //                 // return data after the first successful record
-    //                 return Ok(serde_json::Value::Object(record))
-    //             }
-    //             Err(e) => {
-    //                 println!("Couldn't parse record at position {}: {}", value.index.input_start_pos, e);
-    //                 bail!(ParseError::InvalidFormat)
-    //             }
-    //         }
-    //     }
+        // iterate and join sources
+        let total_sources = sources.len() as f64;
+        let match_values = MatchFlag::as_array();
+        let record_size = target.table.record_header.record_byte_size() as usize;
+        let mut base_record_buf = vec![0u8; record_size as usize];
+        for index in 0..target.index.header.indexed_count {
+            // initialize hash maps
+            let mut matches: HashMap<u8, f64> = HashMap::new();
+            let mut samples: HashMap<u8, Vec<u8>> = HashMap::new();
+            for k in match_values {
+                matches.insert(k.into(), 0f64);
+            }
 
-    //     Ok(serde_json::Value::Null)
-    // }
+            // create base index data
+            let mut base_value = IndexValue::read_from(&mut readers[0].index)?;
+            readers[0].index.seek(SeekFrom::Current(IndexValue::BYTES as i64 * -1))?;
 
-    // /// Build a source index file list from an expanded path list.
-    // /// 
-    // /// # Arguments
-    // /// 
-    // /// * `expanded_path_list` - Expanded path list to build from.
-    // fn build_index_source_list(&self, expanded_path_list: Vec<PathBuf>) -> Result<Vec<BufReader<File>>> {
-    //     let base_size = file_size(&self.index.index_path)?;
-    //     let mut source_list: Vec<BufReader<File>> = vec!();
-    //     for path in expanded_path_list {
-    //         let file = File::open(&path)?;
-    //         let mut reader = BufReader::new(file);
-    //         println!("Open file \"{}\"", path.to_string_lossy());
+            // read base record bytes
+            readers[0].table.read_exact(&mut base_record_buf)?;
+            readers[0].table.seek(SeekFrom::Current(record_size as i64 * -1))?;
 
-    //         // validate index file size
-    //         reader.seek(SeekFrom::End(0))?;
-    //         let size = reader.stream_position()?;
-    //         if size != base_size {
-    //             bail!(ParseError::Other(format!(
-    //                 "Index file size mismatch on file \"{}\"",
-    //                 path.to_string_lossy()
-    //             )));
-    //         }
+            // iterate source readers and count match flag values
+            let mut spent_time = 0;
+            for i in 0..limit {
+                // get and validate source index value
+                let value = IndexValue::read_from(&mut readers[i].index)?;
+                if base_value.input_start_pos != value.input_start_pos || base_value.input_end_pos != value.input_end_pos {
+                    bail!("source index value doesn't match base value at record {}", index);
+                }
+                let match_flag_byte: u8 = value.data.match_flag.into();
 
-    //         // validate index header match
-    //         let index_header = IndexHeader::read_from(&mut reader)?;
-    //         let record_header = RecordHeader::read_from(&mut reader)?;
-    //         if index_header != self.index.index_header || record_header != self.index.record_header {
-    //             bail!(ParseError::Other(format!(
-    //                 "Index header mismatch on file \"{}\"",
-    //                 path.to_string_lossy()
-    //             )));
-    //         }
+                // record match flag counter
+                let count = match matches.get_mut(&match_flag_byte) {
+                    Some(v) => v,
+                    None => bail!(ParseError::InvalidValue)
+                };
+                *count += 1f64;
 
-    //         // add to valid file source list
-    //         source_list.push(reader);
-    //     }
-    //     Ok(source_list)
-    // }
+                // sample source
+                let mut buf = Vec::with_capacity(record_size);
+                readers[i].table.read_exact(&mut buf)?;
+                if let None = samples.get(&match_flag_byte) {
+                    samples.insert(match_flag_byte, buf);
+                }
 
-    // /// Join index files into a single one using a >50% rule to decide on match flags.
-    // /// 
-    // /// # Arguments
-    // /// 
-    // /// * `raw_path_list` - Index file path list to join.
-    // pub fn join(&self, raw_path_list: &Vec<PathBuf>) -> Result<()> {
-    //     // skip if no indexed records found
-    //     if !self.index.index_header.indexed || self.index.index_header.indexed_count < 1 {
-    //         return Ok(());
-    //     }
+                // keep track of spent time
+                spent_time += value.data.spent_time;
+            }
 
-    //     // expand paths
-    //     let mut path_list: Vec<PathBuf> = vec!();
-    //     let exclusions = [self.index.index_path].to_vec();
-    //     for path in raw_path_list {
-    //         Self::expand_index_path(path, &mut path_list, &exclusions)?;
-    //     }
+            // calculate match_flag value and average spent time
+            let mut match_flag = MatchFlag::None;
+            for k in match_values {
+                if *matches.get(&k.into()).unwrap() / total_sources > 0.5 {
+                    match_flag = k;
+                    break;
+                }
+            }
+            if match_flag == MatchFlag::Skip {
+                match_flag = MatchFlag::None
+            }
+            base_value.data.match_flag = match_flag;
+            base_value.data.spent_time = (spent_time as f64 / total_sources) as u64;
 
-    //     // open and validate source index files
-    //     let mut source_list = self.build_index_source_list(path_list)?;
+            // save index value into target
+            base_value.write_to(&mut target_wrt.index)?;
 
-    //     // iterate and join index files
-    //     let mut target_indexer = Indexer::new(self.index.input_path, self.index.index_path);
-    //     let index_file = OpenOptions::new()
-    //         .read(true)
-    //         .write(true)
-    //         .open(&self.index.index_path)?;
-    //     let mut index_reader = BufReader::new(&index_file);
-    //     let mut index_writer = BufWriter::new(&index_file);
-    //     let match_values = MatchFlag::as_array();
-    //     let total_sources = source_list.len() as f64;
-    //     for index in 0..self.index.index_header.indexed_count {
-    //         // initialize matches hash
-    //         let mut matches: HashMap<u8, f64> = HashMap::new();
-    //         for k in match_values {
-    //             matches.insert(k.into(), 0f64);
-    //         }
+            // save sample target record into target
+            let buf = match samples.get(&match_flag.into()) {
+                Some(v) => v,
+                None => &base_record_buf
+            };
+            target_wrt.table.write_all(&buf)?;
 
-    //         // get base index value
-    //         let mut index_value = match indexer.seek_record_from((&mut index_reader, true, index)? {
-    //             Some(v) => v,
-    //             None => bail!(ParseError::Other(format!(
-    //                 "couldn't retrieve index record on index {} from base index file",
-    //                 index
-    //             )))
-    //         };
+        }
 
-    //         // iterate source index files and count match flag values
-    //         for reader in source_list.iter_mut() {
-    //             // get and validate source index value
-    //             let value = match Indexer::value_from_file(reader, true, index)? {
-    //                 Some(v) => v,
-    //                 None => bail!(ParseError::Other(format!(
-    //                     "couldn't retrieve index record on index {}",
-    //                     index
-    //                 )))
-    //             };
-    //             if index_value.input_start_pos != value.input_start_pos || index_value.input_end_pos != value.input_end_pos {
-    //                 bail!(ParseError::Other("Source index value doesn't match base value".to_string()));
-    //             }
-
-    //             // record match flag counter
-    //             let count = match matches.get_mut(&value.match_flag.into()) {
-    //                 Some(v) => v,
-    //                 None => bail!(ParseError::InvalidValue)
-    //             };
-    //             *count += 1f64;
-    //         }
-
-    //         // calculate match_flag value
-    //         let mut match_flag = MatchFlag::None;
-    //         for k in match_values {
-    //             if *matches.get(&k.into()).unwrap() / total_sources > 0.5 {
-    //                 match_flag = k;
-    //                 break;
-    //             }
-    //         }
-    //         if match_flag == MatchFlag::Skip {
-    //             match_flag = MatchFlag::None
-    //         }
-    //         index_value.match_flag = match_flag;
-
-    //         // record index and output values
-    //         Self::write_output(
-    //             &mut output_writer,
-    //             &index_value,
-    //             match_flag,
-    //             0,
-    //             ""
-    //         )?;
-    //         Indexer::update_index_file_value(
-    //             &mut index_writer,
-    //             index,
-    //             &index_value
-    //         )?;
-    //     }
-
-    //     Ok(())
-    // }
+        // save target headers
+        target.index.save_header(&mut target_wrt.index)?;
+        target.table.save_headers(&mut target_wrt.table)?;
+        Ok(target)
+    }
 }

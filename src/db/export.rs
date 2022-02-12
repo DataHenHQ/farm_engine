@@ -57,7 +57,10 @@ pub trait ExporterWriter {
     /// * `fields` - Fields to export.
     /// * `input_data` - Input data to filter.
     /// * `value` - Indexer data to filter.
-    fn write_data(&mut self, fields: &[ExportField], source: ExportData) -> Result<()>;
+    fn write_data(&mut self, fields: &[ExportField], source: ExportData, is_first: bool) -> Result<()>;
+
+    /// Write end.
+    fn write_end(&mut self) -> Result<()>;
 }
 
 impl<T: ExporterWriter> ExporterWriter for &'_ mut T {
@@ -69,8 +72,12 @@ impl<T: ExporterWriter> ExporterWriter for &'_ mut T {
         (**self).write_headers(headers)
     }
 
-    fn write_data(&mut self, fields: &[ExportField], source: ExportData) -> Result<()> {
-        (**self).write_data(fields, source)
+    fn write_data(&mut self, fields: &[ExportField], source: ExportData, is_first: bool) -> Result<()> {
+        (**self).write_data(fields, source, is_first)
+    }
+
+    fn write_end(&mut self) -> Result<()> {
+        (**self).write_end()
     }
 }
 
@@ -90,8 +97,8 @@ impl<W: Write> ExporterCSVWriter<W> {
         let mut data = Vec::new();
         for field in fields {
             let value = match field {
-                ExportField::SpentTime => source.index.spent_time.to_string(),
-                ExportField::MatchFlag => source.index.match_flag.to_string(),
+                ExportField::SpentTime => source.index.data.spent_time.to_string(),
+                ExportField::MatchFlag => source.index.data.match_flag.to_string(),
                 ExportField::Input(s) => match source.input.get(s) {
                     Some(v) => v.to_string(),
                     None => "".to_string()
@@ -117,9 +124,13 @@ impl<W: Write> ExporterWriter for ExporterCSVWriter<W> {
         Ok(())
     }
 
-    fn write_data(&mut self, fields: &[ExportField], source: ExportData) -> Result<()> {
+    fn write_data(&mut self, fields: &[ExportField], source: ExportData, _: bool) -> Result<()> {
         let data = Self::filter_data(fields, source);
         self.writer.write_record(&data)?;
+        Ok(())
+    }
+
+    fn write_end(&mut self) -> Result<()> {
         Ok(())
     }
 }
@@ -141,11 +152,11 @@ impl<'w, W: Write> ExporterJSONWriter<'w, W> {
         for field in fields {
             match field {
                 ExportField::SpentTime => {
-                    let value = JSValue::Number(JSNumber::from(source.index.spent_time));
+                    let value = JSValue::Number(JSNumber::from(source.index.data.spent_time));
                     data["spent_time"] = value;
                 },
                 ExportField::MatchFlag => {
-                    let value = JSValue::String(source.index.match_flag.to_string());
+                    let value = JSValue::String(source.index.data.match_flag.to_string());
                     data["matched"] = value;
                 },
                 ExportField::Input(s) => {
@@ -175,12 +186,21 @@ impl<'w, W: Write> ExporterWriter for ExporterJSONWriter<'w, W> {
     }
 
     fn write_headers(&mut self, _: &[String]) -> Result<()> {
+        self.writer.write_all(&[b'['])?;
         Ok(())
     }
 
-    fn write_data(&mut self, fields: &[ExportField], source: ExportData) -> Result<()> {
+    fn write_data(&mut self, fields: &[ExportField], source: ExportData, is_first: bool) -> Result<()> {
         let data = Self::filter_data(fields, source);
+        if is_first {
+            self.writer.write_all(&[b']'])?;
+        }
         serde_json::to_writer(&mut self.writer, &data)?;
+        Ok(())
+    }
+
+    fn write_end(&mut self) -> Result<()> {
+        self.writer.write_all(&[b']'])?;
         Ok(())
     }
 }
@@ -246,6 +266,7 @@ impl<'s> Exporter<'s> {
             .from_reader(input_rdr);
         
         // iterate input as CSV
+        let mut is_first = true;
         for result in csv_reader.deserialize() {
             // read input and source data
             let export_data = ExportData{
@@ -255,8 +276,14 @@ impl<'s> Exporter<'s> {
             };
 
             // write data
-            writer.write_data(fields, export_data)?;
+            writer.write_data(fields, export_data, is_first)?;
+
+            if is_first {
+                is_first = false;
+            }
         };
+
+        writer.write_end()?;
         Ok(())
     }
 

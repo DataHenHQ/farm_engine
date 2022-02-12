@@ -19,7 +19,7 @@ pub const TABLE_NAME_MAX_SIZE: u32 = 50;
 pub const TABLE_NAME_FIELD: FieldType = FieldType::Str(TABLE_NAME_MAX_SIZE);
 
 //// Describes an Indexer file header.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Header {
     /// Records count.
     pub record_count: u64,

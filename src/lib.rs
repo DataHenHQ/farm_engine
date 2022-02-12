@@ -1,8 +1,9 @@
 pub mod error;
-pub mod helper;
 pub mod traits;
 pub mod db;
 
+use path_absolutize::Absolutize;
+use regex::Regex;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
 use std::path::PathBuf;
@@ -124,6 +125,82 @@ pub fn generate_hash(reader: &mut impl Read) -> std::io::Result<[u8; HASH_SIZE]>
     }
     let hash: [u8; HASH_SIZE] = hasher.finalize().try_into().expect("invalid HASH_SIZE value, adjust to your current hash algorightm");
     Ok(hash)
+}
+
+/// Validate a file path extension.
+/// 
+/// # Arguments
+/// 
+/// * `path` - Path to validate.
+pub fn validate_file_extension(path: &PathBuf, extension_regex: &Regex) -> bool {
+    let file_name = match path.file_name() {
+        Some(v) => match v.to_str() {
+            Some(s) => s,
+            None => return false
+        },
+        None => return false
+    };
+    extension_regex.is_match(file_name)
+}
+
+/// Scans a path and add any found matching into the path list.
+/// 
+/// # Arguments
+/// 
+/// * `source_path` - Source path to expand.
+/// * `path_list` - Path list to add the found paths into.
+pub fn scan_path(source_path: &PathBuf, path_list: &mut Vec<PathBuf>, raw_excludes: &Vec<PathBuf>, regex: &Regex) -> Result<()> {
+    // canonalize the excluded paths
+    let mut excludes: Vec<PathBuf> = vec!();
+    for raw_exclude in raw_excludes {
+        excludes.push(raw_exclude.absolutize()?.to_path_buf());
+    }
+
+    // resolve symlink and relative paths
+    let path = source_path.absolutize()?.to_path_buf();
+
+    // check for exclusion
+    for exclude in &excludes {
+        if path.eq(exclude) {
+            return Ok(())
+        }
+    }
+
+    // check if single file
+    if path.is_file() {
+        // don't validate the file extension for explicit files,
+        // just add the index file
+        path_list.push(path);
+        return Ok(());
+    }
+    
+    // asume dir since the path is already canonizalized
+    'dir_iter: for entry in path.read_dir()? {
+        let entry = entry?;
+        let file_path = entry.path();
+
+        // check for exclusion
+        for exclude in &excludes {
+            if file_path.eq(exclude) {
+                continue 'dir_iter;
+            }
+        }
+
+        // skip subdirectories
+        if file_path.is_dir() {
+            continue;
+        }
+
+        // skip non index files
+        if !validate_file_extension(&file_path, &regex) {
+            continue;
+        }
+
+        // add index file
+        path_list.push(file_path);
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -333,4 +410,6 @@ mod tests {
             Ok(())
         });
     }
+
+
 }
