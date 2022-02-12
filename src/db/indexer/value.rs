@@ -494,7 +494,7 @@ mod tests {
                 spent_time: 29034574985234,
                 match_flag: MatchFlag::Yes
             };
-            let mut buf = [0u8; Value::BYTES];
+            let mut buf = [0u8; Data::BYTES];
             let mut writer = &mut buf as &mut [u8];
             if let Err(e) = data.write_to(&mut writer) {
                 assert!(false, "{:?}", e);
@@ -508,7 +508,7 @@ mod tests {
                 spent_time: 98734951983457,
                 match_flag: MatchFlag::No
             };
-            let mut buf = [0u8; Value::BYTES];
+            let mut buf = [0u8; Data::BYTES];
             let mut writer = &mut buf as &mut [u8];
             if let Err(e) = data.write_to(&mut writer) {
                 assert!(false, "{:?}", e);
