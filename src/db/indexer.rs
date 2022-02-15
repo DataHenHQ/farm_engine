@@ -591,10 +591,7 @@ pub mod test_helper {
     use crate::test_helper::*;
     use crate::db::indexer::header::{HASH_SIZE};
     use crate::db::indexer::header::test_helper::{random_hash, build_header_bytes};
-//     use crate::index::header::test_helper::build_INDEX_HEADER_BYTES;
-//     use crate::index::value::test_helper::build_value_bytes;
     use tempfile::TempDir;
-//     use std::io::{Write, BufWriter};
 
     /// Fake records without fields bytes.
     pub const FAKE_VALUES_BYTES: usize = Value::BYTES * 3;

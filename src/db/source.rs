@@ -322,3 +322,88 @@ impl Source {
         Ok(target)
     }
 }
+
+#[cfg(test)]
+mod test_helper {
+    use super::*;
+    use tempfile::TempDir;
+    use crate::test_helper::*;
+    use crate::db::indexer::header::InputType;
+
+    /// Execute a function with both a temp directory and a new Source.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `f` - Function to execute.
+    pub fn with_tmpdir_and_source(f: &impl Fn(&TempDir, &mut Source) -> Result<()>) {
+        let sub = |dir: &TempDir| -> Result<()> {
+            // generate default file names for files
+            let input_path = dir.path().join("i.csv");
+            let index_path = dir.path().join("i.fmindex");
+            let table_path = dir.path().join("t.fmtable");
+
+            // create source
+            let mut source = Source{
+                index: Indexer::new(
+                    input_path,
+                    index_path,
+                    InputType::Unknown
+                ),
+                table: Table::new(
+                    table_path,
+                    "my_table"
+                )?
+            };
+
+            // execute function
+            match f(&dir, &mut source) {
+                Ok(_) => Ok(()),
+                Err(e) => bail!(e)
+            }
+        };
+        with_tmpdir(&sub)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::test_helper::*;
+    // use crate::test_helper::*;
+    use crate::db::indexer::test_helper::{create_fake_index};
+    use crate::db::table::test_helper::create_fake_table;
+    use crate::db::indexer::header::{Header as IndexHeader};
+    use crate::db::table::header::{Header as TableHeader};
+    use crate::db::table::record::header::{Header as RecordHeader};
+
+    mod source_join_item {
+        use super::*;
+
+        #[test]
+        fn as_reader_from() {
+            with_tmpdir_and_source(&|_, source| -> Result<()> {
+                create_fake_index(&source.index.index_path, true)?;
+                create_fake_table(&source.table.path, true)?;
+
+                // test method
+                let mut readers = SourceJoinItem::as_reader_from(&source)?;
+
+                // test index reader
+                let mut index_rdr = source.index.new_index_reader()?;
+                let expected = IndexHeader::read_from(&mut index_rdr)?;
+                source.index.load_header_from(&mut readers.index)?;
+                assert_eq!(expected, source.index.header);
+                
+                // test table reader
+                let mut table_rdr = source.table.new_reader()?;
+                let expected = TableHeader::read_from(&mut table_rdr)?;
+                source.table.load_headers_from(&mut readers.table)?;
+                assert_eq!(expected, source.table.header);
+                let expected = RecordHeader::read_from(&mut table_rdr)?;
+                assert_eq!(expected, source.table.record_header);
+
+                Ok(())
+            });
+        }
+    }
+}
