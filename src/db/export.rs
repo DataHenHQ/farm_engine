@@ -1,4 +1,5 @@
 use anyhow::{Result, bail};
+use serde::{Serialize, Deserialize};
 use serde_json::{Map as JSMap, Value as JSValue, Number as JSNumber};
 use std::fs::OpenOptions;
 use std::io::{Seek, SeekFrom, Write, BufWriter};
@@ -20,7 +21,7 @@ pub enum ExportField {
 }
 
 /// Exporter supported file types.
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone, Serialize, Deserialize)]
 pub enum ExportFileType {
     CSV,
     JSON
