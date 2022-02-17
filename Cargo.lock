@@ -82,6 +82,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "dhfarm_engine"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "csv",
+ "path-absolutize",
+ "rand",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha3",
+ "tempfile",
+ "thiserror",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -341,22 +357,6 @@ dependencies = [
  "redox_syscall",
  "remove_dir_all",
  "winapi",
-]
-
-[[package]]
-name = "thefarm_engine"
-version = "0.5.0"
-dependencies = [
- "anyhow",
- "csv",
- "path-absolutize",
- "rand",
- "regex",
- "serde",
- "serde_json",
- "sha3",
- "tempfile",
- "thiserror",
 ]
 
 [[package]]
