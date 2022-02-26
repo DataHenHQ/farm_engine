@@ -1,3 +1,4 @@
+use serde::ser::{Serialize, Serializer};
 use serde_json::{Value as JSValue, Number as JSNumber};
 use anyhow::{bail, Result};
 
@@ -213,6 +214,29 @@ impl From<&Value> for JSValue {
     }
 }
 
+impl Serialize for Value {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Default => serializer.serialize_none(),
+            Self::Bool(v) => serializer.serialize_bool(*v),
+            Self::I8(v) => serializer.serialize_i8(*v),
+            Self::I16(v) => serializer.serialize_i16(*v),
+            Self::I32(v) => serializer.serialize_i32(*v),
+            Self::I64(v) => serializer.serialize_i64(*v),
+            Self::U8(v) => serializer.serialize_u8(*v),
+            Self::U16(v) => serializer.serialize_u16(*v),
+            Self::U32(v) => serializer.serialize_u32(*v),
+            Self::U64(v) => serializer.serialize_u64(*v),
+            Self::F32(v) => serializer.serialize_f32(*v),
+            Self::F64(v) => serializer.serialize_f64(*v),
+            Self::Str(v) => serializer.serialize_str(v)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,6 +264,114 @@ mod tests {
         assert_eq!("345.852", Value::F64(345.852).to_string());
         assert_eq!("-345.852", Value::F64(-345.852).to_string());
         assert_eq!("hello", Value::Str("hello".to_string()).to_string());
+    }
+
+    #[test]
+    fn serialize_default() {
+        let expected = "null";
+        match serde_json::to_string(&Value::Default) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        }
+    }
+
+    #[test]
+    fn serialize_i8() {
+        let expected = "12";
+        match serde_json::to_string(&Value::I8(12i8)) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        }
+    }
+
+    #[test]
+    fn serialize_i16() {
+        let expected = "12";
+        match serde_json::to_string(&Value::I16(12i16)) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        }
+    }
+
+    #[test]
+    fn serialize_i32() {
+        let expected = "12";
+        match serde_json::to_string(&Value::I32(12i32)) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        }
+    }
+
+    #[test]
+    fn serialize_i64() {
+        let expected = "12";
+        match serde_json::to_string(&Value::I64(12i64)) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        }
+    }
+
+    #[test]
+    fn serialize_u8() {
+        let expected = "12";
+        match serde_json::to_string(&Value::U8(12u8)) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        }
+    }
+
+    #[test]
+    fn serialize_u16() {
+        let expected = "12";
+        match serde_json::to_string(&Value::U16(12u16)) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        }
+    }
+
+    #[test]
+    fn serialize_u32() {
+        let expected = "12";
+        match serde_json::to_string(&Value::U32(12u32)) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        }
+    }
+
+    #[test]
+    fn serialize_u64() {
+        let expected = "12";
+        match serde_json::to_string(&Value::U64(12u64)) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        }
+    }
+
+    #[test]
+    fn serialize_f32() {
+        let expected = "12.22";
+        match serde_json::to_string(&Value::F32(12.22f32)) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        }
+    }
+
+    #[test]
+    fn serialize_f64() {
+        let expected = "12.44";
+        match serde_json::to_string(&Value::F64(12.44f64)) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        }
+    }
+
+    #[test]
+    fn serialize_str() {
+        let expected = "\"hello\"";
+        match serde_json::to_string(&Value::Str("hello".to_string())) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        }
     }
 
     #[test]

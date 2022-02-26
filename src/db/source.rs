@@ -1,4 +1,5 @@
 use anyhow::{bail, Result};
+use serde::{Serialize};
 use serde_json::{Map as JSMap, Value as JSValue};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -13,6 +14,7 @@ use super::table::Table;
 use super::table::record::Record;
 
 /// Represents a data source single record.
+#[derive(Debug, Serialize, PartialEq)]
 pub struct Data {
     pub input: JSMap<String, JSValue>,
     pub index: IndexData,
@@ -54,7 +56,7 @@ impl SourceJoinItem<BufWriter<File>, BufWriter<File>> {
 }
 
 /// Represents a data source.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Source {
     /// Indexer.
     pub index: Indexer,
@@ -69,7 +71,7 @@ impl Source {
     /// 
     /// * `override_on_error` - Overrides the index or table file if corrupted instead of error.
     /// * `force_override` - Always creates a new table file with the current headers.
-    pub fn index(&mut self, override_on_error: bool, force_override: bool) -> Result<()> {
+    pub fn init(&mut self, override_on_error: bool, force_override: bool) -> Result<()> {
         if let Err(e) = self.index.index() {
             match e.downcast::<IndexError>() {
                 Ok(ex) => match ex {
@@ -101,7 +103,7 @@ impl Source {
     /// # Arguments
     /// 
     /// * `from_index` - Index offset from which start searching.
-    pub fn find_to_process(&self, from_index: u64) -> Result<Option<u64>> {
+    pub fn find_pending(&self, from_index: u64) -> Result<Option<u64>> {
         self.index.find_pending(from_index)
     }
 

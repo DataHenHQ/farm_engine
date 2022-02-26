@@ -1,3 +1,4 @@
+use serde::{Serialize, Deserialize};
 use std::io::{Seek, SeekFrom, Read, Write};
 use std::convert::TryFrom;
 use anyhow::{bail, Result};
@@ -5,7 +6,7 @@ use crate::error::ParseError;
 use crate::traits::{ByteSized, FromByteSlice, WriteAsBytes, ReadFrom, WriteTo, LoadFrom};
 
 /// Match flag enumerator.
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Copy, Clone)]
 pub enum MatchFlag {
     Yes = b'Y' as isize,
     No = b'N' as isize,
@@ -104,7 +105,7 @@ impl WriteTo for MatchFlag {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Data {
     /// Match flag for the value.
     pub match_flag: MatchFlag,
@@ -160,7 +161,7 @@ impl WriteTo for Data {
 }
 
 /// Describes an Indexer file value.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
 pub struct Value {
     /// Input file start position for the record.
     pub input_start_pos: u64,

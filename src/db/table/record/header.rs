@@ -1,3 +1,4 @@
+use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use anyhow::{bail, Result};
@@ -7,7 +8,7 @@ use super::value::Value;
 use super::Record;
 
 /// Represents a field type.
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Copy, Clone)]
 pub enum FieldType {
     /// Represents a bool type being `type_byte = 1`.
     Bool,
@@ -319,7 +320,7 @@ impl WriteTo for FieldType {
 }
 
 /// Represents a field.
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct Field {
     _name: String,
     _value_type: FieldType

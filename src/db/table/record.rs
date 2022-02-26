@@ -1,6 +1,7 @@
 pub mod header;
 pub mod value;
 
+use serde::ser::{Serialize, Serializer, SerializeMap};
 use std::collections::HashMap;
 use anyhow::{bail, Result};
 pub use header::Header;
@@ -9,7 +10,7 @@ pub use value::Value;
 /// Represents a data record.
 #[derive(Debug, PartialEq)]
 pub struct Record {
-    _list: Vec<Value>,
+    _list: Vec<(String, Value)>,
     _map: HashMap<String, usize>
 }
 
@@ -34,7 +35,8 @@ impl Record {
         }
 
         // add field
-        self._list.push(value);
+        let item = (name.to_string(), value);
+        self._list.push(item);
         self._map.insert(name.to_string(), self._list.len()-1);
         
         Ok(self)
@@ -52,7 +54,7 @@ impl Record {
             Some(v) => *v,
             None => bail!("can't update: unknown field \"{}\"", name)
         };
-        self._list[index] = value;
+        self._list[index].1 = value;
         Ok(())
     }
 
@@ -63,7 +65,7 @@ impl Record {
     /// * `index` - Field index.
     /// * `value` - New value.
     pub fn set_by_index(&mut self, index: usize, value: Value) {
-        self._list[index] = value;
+        self._list[index].1 = value;
     }
 
     /// Get a value by name.
@@ -76,7 +78,7 @@ impl Record {
             Some(v) => *v,
             None => return None
         };
-        Some(&self._list[index])
+        Some(&self._list[index].1)
     }
 
     /// Get a value by it's index.
@@ -86,7 +88,7 @@ impl Record {
     /// * `index` - Value index.
     pub fn get_by_index(&self, index: usize) -> Option<&Value> {
         if self._list.len() > index {
-            return Some(&self._list[index]);
+            return Some(&self._list[index].1);
         }
         None
     }
@@ -94,6 +96,19 @@ impl Record {
     /// Returns the number of fields on the header.
     pub fn len(&self) -> usize {
         self._list.len()
+    }
+}
+
+impl Serialize for Record {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut s = serializer.serialize_map(Some(self._list.len()))?;
+        for (k, v) in self._list.iter() {
+            s.serialize_entry(k, v)?;
+        }
+        s.end()
     }
 }
 
@@ -115,11 +130,25 @@ mod tests {
         }
 
         #[test]
+        fn serialize() {
+            let expected = r#"{"foo":111,"bar":222,"abc":"AAA","my_flag":true}"#.to_string();
+            let mut record = Record::new();
+            record.add("foo", 111i16.into()).unwrap();
+            record.add("bar", 222i64.into()).unwrap();
+            record.add("abc", "AAA".into()).unwrap();
+            record.add("my_flag", true.into()).unwrap();
+            match serde_json::to_string(&record) {
+                Ok(s) => assert_eq!(expected, s),
+                Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+            }
+        }
+
+        #[test]
         fn add_field() {
             let mut record = Record::new();
 
             // add first field
-            let expected = Value::F32(23f32);
+            let expected = ("foo".to_string(), Value::F32(23f32));
             if let Err(e) = record.add(&"foo", Value::F32(23f32)) {
                 assert!(false, "expected to add {:?} value to \"foo\" field but got error: {:?}", expected, e);
                 return;
@@ -131,7 +160,7 @@ mod tests {
             }
 
             // add first field
-            let expected = Value::I64(765i64);
+            let expected = ("bar".to_string(), Value::I64(765i64));
             if let Err(e) = record.add("bar", Value::I64(765i64)) {
                 assert!(false, "expected to add {:?} value to \"bar\" field but got error: {:?}", expected, e);
                 return;
@@ -181,9 +210,9 @@ mod tests {
             // check the inserted values
             assert_eq!(3, record._list.len());
             assert_eq!(3, record._map.len());
-            assert_eq!(Value::F32(23.12f32), record._list[0]);
-            assert_eq!(Value::I64(12i64), record._list[1]);
-            assert_eq!(Value::U64(34u64), record._list[2]);
+            assert_eq!(("foo".to_string(), Value::F32(23.12f32)), record._list[0]);
+            assert_eq!(("abcde".to_string(), Value::I64(12i64)), record._list[1]);
+            assert_eq!(("bar".to_string(), Value::U64(34u64)), record._list[2]);
 
             // update values
             if let Err(e) = record.set("foo", Value::F32(657.54f32)) {
@@ -202,9 +231,9 @@ mod tests {
             // check the new values
             assert_eq!(3, record._list.len());
             assert_eq!(3, record._map.len());
-            assert_eq!(Value::F32(657.54f32), record._list[0]);
-            assert_eq!(Value::I64(956i64), record._list[1]);
-            assert_eq!(Value::U64(45596u64), record._list[2]);
+            assert_eq!(("foo".to_string(), Value::F32(657.54f32)), record._list[0]);
+            assert_eq!(("abcde".to_string(), Value::I64(956i64)), record._list[1]);
+            assert_eq!(("bar".to_string(), Value::U64(45596u64)), record._list[2]);
         }
 
         #[test]
@@ -228,9 +257,9 @@ mod tests {
             // check the inserted values
             assert_eq!(3, record._list.len());
             assert_eq!(3, record._map.len());
-            assert_eq!(Value::F32(23.12f32), record._list[0]);
-            assert_eq!(Value::I64(12i64), record._list[1]);
-            assert_eq!(Value::U64(34u64), record._list[2]);
+            assert_eq!(("foo".to_string(), Value::F32(23.12f32)), record._list[0]);
+            assert_eq!(("abcde".to_string(), Value::I64(12i64)), record._list[1]);
+            assert_eq!(("bar".to_string(), Value::U64(34u64)), record._list[2]);
 
             // update values
             let expected = "can't update: unknown field \"aaa\"";
@@ -242,9 +271,9 @@ mod tests {
             // check the new values
             assert_eq!(3, record._list.len());
             assert_eq!(3, record._map.len());
-            assert_eq!(Value::F32(23.12f32), record._list[0]);
-            assert_eq!(Value::I64(12i64), record._list[1]);
-            assert_eq!(Value::U64(34u64), record._list[2]);
+            assert_eq!(("foo".to_string(), Value::F32(23.12f32)), record._list[0]);
+            assert_eq!(("abcde".to_string(), Value::I64(12i64)), record._list[1]);
+            assert_eq!(("bar".to_string(), Value::U64(34u64)), record._list[2]);
         }
 
         #[test]
@@ -268,9 +297,9 @@ mod tests {
             // check the inserted values
             assert_eq!(3, record._list.len());
             assert_eq!(3, record._map.len());
-            assert_eq!(Value::F32(23.12f32), record._list[0]);
-            assert_eq!(Value::I64(12i64), record._list[1]);
-            assert_eq!(Value::U64(34u64), record._list[2]);
+            assert_eq!(("foo".to_string(), Value::F32(23.12f32)), record._list[0]);
+            assert_eq!(("abcde".to_string(), Value::I64(12i64)), record._list[1]);
+            assert_eq!(("bar".to_string(), Value::U64(34u64)), record._list[2]);
 
             // update values
             record.set_by_index(0, Value::F32(657.54f32));
@@ -280,9 +309,9 @@ mod tests {
             // check the new values
             assert_eq!(3, record._list.len());
             assert_eq!(3, record._map.len());
-            assert_eq!(Value::F32(657.54f32), record._list[0]);
-            assert_eq!(Value::I64(956i64), record._list[1]);
-            assert_eq!(Value::U64(45596u64), record._list[2]);
+            assert_eq!(("foo".to_string(), Value::F32(657.54f32)), record._list[0]);
+            assert_eq!(("abcde".to_string(), Value::I64(956i64)), record._list[1]);
+            assert_eq!(("bar".to_string(), Value::U64(45596u64)), record._list[2]);
         }
 
         #[test]
@@ -305,18 +334,18 @@ mod tests {
             assert_eq!(3, record._list.len());
 
             // first test search by index
-            let expected = Value::I64(12i64);
+            let expected = ("abcde".to_string(), Value::I64(12i64));
             assert_eq!(expected, record._list[1]);
             match record.get_by_index(1) {
-                Some(v) => assert_eq!(&expected, v),
+                Some(v) => assert_eq!(&expected.1, v),
                 None => assert!(false, "expected {:?} but got None", expected)
             }
 
             // second test search by index
-            let expected = Value::F32(23.12f32);
+            let expected = ("foo".to_string(), Value::F32(23.12f32));
             assert_eq!(expected, record._list[0]);
             match record.get_by_index(0) {
-                Some(v) => assert_eq!(&expected, v),
+                Some(v) => assert_eq!(&expected.1, v),
                 None => assert!(false, "expected {:?} but got None", expected)
             }
         }
@@ -368,18 +397,18 @@ mod tests {
             assert_eq!(3, record._map.len());
 
             // first test search by index
-            let expected = Value::I64(12i64);
+            let expected = ("abcde".to_string(), Value::I64(12i64));
             assert_eq!(expected, record._list[1]);
             match record.get("abcde") {
-                Some(v) => assert_eq!(&expected, v),
+                Some(v) => assert_eq!(&expected.1, v),
                 None => assert!(false, "expected {:?} but got None", expected)
             }
 
             // second test search by index
-            let mut expected = Value::U64(34u64);
+            let mut expected = ("bar".to_string(), Value::U64(34u64));
             assert_eq!(expected, record._list[2]);
             match record.get("bar") {
-                Some(v) => assert_eq!(&mut expected, v),
+                Some(v) => assert_eq!(&mut expected.1, v),
                 None => assert!(false, "expected {:?} but got None", expected)
             }
         }

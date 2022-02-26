@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use crate::traits::ReadFrom;
 use super::indexer::Indexer;
 use super::indexer::header::InputType;
-use super::indexer::value::{Value as IndexValue};
+use super::indexer::value::{Value as IndexValue, MatchFlag};
 use super::table::record::Record;
 use super::source::Source;
 
@@ -235,7 +235,7 @@ impl<'s> Exporter<'s> {
     /// 
     /// * `writer` - Byte writer.
     /// * `fields` - List of fields to export.
-    fn export_from_csv(&self, writer: &mut impl ExporterWriter, fields: &[ExportField]) -> Result<()> {
+    fn export_from_csv(&self, writer: &mut impl ExporterWriter, fields: &[ExportField], match_filter: Option<&[MatchFlag]>) -> Result<()> {
         // write headers
         let mut headers = Vec::new();
         for field in fields {
@@ -276,9 +276,17 @@ impl<'s> Exporter<'s> {
                 record: self.source.table.record_header.read_record(&mut table_rdr)?
             };
 
+            // filter by match flag when required
+            if let Some(filter) = match_filter {
+                if !filter.iter().any(|&v|v==export_data.index.data.match_flag) {
+                    continue;
+                }
+            }
+
             // write data
             writer.write_data(fields, export_data, is_first)?;
 
+            // the first record has been added, so set is_first flag to false 
             if is_first {
                 is_first = false;
             }
@@ -296,7 +304,7 @@ impl<'s> Exporter<'s> {
     /// * `source` - Data source to export.
     /// * `file_type` - Output file type.
     /// * `fields` - List of fields to export.
-    pub fn export_to(&self, writer: &mut impl Write, fields: &[ExportField]) -> Result<()> {
+    pub fn export_to(&self, writer: &mut impl Write, fields: &[ExportField], match_filter: Option<&[MatchFlag]>) -> Result<()> {
         // validate before export
         if !self.source.index.header.indexed {
             bail!("input file must be indexed to be exported");
@@ -311,7 +319,8 @@ impl<'s> Exporter<'s> {
                 match self.source.index.header.input_type {
                     InputType::CSV => self.export_from_csv(
                         &mut exporter_writer,
-                        fields
+                        fields,
+                        match_filter
                     ),
                     InputType::JSON => unimplemented!(),
                     InputType::Unknown => bail!("unsupported input file type")
@@ -324,7 +333,8 @@ impl<'s> Exporter<'s> {
                 match self.source.index.header.input_type {
                     InputType::CSV => self.export_from_csv(
                         &mut exporter_writer,
-                        fields
+                        fields,
+                        match_filter
                     ),
                     InputType::JSON => unimplemented!(),
                     InputType::Unknown => bail!("unsupported input file type")
@@ -339,13 +349,13 @@ impl<'s> Exporter<'s> {
     /// 
     /// * `path` - Output file path.
     /// * `fields` - Fields to be exported.
-    pub fn export(&self, output_path: PathBuf, fields: &[ExportField]) -> Result<()> {
+    pub fn export(&self, output_path: PathBuf, fields: &[ExportField], match_filter: Option<&[MatchFlag]>) -> Result<()> {
         let file = OpenOptions::new()
             .write(true)
             .create(true)
             .open(&output_path)?;
         let mut writer = BufWriter::new(file);
-        self.export_to(&mut writer, fields)
+        self.export_to(&mut writer, fields, match_filter)
     }
 }
 
