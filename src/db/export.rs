@@ -16,7 +16,8 @@ use super::source::Source;
 pub enum ExportField {
     Input(String),
     Record(String),
-    SpentTime,
+    /// Spent time with moved decimal point.
+    SpentTime(f64),
     MatchFlag
 }
 
@@ -98,10 +99,13 @@ impl<W: Write> ExporterCSVWriter<W> {
         let mut data = Vec::new();
         for field in fields {
             let value = match field {
-                ExportField::SpentTime => source.index.data.spent_time.to_string(),
+                ExportField::SpentTime(v) => (source.index.data.spent_time as f64 / 10f64.powf(*v)).to_string(),
                 ExportField::MatchFlag => source.index.data.match_flag.to_string(),
                 ExportField::Input(s) => match source.input.get(s) {
-                    Some(v) => v.to_string(),
+                    Some(v) => match v {
+                        JSValue::String(s) => s.to_string(),
+                        jsv => jsv.to_string()
+                    },
                     None => "".to_string()
                 },
                 ExportField::Record(s) => match source.record.get(s) {
@@ -152,8 +156,8 @@ impl<'w, W: Write> ExporterJSONWriter<'w, W> {
         let mut data = JSMap::new();
         for field in fields {
             match field {
-                ExportField::SpentTime => {
-                    let value = JSValue::Number(JSNumber::from(source.index.data.spent_time));
+                ExportField::SpentTime(v) => {
+                    let value = JSValue::Number(JSNumber::from_f64(source.index.data.spent_time as f64 / 10f64.powf(*v)).unwrap());
                     data["spent_time"] = value;
                 },
                 ExportField::MatchFlag => {
@@ -193,8 +197,8 @@ impl<'w, W: Write> ExporterWriter for ExporterJSONWriter<'w, W> {
 
     fn write_data(&mut self, fields: &[ExportField], source: ExportData, is_first: bool) -> Result<()> {
         let data = Self::filter_data(fields, source);
-        if is_first {
-            self.writer.write_all(&[b']'])?;
+        if !is_first {
+            self.writer.write_all(&[b','])?;
         }
         serde_json::to_writer(&mut self.writer, &data)?;
         Ok(())
@@ -240,7 +244,7 @@ impl<'s> Exporter<'s> {
         let mut headers = Vec::new();
         for field in fields {
             let field_name = match field {
-                ExportField::SpentTime => "spent_time".to_string(),
+                ExportField::SpentTime(_) => "spent_time".to_string(),
                 ExportField::MatchFlag => "matched".to_string(),
                 ExportField::Input(s) => s.to_string(),
                 ExportField::Record(s) => s.to_string()
@@ -262,7 +266,7 @@ impl<'s> Exporter<'s> {
         // create input CSV reader
         let input_rdr = self.source.index.new_input_reader()?;
         let mut csv_reader = csv::ReaderBuilder::new()
-            .has_headers(false)
+            .has_headers(true)
             .flexible(true)
             .from_reader(input_rdr);
         
