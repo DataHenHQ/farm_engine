@@ -3,7 +3,7 @@ use serde_json::{Value as JSValue, Number as JSNumber};
 use anyhow::{bail, Result};
 
 /// Represents a value.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Value {
     Default,
     Bool(bool),

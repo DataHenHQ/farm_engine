@@ -14,6 +14,8 @@ use super::source::Source;
 /// Represent a field to be exported.
 #[derive(Debug, PartialEq)]
 pub enum ExportField {
+    AllInput,
+    AllRecord,
     Input(String),
     Record(String),
     /// Spent time with moved decimal point.
@@ -31,6 +33,7 @@ pub enum ExportFileType {
 /// Exporter data.
 #[derive(Debug, PartialEq)]
 pub struct ExportData {
+    input_headers: Vec<String>,
     input: JSMap<String, JSValue>,
     index: IndexValue,
     record: Record
@@ -111,6 +114,25 @@ impl<W: Write> ExporterCSVWriter<W> {
                 ExportField::Record(s) => match source.record.get(s) {
                     Some(v) => v.to_string(),
                     None => "".to_string()
+                },
+                ExportField::AllInput => {
+                    for s in source.input_headers.iter() {
+                        let val = match source.input.get(s) {
+                            Some(v) => match v {
+                                JSValue::String(s) => s.to_string(),
+                                jsv => jsv.to_string()
+                            },
+                            None => "".to_string()
+                        };
+                        data.push(val);
+                    }
+                    continue
+                },
+                ExportField::AllRecord => {
+                    for (_, v) in source.record.iter() {
+                        data.push(v.to_string());
+                    }
+                    continue
                 }
             };
             data.push(value);
@@ -177,6 +199,18 @@ impl<'w, W: Write> ExporterJSONWriter<'w, W> {
                         None => JSValue::Null
                     };
                     data[s] = value;
+                },
+                ExportField::AllInput => {
+                    for (s, v) in source.input.iter() {
+                        data[s] = v.clone();
+                    }
+                    continue
+                },
+                ExportField::AllRecord => {
+                    for (s, v) in source.record.iter() {
+                        data[s] = v.into();
+                    }
+                    continue
                 }
             };
         }
@@ -240,19 +274,6 @@ impl<'s> Exporter<'s> {
     /// * `writer` - Byte writer.
     /// * `fields` - List of fields to export.
     fn export_from_csv(&self, writer: &mut impl ExporterWriter, fields: &[ExportField], match_filter: Option<&[MatchFlag]>) -> Result<()> {
-        // write headers
-        let mut headers = Vec::new();
-        for field in fields {
-            let field_name = match field {
-                ExportField::SpentTime(_) => "spent_time".to_string(),
-                ExportField::MatchFlag => "matched".to_string(),
-                ExportField::Input(s) => s.to_string(),
-                ExportField::Record(s) => s.to_string()
-            };
-            headers.push(field_name);
-        }
-        writer.write_headers(&headers)?;
-
         // create the index reader and move to first value
         let mut index_rdr = self.source.index.new_index_reader()?;
         let pos = Indexer::calc_value_pos(0);
@@ -269,12 +290,42 @@ impl<'s> Exporter<'s> {
             .has_headers(true)
             .flexible(true)
             .from_reader(input_rdr);
+        let mut input_headers = Vec::new();
+        for s in csv_reader.headers()? {
+            input_headers.push(s.to_string());
+        }
+
+        // write headers
+        let mut headers = Vec::new();
+        for field in fields {
+            let field_name = match field {
+                ExportField::SpentTime(_) => "spent_time".to_string(),
+                ExportField::MatchFlag => "matched".to_string(),
+                ExportField::Input(s) => s.to_string(),
+                ExportField::Record(s) => s.to_string(),
+                ExportField::AllInput => {
+                    for s in input_headers.iter() {
+                        headers.push(s.to_string());
+                    }
+                    continue
+                },
+                ExportField::AllRecord => {
+                    for v in self.source.table.record_header.iter() {
+                        headers.push(v.get_name().to_string());
+                    }
+                    continue
+                }
+            };
+            headers.push(field_name);
+        }
+        writer.write_headers(&headers)?;
         
         // iterate input as CSV
         let mut is_first = true;
         for result in csv_reader.deserialize() {
             // read input and source data
             let export_data = ExportData{
+                input_headers: input_headers.clone(),
                 input: result?,
                 index: IndexValue::read_from(&mut index_rdr)?,
                 record: self.source.table.record_header.read_record(&mut table_rdr)?

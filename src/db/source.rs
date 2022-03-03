@@ -5,9 +5,8 @@ use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
 use std::path::PathBuf;
-use crate::fill_file;
 use crate::error::{ParseError, IndexError};
-use crate::traits::{ByteSized, ReadFrom, WriteTo};
+use crate::traits::{ReadFrom, WriteTo};
 use super::indexer::{Indexer, Status as IndexStatus};
 use super::indexer::value::{MatchFlag, Data as IndexData, Value as IndexValue};
 use super::table::Table;
@@ -189,7 +188,7 @@ impl Source {
     /// * `index_path` - Target index file path.
     /// * `table_path` - Target table file path.
     /// * `sources` - Source list to join.
-    pub fn join(index_path: PathBuf, table_path: PathBuf, sources: &[Source]) -> Result<Source> {
+    pub fn join(index_path: &PathBuf, table_path: &PathBuf, sources: &[Source]) -> Result<Source> {
         // validate source list size
         let limit = sources.len();
         if limit < 1 {
@@ -198,18 +197,19 @@ impl Source {
         if limit < 2 {
             bail!("join requires at least 2 sources")
         }
+        let base_source = sources[0].clone();
 
         // validate source list index and table
         let err_msg = "source files can't be the same as the target files";
-        let target_file_paths = [&index_path, &table_path];
+        let target_file_paths = [index_path, table_path];
         for path in target_file_paths {
-            if &sources[0].index.index_path == path || &sources[0].table.path == path {
+            if &base_source.index.index_path == path || &base_source.table.path == path {
                 bail!(err_msg)
             }
         }
         for i in 1..limit {
             // ensure all sources are indexed
-            let (compatible, reason) = sources[0].is_join_compatible(&sources[1]);
+            let (compatible, reason) = base_source.is_join_compatible(&sources[1]);
             if !compatible {    
                 bail!("sources aren't join compatible: {}", reason)
             }
@@ -223,16 +223,20 @@ impl Source {
         }
 
         // create target source
-        let mut target = sources[0].clone();
-        target.index.index_path = index_path;
-        target.table.path = table_path;
+        let mut target = base_source.clone();
+        target.index.index_path = index_path.clone();
+        target.table.path = table_path.clone();
 
-        // create target writers
+        // create target writers and write the target headers
+        let mut target_wrt = SourceJoinItem::as_writer_from(&target, true)?;
+        target.index.save_header(&mut target_wrt.index)?;
+        target.table.save_headers(&mut target_wrt.table)?;
+
+        // move target writers to the first record position
         let index_pos = Indexer::calc_value_pos(0);
         let table_pos = target.table.calc_record_pos(0);
-        let mut target_wrt = SourceJoinItem::as_writer_from(&target, true)?;
-        fill_file(&target.index.index_path, index_pos, false)?;
-        fill_file(&target.table.path, table_pos, false)?;
+        target_wrt.index.seek(SeekFrom::Start(index_pos))?;
+        target_wrt.table.seek(SeekFrom::Start(table_pos))?;
 
         // create readers
         let mut readers = Vec::new();
@@ -242,12 +246,16 @@ impl Source {
             source_rdr.table.seek(SeekFrom::Start(table_pos))?;
             readers.push(source_rdr);
         }
+        let mut base_reader = SourceJoinItem::as_reader_from(&base_source)?;
+        base_reader.index.seek(SeekFrom::Start(index_pos))?;
+        base_reader.table.seek(SeekFrom::Start(table_pos))?;
 
         // iterate and join sources
         let total_sources = sources.len() as f64;
         let match_values = MatchFlag::as_array();
         let record_size = target.table.record_header.record_byte_size() as usize;
         let mut base_record_buf = vec![0u8; record_size as usize];
+        let mut record_buf = vec![0u8; record_size as usize];
         for index in 0..target.index.header.indexed_count {
             // initialize hash maps
             let mut matches: HashMap<u8, f64> = HashMap::new();
@@ -257,12 +265,10 @@ impl Source {
             }
 
             // create base index data
-            let mut base_value = IndexValue::read_from(&mut readers[0].index)?;
-            readers[0].index.seek(SeekFrom::Current(IndexValue::BYTES as i64 * -1))?;
+            let mut base_value = IndexValue::read_from(&mut base_reader.index)?;
 
             // read base record bytes
-            readers[0].table.read_exact(&mut base_record_buf)?;
-            readers[0].table.seek(SeekFrom::Current(record_size as i64 * -1))?;
+            base_reader.table.read_exact(&mut base_record_buf)?;
 
             // iterate source readers and count match flag values
             let mut spent_time = 0;
@@ -282,10 +288,9 @@ impl Source {
                 *count += 1f64;
 
                 // sample source
-                let mut buf = Vec::with_capacity(record_size);
-                readers[i].table.read_exact(&mut buf)?;
+                readers[i].table.read_exact(&mut record_buf)?;
                 if let None = samples.get(&match_flag_byte) {
-                    samples.insert(match_flag_byte, buf);
+                    samples.insert(match_flag_byte, record_buf.clone());
                 }
 
                 // keep track of spent time
@@ -315,12 +320,7 @@ impl Source {
                 None => &base_record_buf
             };
             target_wrt.table.write_all(&buf)?;
-
         }
-
-        // save target headers
-        target.index.save_header(&mut target_wrt.index)?;
-        target.table.save_headers(&mut target_wrt.table)?;
         Ok(target)
     }
 }

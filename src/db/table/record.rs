@@ -97,6 +97,11 @@ impl Record {
     pub fn len(&self) -> usize {
         self._list.len()
     }
+
+    /// Returns a column iterator.
+    pub fn iter(&self) -> std::slice::Iter<(String, Value)> {
+        self._list.iter()
+    }
 }
 
 impl Serialize for Record {
@@ -465,6 +470,48 @@ mod tests {
 
             // test length
             assert_eq!(3, record.len());
+        }
+
+        #[test]
+        fn iter() {
+            let expected_list = vec![
+                ("foo".to_string(), Value::F32(12f32)),
+                ("bar".to_string(), Value::Str("hello".to_string())),
+                ("abc".to_string(), Value::U16(32u16))
+            ];
+            let mut expected_map = HashMap::new();
+            expected_map.insert("foo".to_string(), 0usize);
+            expected_map.insert("bar".to_string(), 1usize);
+            expected_map.insert("abc".to_string(), 2usize);
+            let mut record = Record::new();
+
+            // add field values
+            if let Err(e) = record.add("foo", Value::F32(12f32)) {
+                assert!(false, "expected to add {:?} value to  \"foo\" field but got error: {:?}", Value::F32(23.12f32), e);
+                return;
+            }
+            if let Err(e) = record.add("bar", Value::Str("hello".to_string())) {
+                assert!(false, "expected to add {:?} value to  \"bar\" field but got error: {:?}", Value::Str("hello".to_string()), e);
+                return;
+            }
+            if let Err(e) = record.add("abc", Value::U16(32u16)) {
+                assert!(false, "expected to add {:?} value to  \"abc\" field but got error: {:?}", Value::U16(32u16), e);
+                return;
+            }
+
+            // test
+            let mut list = Vec::new();
+            let mut map = HashMap::new();
+            let mut i: usize = 0;
+            for (s, v) in record.iter() {
+                list.push((s.to_string(), v.clone()));
+                map.insert(s.to_string(), i);
+                i += 1;
+            }
+            assert_eq!(expected_list, record._list);
+            assert_eq!(expected_map, record._map);
+            assert_eq!(expected_list, list);
+            assert_eq!(expected_map, map);
         }
     }
 }
