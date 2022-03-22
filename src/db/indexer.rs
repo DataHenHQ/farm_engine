@@ -397,7 +397,7 @@ impl Indexer {
     /// # Arguments
     /// 
     /// * `writer` - Byte writer.
-    pub fn save_header(&self, writer: &mut (impl Write + Seek)) -> Result<()> {
+    pub fn save_header_into(&self, writer: &mut (impl Write + Seek)) -> Result<()> {
         writer.flush()?;
         let old_pos = writer.stream_position()?;
         writer.rewind()?;
@@ -405,6 +405,12 @@ impl Indexer {
         writer.flush()?;
         writer.seek(SeekFrom::Start(old_pos))?;
         Ok(())
+    }
+
+    /// Saves the index header and then jump back to the last writer stream position.
+    pub fn save_header(&self) -> Result<()> {
+        let mut writer = self.new_index_writer(false)?;
+        self.save_header_into(&mut writer)
     }
 
     /// Loads fields names from a CSV input file.
@@ -523,7 +529,7 @@ impl Indexer {
 
                     // save headers every batch
                     if self.header.indexed_count % self.batch_size < 1 {
-                        self.save_header(index_wrt)?;
+                        self.save_header_into(index_wrt)?;
                     }
                 }
             }
@@ -531,7 +537,7 @@ impl Indexer {
 
         // write headers
         self.header.indexed = true;
-        self.save_header(index_wrt)?;
+        self.save_header_into(index_wrt)?;
 
         Ok(())
     }
@@ -1468,6 +1474,30 @@ mod tests {
     }
 
     #[test]
+    fn save_header_into() {
+        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+            // create index file and read index header data
+            create_fake_index(&indexer.index_path, false)?;
+            let mut reader = indexer.new_index_reader()?;
+            let mut expected = [0u8; Header::BYTES];
+            reader.read_exact(&mut expected)?;
+            reader.rewind()?;
+            indexer.header.load_from(&mut reader)?;
+
+            // test save index header
+            let mut buf = [0u8; Header::BYTES];
+            let wrt = &mut buf as &mut [u8];
+            let mut writer = Cursor::new(wrt);
+            if let Err(e) = indexer.save_header_into(&mut writer) {
+                assert!(false, "expected success but got error: {:?}", e);
+            };
+            assert_eq!(expected, buf);
+            
+            Ok(())
+        });
+    }
+
+    #[test]
     fn save_header() {
         with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
             // create index file and read index header data
@@ -1475,17 +1505,20 @@ mod tests {
             let mut reader = indexer.new_index_reader()?;
             let mut expected = [0u8; Header::BYTES];
             reader.read_exact(&mut expected)?;
-            reader.seek(SeekFrom::Start(0))?;
+            reader.rewind()?;
             indexer.header.load_from(&mut reader)?;
 
             // test save index header
-            let mut buf = [0u8; Header::BYTES];
-            let wrt = &mut buf as &mut [u8];
-            let mut writer = Cursor::new(wrt);
-            if let Err(e) = indexer.save_header(&mut writer) {
+            assert_eq!(4, indexer.header.indexed_count);
+            indexer.header.indexed_count = 5;
+            if let Err(e) = indexer.save_header() {
                 assert!(false, "expected success but got error: {:?}", e);
             };
-            assert_eq!(expected, buf);
+            indexer.header.indexed_count = 4;
+            assert_eq!(4, indexer.header.indexed_count);
+            reader.rewind()?;
+            indexer.header.load_from(&mut reader)?;
+            assert_eq!(5, indexer.header.indexed_count);
             
             Ok(())
         });

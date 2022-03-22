@@ -169,7 +169,8 @@ impl Table {
     /// * `writer` - File writer to save data into.
     /// * `index` - Record index.
     /// * `record` - Record to save.
-    pub fn seek_write_record(&self, writer: &mut (impl Write + Seek), index: u64, record: &Record) -> Result<()> {
+    /// * `save_headers` - Headers will be saved on append when true.
+    pub fn save_record_into(&mut self, writer: &mut (impl Write + Seek), index: u64, record: &Record, save_headers: bool) -> Result<()> {
         // validate table
         if self.record_header.len() < 1 {
             bail!(TableError::NoFields)
@@ -182,6 +183,17 @@ impl Table {
         let pos = self.calc_record_pos(index);
         writer.seek(SeekFrom::Start(pos))?;
         self.record_header.write_record(writer, &record)?;
+        
+        // exit when no append
+        if index < self.header.record_count {
+            return Ok(())
+        }
+
+        // increase record count on append
+        self.header.record_count += 1;
+        if save_headers {
+            self.save_headers_into(writer)?;
+        }
         Ok(())
     }
 
@@ -191,9 +203,10 @@ impl Table {
     /// 
     /// * `index` - Index value index.
     /// * `record` - Record to save.
-    pub fn save_record(&self, index: u64, record: &Record) -> Result<()> {
+    /// * `save_headers` - Headers will be saved on append when true.
+    pub fn save_record(&mut self, index: u64, record: &Record, save_headers: bool) -> Result<()> {
         let mut writer = self.new_writer(false)?;        
-        self.seek_write_record(&mut writer, index, record)?;
+        self.save_record_into(&mut writer, index, record, save_headers)?;
         writer.flush()?;
         Ok(())
     }
@@ -259,7 +272,7 @@ impl Table {
     /// # Arguments
     /// 
     /// * `writer` - Byte writer.
-    pub fn save_headers(&self, writer: &mut (impl Write + Seek)) -> Result<()> {
+    pub fn save_headers_into(&self, writer: &mut (impl Write + Seek)) -> Result<()> {
         writer.flush()?;
         let old_pos = writer.stream_position()?;
         writer.rewind()?;
@@ -268,6 +281,12 @@ impl Table {
         writer.flush()?;
         writer.seek(SeekFrom::Start(old_pos))?;
         Ok(())
+    }
+
+    /// Saves the headers and then jump back to the last writer stream position.
+    pub fn save_headers(&self) -> Result<()> {
+        let mut writer = self.new_writer(false)?;
+        self.save_headers_into(&mut writer)
     }
 
     /// Loads or creates the table file.
@@ -299,7 +318,7 @@ impl Table {
             let mut writer = self.new_writer(true)?;
             let size = self.calc_record_pos(self.header.record_count);
             fill_file(&self.path, size, true)?;
-            self.save_headers(&mut writer)?;
+            self.save_headers_into(&mut writer)?;
             writer.flush()?;
         }
         Ok(())
@@ -833,7 +852,7 @@ mod tests {
             let expected = "can't write or append the record, the table file is too small";
             records[2].set("foo", Value::I32(11))?;
             records[2].set("bar", Value::Str("hello".to_string()))?;
-            match table.save_record(2, &records[2]) {
+            match table.save_record(2, &records[2], true) {
                 Ok(v) => assert!(false, "expected error but got {:?}", v),
                 Err(e) => assert_eq!(expected, e.to_string())
             }
@@ -877,7 +896,7 @@ mod tests {
             ];
             records[2].set("foo", Value::I32(11))?;
             records[2].set("bar", Value::Str("hello".to_string()))?;
-            if let Err(e) = table.save_record(2, &records[2]) {
+            if let Err(e) = table.save_record(2, &records[2], true) {
                 assert!(false, "expected success but got error: {:?}", e)
             }
             reader.seek(SeekFrom::Start(0))?;
@@ -907,7 +926,7 @@ mod tests {
             // test
             records[2].set("foo", Value::I32(11))?;
             records[2].set("bar", Value::Str("hello".to_string()))?;
-            match table.save_record(2, &records[2]) {
+            match table.save_record(2, &records[2], true) {
                 Ok(()) => assert!(false, "expected TableError::NoFields but got success"),
                 Err(e) => match e.downcast::<TableError>() {
                     Ok(ex) => match ex {
@@ -1001,8 +1020,34 @@ mod tests {
     fn healthcheck_no_fields() {
         with_tmpdir_and_table(&|_, table| -> Result<()> {
             let mut writer = table.new_writer(true)?;
-            table.save_headers(&mut writer)?;
+            table.save_headers_into(&mut writer)?;
             assert_eq!(Status::NoFields, table.healthcheck()?);
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn save_headers_into() {
+        with_tmpdir_and_table(&|_, table| -> Result<()> {
+            // create table file and read table header data
+            create_fake_table(&table.path, false)?;
+            let mut reader = table.new_reader()?;
+            let size = Header::BYTES + 122;
+            let mut expected = vec![0u8; size];
+            reader.read_exact(&mut expected)?;
+            reader.rewind()?;
+            table.header.load_from(&mut reader)?;
+            table.record_header.load_from(&mut reader)?;
+
+            // test save table header
+            let mut buf = vec![0u8; size];
+            let wrt = &mut buf as &mut [u8];
+            let mut writer = Cursor::new(wrt);
+            if let Err(e) = table.save_headers_into(&mut writer) {
+                assert!(false, "expected success but got error: {:?}", e);
+            };
+            assert_eq!(expected, buf);
+            
             Ok(())
         });
     }
@@ -1021,13 +1066,16 @@ mod tests {
             table.record_header.load_from(&mut reader)?;
 
             // test save table header
-            let mut buf = vec![0u8; size];
-            let wrt = &mut buf as &mut [u8];
-            let mut writer = Cursor::new(wrt);
-            if let Err(e) = table.save_headers(&mut writer) {
+            assert_eq!(4, table.header.record_count);
+            table.header.record_count = 5;
+            if let Err(e) = table.save_headers() {
                 assert!(false, "expected success but got error: {:?}", e);
             };
-            assert_eq!(expected, buf);
+            table.header.record_count = 4;
+            assert_eq!(4, table.header.record_count);
+            reader.rewind()?;
+            table.header.load_from(&mut reader)?;
+            assert_eq!(5, table.header.record_count);
             
             Ok(())
         });

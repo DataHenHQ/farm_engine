@@ -229,8 +229,8 @@ impl Source {
 
         // create target writers and write the target headers
         let mut target_wrt = SourceJoinItem::as_writer_from(&target, true)?;
-        target.index.save_header(&mut target_wrt.index)?;
-        target.table.save_headers(&mut target_wrt.table)?;
+        target.index.save_header_into(&mut target_wrt.index)?;
+        target.table.save_headers_into(&mut target_wrt.table)?;
 
         // move target writers to the first record position
         let index_pos = Indexer::calc_value_pos(0);
