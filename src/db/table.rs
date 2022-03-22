@@ -65,12 +65,29 @@ impl Table {
     /// # Arguments
     /// 
     /// * `path` - Table file path.
+    /// * `name` - Table name.
     pub fn new(path: PathBuf, name: &str) -> Result<Self> {
         Ok(Self{
             path,
             header: Header::new(name)?,
             record_header: RecordHeader::new()
         })
+    }
+
+    /// Loads a table from a file.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `path` - Table file path.
+    pub fn from_file(path: PathBuf) -> Result<Self> {
+        let mut table = Self::new(path, "")?;
+        match table.healthcheck() {
+            Ok(v) => match v {
+                Status::Good => Ok(table),
+                vu => bail!(TableError::Unavailable(vu))
+            },
+            Err(e) => Err(e)
+        }
     }
 
     /// Returns a table file buffered reader.
@@ -139,7 +156,6 @@ impl Table {
     /// 
     /// # Arguments
     /// 
-    /// * `reader` - Byte reader.
     /// * `index` - Record index.
     pub fn record(&self, index: u64) -> Result<Option<Record>> {
         let mut reader = self.new_reader()?;
@@ -151,6 +167,7 @@ impl Table {
     /// # Arguments
     /// 
     /// * `writer` - File writer to save data into.
+    /// * `index` - Record index.
     /// * `record` - Record to save.
     pub fn seek_write_record(&self, writer: &mut (impl Write + Seek), index: u64, record: &Record) -> Result<()> {
         // validate table
