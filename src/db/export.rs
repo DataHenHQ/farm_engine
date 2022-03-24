@@ -16,11 +16,11 @@ use super::source::Source;
 pub enum ExportField {
     AllInput,
     AllRecord,
-    Input(String),
-    Record(String),
+    Input{label: Option<String>, name: String},
+    Record{label: Option<String>, name: String},
     /// Spent time with moved decimal point.
-    SpentTime(f64),
-    MatchFlag
+    SpentTime{label: Option<String>, decimal: f64},
+    MatchFlag{label: Option<String>}
 }
 
 /// Exporter supported file types.
@@ -102,16 +102,16 @@ impl<W: Write> ExporterCSVWriter<W> {
         let mut data = Vec::new();
         for field in fields {
             let value = match field {
-                ExportField::SpentTime(v) => (source.index.data.spent_time as f64 / 10f64.powf(*v)).to_string(),
-                ExportField::MatchFlag => source.index.data.match_flag.to_string(),
-                ExportField::Input(s) => match source.input.get(s) {
+                ExportField::SpentTime{label: _, decimal} => (source.index.data.spent_time as f64 / 10f64.powf(*decimal)).to_string(),
+                ExportField::MatchFlag{label: _} => source.index.data.match_flag.to_string(),
+                ExportField::Input{label: _, name} => match source.input.get(name) {
                     Some(v) => match v {
                         JSValue::String(s) => s.to_string(),
                         jsv => jsv.to_string()
                     },
                     None => "".to_string()
                 },
-                ExportField::Record(s) => match source.record.get(s) {
+                ExportField::Record{label: _, name} => match source.record.get(name) {
                     Some(v) => v.to_string(),
                     None => "".to_string()
                 },
@@ -178,27 +178,43 @@ impl<'w, W: Write> ExporterJSONWriter<'w, W> {
         let mut data = JSMap::new();
         for field in fields {
             match field {
-                ExportField::SpentTime(v) => {
-                    let value = JSValue::Number(JSNumber::from_f64(source.index.data.spent_time as f64 / 10f64.powf(*v)).unwrap());
-                    data["spent_time"] = value;
+                ExportField::SpentTime{label, decimal} => {
+                    let value = JSValue::Number(JSNumber::from_f64(source.index.data.spent_time as f64 / 10f64.powf(*decimal)).unwrap());
+                    let key = match label {
+                        Some(s) => s,
+                        None => "spent_time"
+                    };
+                    data[key] = value;
                 },
-                ExportField::MatchFlag => {
+                ExportField::MatchFlag{label} => {
                     let value = JSValue::String(source.index.data.match_flag.to_string());
-                    data["matched"] = value;
+                    let key = match label {
+                        Some(s) => s,
+                        None => "matched"
+                    };
+                    data[key] = value;
                 },
-                ExportField::Input(s) => {
-                    let value = match source.input.get(s) {
+                ExportField::Input{label, name} => {
+                    let value = match source.input.get(name) {
                         Some(v) => v.clone(),
                         None => JSValue::Null
                     };
-                    data[s] = value;
+                    let key = match label {
+                        Some(s) => s,
+                        None => &name
+                    };
+                    data[key] = value;
                 },
-                ExportField::Record(s) => {
-                    let value = match source.record.get(s) {
+                ExportField::Record{label, name} => {
+                    let value = match source.record.get(name) {
                         Some(v) => v.into(),
                         None => JSValue::Null
                     };
-                    data[s] = value;
+                    let key = match label {
+                        Some(s) => s,
+                        None => &name
+                    };
+                    data[key] = value;
                 },
                 ExportField::AllInput => {
                     for (s, v) in source.input.iter() {
@@ -299,10 +315,22 @@ impl<'s> Exporter<'s> {
         let mut headers = Vec::new();
         for field in fields {
             let field_name = match field {
-                ExportField::SpentTime(_) => "spent_time".to_string(),
-                ExportField::MatchFlag => "matched".to_string(),
-                ExportField::Input(s) => s.to_string(),
-                ExportField::Record(s) => s.to_string(),
+                ExportField::SpentTime{label, decimal: _} => match label {
+                    Some(s) => s.to_string(),
+                    None => "spent_time".to_string()
+                },
+                ExportField::MatchFlag{label} => match label {
+                    Some(s) => s.to_string(),
+                    None => "matched".to_string()
+                },
+                ExportField::Input{label, name} => match label {
+                    Some(s) => s.to_string(),
+                    None => name.to_string()
+                },
+                ExportField::Record{label, name} => match label {
+                    Some(s) => s.to_string(),
+                    None => name.to_string()
+                },
                 ExportField::AllInput => {
                     for s in input_headers.iter() {
                         headers.push(s.to_string());
