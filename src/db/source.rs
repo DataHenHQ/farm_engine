@@ -188,14 +188,11 @@ impl Source {
     /// * `index_path` - Target index file path.
     /// * `table_path` - Target table file path.
     /// * `sources` - Source list to join.
-    pub fn join(index_path: &PathBuf, table_path: &PathBuf, sources: &[Source]) -> Result<Source> {
+    pub fn join(index_path: &PathBuf, table_path: &PathBuf, sources: &[Source]) -> Result<(Source, u64)> {
         // validate source list size
         let limit = sources.len();
         if limit < 1 {
             bail!("can't merge an empty source list")
-        }
-        if limit < 2 {
-            bail!("join requires at least 2 sources")
         }
         let base_source = sources[0].clone();
 
@@ -207,25 +204,28 @@ impl Source {
                 bail!(err_msg)
             }
         }
-        for i in 1..limit {
-            // ensure all sources are indexed
-            let (compatible, reason) = base_source.is_join_compatible(&sources[1]);
-            if !compatible {    
-                bail!("sources aren't join compatible: {}", reason)
-            }
-            
-            // ensure the target files aren't the same as any source
-            for path in target_file_paths {
-                if &sources[i].index.index_path == path || &sources[i].table.path == path {
-                    bail!(err_msg)
+        if limit > 1 {
+            for i in 1..limit {
+                // ensure all sources are indexed
+                let (compatible, reason) = base_source.is_join_compatible(&sources[1]);
+                if !compatible {    
+                    bail!("sources aren't join compatible: {}", reason)
+                }
+                
+                // ensure the target files aren't the same as any source
+                for path in target_file_paths {
+                    if &sources[i].index.index_path == path || &sources[i].table.path == path {
+                        bail!(err_msg)
+                    }
                 }
             }
         }
 
-        // create target source
+        // create target source and "to process" counter
         let mut target = base_source.clone();
         target.index.index_path = index_path.clone();
         target.table.path = table_path.clone();
+        let mut to_process_count = 0u64;
 
         // create target writers and write the target headers
         let mut target_wrt = SourceJoinItem::as_writer_from(&target, true)?;
@@ -308,6 +308,9 @@ impl Source {
             if match_flag == MatchFlag::Skip {
                 match_flag = MatchFlag::None
             }
+            if match_flag == MatchFlag::None {
+                to_process_count += 1;
+            }
             base_value.data.match_flag = match_flag;
             base_value.data.spent_time = (spent_time as f64 / total_sources) as u64;
 
@@ -321,7 +324,7 @@ impl Source {
             };
             target_wrt.table.write_all(&buf)?;
         }
-        Ok(target)
+        Ok((target, to_process_count))
     }
 }
 
