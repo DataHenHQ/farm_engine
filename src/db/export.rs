@@ -1,6 +1,7 @@
 use anyhow::{Result, bail};
 use serde::{Serialize, Deserialize};
 use serde_json::{Map as JSMap, Value as JSValue, Number as JSNumber};
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::{Seek, SeekFrom, Write, BufWriter};
 use std::path::PathBuf;
@@ -11,16 +12,26 @@ use super::indexer::value::{Value as IndexValue, MatchFlag};
 use super::table::record::Record;
 use super::source::Source;
 
+/// MatchFlag masked value.
+#[derive(Debug, Deserialize, PartialEq, Clone)]
+pub struct MatchFlagMask {
+    pub yes: Option<String>,
+    pub no: Option<String>,
+    pub skip: Option<String>,
+    pub none: Option<String>
+}
+
 /// Represent a field to be exported.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum ExportField {
-    AllInput,
-    AllRecord,
+    AllInput{overrides: Option<HashMap<String, ExportField>>},
+    AllRecord{overrides: Option<HashMap<String, ExportField>>},
     Input{label: Option<String>, name: String},
     Record{label: Option<String>, name: String},
     /// Spent time with moved decimal point.
     SpentTime{label: Option<String>, decimal: f64},
-    MatchFlag{label: Option<String>}
+    MatchFlag{label: Option<String>, mask: Option<MatchFlagMask>},
+    None{label: String}
 }
 
 /// Exporter supported file types.
@@ -66,6 +77,46 @@ pub trait ExporterWriter {
 
     /// Write end.
     fn write_end(&mut self) -> Result<()>;
+
+    /// Calculate the spent time value
+    /// 
+    /// # Arguments
+    /// 
+    /// * `decimal` - Decimal points to move to the left.
+    /// * `source` - Source data.
+    fn calc_spent_time(decimal: f64, source: &ExportData) -> f64 {
+        source.index.data.spent_time as f64 / 10f64.powf(decimal)
+    }
+
+    /// Calculate the match flag value
+    /// 
+    /// # Arguments
+    /// 
+    /// * `mask` - Match flag mask to override its string value representation.
+    /// * `source` - Source data.
+    fn calc_match_flag(mask: &Option<MatchFlagMask>, source: &ExportData) -> String {
+        match mask {
+            Some(v) => match source.index.data.match_flag {
+                MatchFlag::Yes => match &v.yes {
+                    Some(s) => s.to_string(),
+                    None => MatchFlag::Yes.to_string()
+                },
+                MatchFlag::No => match &v.no {
+                    Some(s) => s.to_string(),
+                    None => MatchFlag::No.to_string()
+                },
+                MatchFlag::Skip => match &v.skip {
+                    Some(s) => s.to_string(),
+                    None => MatchFlag::Skip.to_string()
+                },
+                MatchFlag::None => match &v.none {
+                    Some(s) => s.to_string(),
+                    None => MatchFlag::None.to_string()
+                }
+            },
+            None => source.index.data.match_flag.to_string()
+        }
+    }
 }
 
 impl<T: ExporterWriter> ExporterWriter for &'_ mut T {
@@ -91,51 +142,80 @@ struct ExporterCSVWriter<W: Write> {
 }
 
 impl<W: Write> ExporterCSVWriter<W> {
-    /// Filter all fields value into a String array.
+    /// Filter a single field into a String vector.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `field` - Export field.
+    /// * `data` - String vector to store values into.
+    /// * `source` - Source data to filter.
+    fn filter_single(field: &ExportField, data: &mut Vec<String>, source: &ExportData) {
+        let value =  match field {
+            ExportField::SpentTime{label: _, decimal} => Self::calc_spent_time(*decimal, source).to_string(),
+            ExportField::MatchFlag{label: _, mask} => Self::calc_match_flag(mask, source),
+            ExportField::Input{label: _, name} => match source.input.get(name) {
+                Some(v) => match v {
+                    JSValue::String(s) => s.to_string(),
+                    jsv => jsv.to_string()
+                },
+                None => "".to_string()
+            },
+            ExportField::Record{label: _, name} => match source.record.get(name) {
+                Some(v) => v.to_string(),
+                None => "".to_string()
+            },
+            ExportField::AllInput{overrides} => {
+                for s in source.input_headers.iter() {
+                    // apply field override
+                    if let Some(map) = overrides {
+                        if let Some(new_field) = map.get(s) {
+                            Self::filter_single(new_field, data, source);
+                            continue
+                        }
+                    }
+
+                    // add field value
+                    let val = match source.input.get(s) {
+                        Some(v) => match v {
+                            JSValue::String(s) => s.to_string(),
+                            jsv => jsv.to_string()
+                        },
+                        None => "".to_string()
+                    };
+                    data.push(val);
+                }
+                return
+            },
+            ExportField::AllRecord{overrides} => {
+                for (s, v) in source.record.iter() {
+                    // apply field override
+                    if let Some(map) = overrides {
+                        if let Some(new_field) = map.get(s) {
+                            Self::filter_single(new_field, data, source);
+                            continue
+                        }
+                    }
+
+                    // add field value
+                    data.push(v.to_string());
+                }
+                return
+            }
+            ExportField::None{label: _} => "".to_string(),
+        };
+        data.push(value);
+    }
+
+    /// Filter all fields value into a String vector.
     /// 
     /// # Arguments
     /// 
     /// * `fields` - Export fields.
-    /// * `input_data` - Input data to filter.
-    /// * `value` - Indexer data to filter.
+    /// * `source` - Source data to filter.
     fn filter_data(fields: &[ExportField], source: ExportData) -> Vec<String> {
         let mut data = Vec::new();
         for field in fields {
-            let value = match field {
-                ExportField::SpentTime{label: _, decimal} => (source.index.data.spent_time as f64 / 10f64.powf(*decimal)).to_string(),
-                ExportField::MatchFlag{label: _} => source.index.data.match_flag.to_string(),
-                ExportField::Input{label: _, name} => match source.input.get(name) {
-                    Some(v) => match v {
-                        JSValue::String(s) => s.to_string(),
-                        jsv => jsv.to_string()
-                    },
-                    None => "".to_string()
-                },
-                ExportField::Record{label: _, name} => match source.record.get(name) {
-                    Some(v) => v.to_string(),
-                    None => "".to_string()
-                },
-                ExportField::AllInput => {
-                    for s in source.input_headers.iter() {
-                        let val = match source.input.get(s) {
-                            Some(v) => match v {
-                                JSValue::String(s) => s.to_string(),
-                                jsv => jsv.to_string()
-                            },
-                            None => "".to_string()
-                        };
-                        data.push(val);
-                    }
-                    continue
-                },
-                ExportField::AllRecord => {
-                    for (_, v) in source.record.iter() {
-                        data.push(v.to_string());
-                    }
-                    continue
-                }
-            };
-            data.push(value);
+            Self::filter_single(field, &mut data, &source)
         }
         data
     }
@@ -162,79 +242,108 @@ impl<W: Write> ExporterWriter for ExporterCSVWriter<W> {
     }
 }
 
-struct ExporterJSONWriter<'w, W: 'w> {
-    pub writer: &'w mut W
+struct ExporterJSONWriter<W: Write> {
+    pub writer: W
 }
 
-impl<'w, W: Write> ExporterJSONWriter<'w, W> {
-    /// Filter all fields value into an JSValue array.
+impl<W: Write> ExporterJSONWriter<W> {
+    /// Filter a single field into a Json map.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `field` - Export field.
+    /// * `data` - String vector to store values into.
+    /// * `source` - Source data to filter.
+    fn filter_single(field: &ExportField, data: &mut JSMap<String, JSValue>, source: &ExportData) {
+        match field {
+            ExportField::SpentTime{label, decimal} => {
+                let value = JSValue::Number(JSNumber::from_f64(
+                    Self::calc_spent_time(*decimal, source)
+                ).unwrap());
+                let key = match label {
+                    Some(s) => s,
+                    None => "spent_time"
+                };
+                data[key] = value;
+            },
+            ExportField::MatchFlag{label, mask} => {
+                let value = JSValue::String(Self::calc_match_flag(mask, source));
+                let key = match label {
+                    Some(s) => s,
+                    None => "matched"
+                };
+                data[key] = value;
+            },
+            ExportField::Input{label, name} => {
+                let value = match source.input.get(name) {
+                    Some(v) => v.clone(),
+                    None => JSValue::Null
+                };
+                let key = match label {
+                    Some(s) => s,
+                    None => &name
+                };
+                data[key] = value;
+            },
+            ExportField::Record{label, name} => {
+                let value = match source.record.get(name) {
+                    Some(v) => v.into(),
+                    None => JSValue::Null
+                };
+                let key = match label {
+                    Some(s) => s,
+                    None => &name
+                };
+                data[key] = value;
+            },
+            ExportField::AllInput{overrides} => {
+                for (s, v) in source.input.iter() {
+                    // apply field override
+                    if let Some(map) = overrides {
+                        if let Some(new_field) = map.get(s) {
+                            Self::filter_single(new_field, data, source);
+                            continue
+                        }
+                    }
+
+                    // add field value
+                    data[s] = v.clone();
+                }
+            },
+            ExportField::AllRecord{overrides} => {
+                for (s, v) in source.record.iter() {
+                    // apply field override
+                    if let Some(map) = overrides {
+                        if let Some(new_field) = map.get(s) {
+                            Self::filter_single(new_field, data, source);
+                            continue
+                        }
+                    }
+
+                    // add field value
+                    data[s] = v.into();
+                }
+            },
+            ExportField::None{label} => data[label] = "".into(),
+        };
+    }
+
+    /// Filter all field values into a Json map.
     /// 
     /// # Arguments
     /// 
     /// * `fields` - Export fields.
-    /// * `input_data` - Input data to filter.
-    /// * `value` - Indexer data to filter.
+    /// * `source` - Source data to filter.
     fn filter_data(fields: &[ExportField], source: ExportData) -> JSMap<String, JSValue> {
         let mut data = JSMap::new();
         for field in fields {
-            match field {
-                ExportField::SpentTime{label, decimal} => {
-                    let value = JSValue::Number(JSNumber::from_f64(source.index.data.spent_time as f64 / 10f64.powf(*decimal)).unwrap());
-                    let key = match label {
-                        Some(s) => s,
-                        None => "spent_time"
-                    };
-                    data[key] = value;
-                },
-                ExportField::MatchFlag{label} => {
-                    let value = JSValue::String(source.index.data.match_flag.to_string());
-                    let key = match label {
-                        Some(s) => s,
-                        None => "matched"
-                    };
-                    data[key] = value;
-                },
-                ExportField::Input{label, name} => {
-                    let value = match source.input.get(name) {
-                        Some(v) => v.clone(),
-                        None => JSValue::Null
-                    };
-                    let key = match label {
-                        Some(s) => s,
-                        None => &name
-                    };
-                    data[key] = value;
-                },
-                ExportField::Record{label, name} => {
-                    let value = match source.record.get(name) {
-                        Some(v) => v.into(),
-                        None => JSValue::Null
-                    };
-                    let key = match label {
-                        Some(s) => s,
-                        None => &name
-                    };
-                    data[key] = value;
-                },
-                ExportField::AllInput => {
-                    for (s, v) in source.input.iter() {
-                        data[s] = v.clone();
-                    }
-                    continue
-                },
-                ExportField::AllRecord => {
-                    for (s, v) in source.record.iter() {
-                        data[s] = v.into();
-                    }
-                    continue
-                }
-            };
+            Self::filter_single(field, &mut data, &source)
         }
         data
     }
 }
 
-impl<'w, W: Write> ExporterWriter for ExporterJSONWriter<'w, W> {
+impl<W: Write> ExporterWriter for ExporterJSONWriter<W> {
     fn write(&mut self, text: &str) -> Result<()> {
         self.writer.write_all(text.as_bytes())?;
         Ok(())
@@ -283,6 +392,61 @@ impl<'s> Exporter<'s> {
         }
     }
 
+    fn add_csv_headers(&self, field: &ExportField, headers: &mut Vec<String>, input_headers: &[String]) {
+        let field_name = match field {
+            ExportField::SpentTime{label, decimal: _} => match label {
+                Some(s) => s.to_string(),
+                None => "spent_time".to_string()
+            },
+            ExportField::MatchFlag{label, mask: _} => match label {
+                Some(s) => s.to_string(),
+                None => "matched".to_string()
+            },
+            ExportField::Input{label, name} => match label {
+                Some(s) => s.to_string(),
+                None => name.to_string()
+            },
+            ExportField::Record{label, name} => match label {
+                Some(s) => s.to_string(),
+                None => name.to_string()
+            },
+            ExportField::AllInput{overrides} => {
+                for s in input_headers.iter() {
+                    // apply field override
+                    if let Some(map) = overrides {
+                        if let Some(new_field) = map.get(s) {
+                            self.add_csv_headers(new_field, headers, input_headers);
+                            continue
+                        }
+                    }
+
+                    // add field header
+                    headers.push(s.to_string());
+                }
+                return
+            },
+            ExportField::AllRecord{overrides} => {
+                for v in self.source.table.record_header.iter() {
+                    let name = v.get_name();
+
+                    // apply field override
+                    if let Some(map) = overrides {
+                        if let Some(new_field) = map.get(name) {
+                            self.add_csv_headers(new_field, headers, input_headers);
+                            continue
+                        }
+                    }
+
+                    // add field header
+                    headers.push(name.to_string());
+                }
+                return
+            }
+            ExportField::None{label} => label.to_string()
+        };
+        headers.push(field_name);
+    }
+
     /// Export the input plus records data into a csv writer.
     /// 
     /// # Arguments
@@ -314,37 +478,7 @@ impl<'s> Exporter<'s> {
         // write headers
         let mut headers = Vec::new();
         for field in fields {
-            let field_name = match field {
-                ExportField::SpentTime{label, decimal: _} => match label {
-                    Some(s) => s.to_string(),
-                    None => "spent_time".to_string()
-                },
-                ExportField::MatchFlag{label} => match label {
-                    Some(s) => s.to_string(),
-                    None => "matched".to_string()
-                },
-                ExportField::Input{label, name} => match label {
-                    Some(s) => s.to_string(),
-                    None => name.to_string()
-                },
-                ExportField::Record{label, name} => match label {
-                    Some(s) => s.to_string(),
-                    None => name.to_string()
-                },
-                ExportField::AllInput => {
-                    for s in input_headers.iter() {
-                        headers.push(s.to_string());
-                    }
-                    continue
-                },
-                ExportField::AllRecord => {
-                    for v in self.source.table.record_header.iter() {
-                        headers.push(v.get_name().to_string());
-                    }
-                    continue
-                }
-            };
-            headers.push(field_name);
+            self.add_csv_headers(field, &mut headers, &input_headers);
         }
         writer.write_headers(&headers)?;
         
