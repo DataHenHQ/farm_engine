@@ -34,6 +34,25 @@ impl MatchFlag {
             Self::None.into()
         ]
     }
+
+    /// Joins an array into a string by using a separator.
+    /// 
+    /// NOTE: Convert me into Join<Trait> once stable.
+    pub fn join<'a>(slice: &[Self], sep: &str) -> String {
+        let mut buf: Vec<u8> = Vec::new();
+        if slice.len() < 1 {
+            return "".to_string();
+        }
+        let mut iter = slice.iter();
+        buf.push(iter.next().unwrap().into());
+        for value in slice {
+            for char in sep.bytes() {
+                buf.push(char);
+            }
+            buf.push(value.into());
+        }
+        String::from_utf8_lossy(&buf).to_string()
+    }
 }
 
 impl std::fmt::Display for MatchFlag {
@@ -105,7 +124,7 @@ impl WriteTo for MatchFlag {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct Data {
     /// Match flag for the value.
     pub match_flag: MatchFlag,
@@ -161,7 +180,7 @@ impl WriteTo for Data {
 }
 
 /// Describes an Indexer file value.
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
 pub struct Value {
     /// Input file start position for the record.
     pub input_start_pos: u64,

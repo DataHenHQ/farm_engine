@@ -139,19 +139,35 @@ impl Indexer {
         Ok(())
     }
 
-    /// Move to index position and then read the index value from a reader.
+    /// Move to index position on a reader and returns `true` if a value
+    /// exists on that index, or `false` if doesn't.
     /// 
     /// # Arguments
     /// 
     /// * `reader` - Byte reader.
     /// * `index` - Record index.
-    pub fn seek_value_from(&self, reader: &mut (impl Read + Seek), index: u64, force: bool) -> Result<Option<Value>> {
+    /// * `force` - Skips indexed file validation when true.
+    pub fn seek_value_pos_from(&self, reader: &mut (impl Read + Seek), index: u64, force: bool) -> Result<bool> {
         if !force && !self.header.indexed {
             bail!("input file must be indexed before reading values")
         }
         if self.header.indexed_count > index {
             let pos = Self::calc_value_pos(index);
             reader.seek(SeekFrom::Start(pos))?;
+            return Ok(true)
+        }
+        Ok(false)
+    }
+
+    /// Move to index position and then read the index value from a reader.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `reader` - Byte reader.
+    /// * `index` - Record index.
+    /// * `force` - Skips indexed file validation when true.
+    pub fn seek_value_from(&self, reader: &mut (impl Read + Seek), index: u64, force: bool) -> Result<Option<Value>> {
+        if self.seek_value_pos_from(reader, index, force)? {
             return Ok(Some(Value::read_from(reader)?));
         }
         Ok(None)
@@ -161,11 +177,159 @@ impl Indexer {
     /// 
     /// # Arguments
     /// 
-    /// * `reader` - Byte reader.
     /// * `index` - Record index.
     pub fn value(&self, index: u64) -> Result<Option<Value>> {
         let mut reader = self.new_index_reader()?;
         self.seek_value_from(&mut reader, index, false)
+    }
+
+    /// Reads a batch of index values from a reader at it's current position
+    /// and return a the value list whenever a read value is returned.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `reader` - Byte reader.
+    /// * `size` - Batch size to read. Use 0 to read all index values from the current reader position.
+    /// * `f` - Function to filter batch values with expected result tuple `(value, break_loop)`. Return `None` to exlude a value.
+    pub fn scan_from<F>(
+        &self,
+        reader: &mut (impl Read + Seek),
+        size: u64, f: F
+    ) -> Result<Vec<Value>>
+    where F: Fn(Value) -> Result<(Option<Value>, bool)> {
+        let mut list = Vec::new();
+        let mut counter = 0;
+        while size < 1 || counter < size {
+            counter += 1;
+
+            // read and process value
+            let value = match Value::read_from(reader) {
+                Ok(v) => v,
+                Err(e) => match e.downcast::<std::io::Error>() {
+                    Ok(err) => match err.kind() {
+                        std::io::ErrorKind::UnexpectedEof => return Ok(list),
+                        _ => bail!(err)
+                    }
+                    Err(err) => bail!(err)
+                }
+            };
+            let (value, break_loop) = f(value)?;
+
+            // add the value to list when required
+            if let Some(v) = value {
+                list.push(v);
+            }
+
+            // break loop when required
+            if break_loop {
+                break;
+            }
+        }
+        Ok(list)
+    }
+
+    /// Reads a batch of index values from the index file.
+    /// and return a the value list whenever a read value is returned.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `index` - Record index.
+    /// * `size` - Batch size to read. Use 0 to read all index values.
+    /// * `f` - Function to filter batch values with expected result tuple `(value, break_loop)`. Return `None` to exlude a value.
+    pub fn scan<F>(
+        &self,
+        index: u64,
+        size: u64,
+        f: F
+    ) -> Result<Vec<Value>>
+    where F: Fn(Value) -> Result<(Option<Value>, bool)> {
+        let mut reader = self.new_index_reader()?;
+        if !self.seek_value_pos_from(&mut reader, index, false)? {
+            return Ok(Vec::new())
+        }
+        Ok(self.scan_from(&mut reader, size, f)?)
+    }
+
+    /// Process a batch of index values from a reader at it's current position.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `reader` - Byte reader.
+    /// * `writer` - Byte writer.
+    /// * `size` - Batch size to read. Use 0 to process every value from the current reader position.
+    /// * `f` - Function to execute for each index value with expected result tuple `(value, break_loop)`. Return a value to update it.
+    pub fn process_from<F>(
+        &self,
+        reader: &mut (impl Read + Seek),
+        writer: &mut (impl Write + Seek),
+        size: u64,
+        f: F
+    ) -> Result<()>
+    where F: Fn(Value) -> Result<(Option<Value>, bool)> {
+        let mut pos = reader.stream_position()?;
+        let mut last_write_pos = 0;
+        let value_size = Value::BYTES as u64;
+        let mut counter = 0;
+        while size < 1 || counter < size {
+            counter += 1;
+
+            // read and process value
+            let value = match Value::read_from(reader) {
+                Ok(v) => v,
+                Err(e) => match e.downcast::<std::io::Error>() {
+                    Ok(err) => match err.kind() {
+                        std::io::ErrorKind::UnexpectedEof => return Ok(()),
+                        _ => bail!(err)
+                    }
+                    Err(err) => bail!(err)
+                }
+            };
+            let (value, break_loop) = f(value)?;
+
+            // write value changes when required
+            pos += value_size;
+            if let Some(v) = value {
+                if pos - last_write_pos > value_size {
+                    writer.flush()?;
+                    writer.seek(SeekFrom::Start(pos - value_size))?;
+                }
+                last_write_pos = pos;
+                v.write_to(writer)?;
+            }
+
+            // break loop when required
+            if break_loop {
+                break;
+            }
+        }
+
+        // flush last writer changes
+        writer.flush()?;
+        Ok(())
+    }
+
+    /// Process a batch of index values from the index file.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `index` - Record index.
+    /// * `size` - Batch size to read. Use 0 to process all values from the index provided.
+    /// * `f` - Function to execute for each index value with expected result tuple `(value, break_loop)`. Return a value to update it.
+    pub fn process<F>(
+        &self,
+        index: u64,
+        size: u64,
+        f: F
+    ) -> Result<()>
+    where F: Fn(Value) -> Result<(Option<Value>, bool)> {
+        let mut reader = self.new_index_reader()?;
+        let mut writer = self.new_index_writer(false)?;
+        if self.seek_value_pos_from(&mut reader, index, false)? {
+            let pos = reader.stream_position()?;
+            writer.seek(SeekFrom::Start(pos))?;
+            self.process_from(&mut reader, &mut writer, size, f)?;
+        }
+        Ok(())
     }
 
     /// Parse the input record from an index value as CSV.
@@ -843,6 +1007,7 @@ mod tests {
     use test_helper::*;
     use serde_json::Number as JSNumber;
     use std::io::Cursor;
+    use std::sync::Mutex;
     use crate::test_helper::*;
     use crate::db::indexer::header::{HASH_SIZE};
     use crate::db::indexer::header::test_helper::{random_hash, build_header_bytes};
@@ -1045,6 +1210,635 @@ mod tests {
                 }
             };
             assert_eq!(expected[2], value);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn scan_from_filter() {
+        // init buffer
+        let (buf, record_count) = match fake_index() {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+        let mut reader = Cursor::new(buf.to_vec());
+        if let Err(e) = reader.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+            assert!(false, "{:?}", e);
+        };
+
+        // init indexer and expected records
+        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        indexer.header.indexed = true;
+        indexer.header.indexed_count = record_count;
+        let all_values = match fake_values() {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+        let expected_filtered = vec![
+            all_values[0].clone(),
+            all_values[2].clone()
+        ];
+        let expected_read = all_values;
+        
+        // filter values
+        let read_values = Mutex::<Vec<Value>>::new(Vec::new());
+        let filtered = match indexer.scan_from(&mut reader, 0, |value| {
+            let mut list = read_values.lock().unwrap();
+            (*list).push(value.clone());
+            if value.input_end_pos % 100 < 1 {
+                return Ok((Some(value), false));
+            }
+            Ok((None, false))
+        }) {
+            Ok(list) => list,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+
+        // test results
+        assert_eq!(expected_read, (*read_values.lock().unwrap()));
+        assert_eq!(expected_filtered, filtered);
+    }
+
+    #[test]
+    fn scan_from_size() {
+        // init buffer
+        let (buf, record_count) = match fake_index() {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+        let mut reader = Cursor::new(buf.to_vec());
+        if let Err(e) = reader.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+            assert!(false, "{:?}", e);
+        };
+
+        // init indexer and expected records
+        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        indexer.header.indexed = true;
+        indexer.header.indexed_count = record_count;
+        let all_values = match fake_values() {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+        assert!(all_values.len() > 2, "this test requires 3 sample values");
+        let expected_filtered = vec![
+            all_values[0].clone(),
+            all_values[1].clone()
+        ];
+        
+        // filter values
+        let filtered = match indexer.scan_from(&mut reader, 2, |value| {
+            Ok((Some(value), false))
+        }) {
+            Ok(list) => list,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+
+        // test results
+        assert_eq!(expected_filtered, filtered);
+    }
+
+    #[test]
+    fn scan_from_break() {
+        // init buffer
+        let (buf, record_count) = match fake_index() {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+        let mut reader = Cursor::new(buf.to_vec());
+        if let Err(e) = reader.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+            assert!(false, "{:?}", e);
+        };
+
+        // init indexer and expected records
+        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        indexer.header.indexed = true;
+        indexer.header.indexed_count = record_count;
+        let all_values = match fake_values() {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+        let expected_filtered = vec![
+            all_values[0].clone()
+        ];
+        let expected_read = vec![
+            all_values[0].clone()
+        ];
+        
+        // filter values
+        let read_values = Mutex::<Vec<Value>>::new(Vec::new());
+        let filtered = match indexer.scan_from(&mut reader, 3, |value| {
+            let mut list = read_values.lock().unwrap();
+            (*list).push(value.clone());
+            Ok((Some(value), true))
+        }) {
+            Ok(list) => list,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+
+        // test results
+        assert_eq!(expected_read, (*read_values.lock().unwrap()));
+        assert_eq!(expected_filtered, filtered);
+    }
+
+    #[test]
+    fn scan_by_index() {
+        with_tmpdir_and_indexer(&|_, indexer| {
+            // init buffer
+            let (buf, value_count) = match fake_index() {
+                Ok(v) => v,
+                Err(e) => {
+                    assert!(false, "{:?}", e);
+                    bail!(e)
+                }
+            };
+            create_file_with_bytes(&indexer.index_path, &buf)?;
+
+            // init indexer and expected records
+            indexer.header.indexed = true;
+            indexer.header.indexed_count = value_count;
+            let all_values = match fake_values() {
+                Ok(v) => v,
+                Err(e) => {
+                    assert!(false, "{:?}", e);
+                    bail!(e)
+                }
+            };
+            let expected_filtered = vec![
+                all_values[2].clone()
+            ];
+            let expected_read = vec![
+                all_values[1].clone(),
+                all_values[2].clone()
+            ];
+            
+            // filter values
+            let read_values = Mutex::<Vec<Value>>::new(Vec::new());
+            let filtered = match indexer.scan(1, 0, |value| {
+                let mut list = read_values.lock().unwrap();
+                (*list).push(value.clone());
+                if value.input_end_pos % 100 < 1 {
+                    return Ok((Some(value), false));
+                }
+                Ok((None, false))
+            }) {
+                Ok(list) => list,
+                Err(e) => {
+                    assert!(false, "{:?}", e);
+                    bail!(e);
+                }
+            };
+
+            // test results
+            assert_eq!(expected_read, (*read_values.lock().unwrap()));
+            assert_eq!(expected_filtered, filtered);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn process_from_update() {
+        // init buffer
+        let (buf, record_count) = match fake_index() {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+        let mut reader = Cursor::new(buf.to_vec());
+        let mut writer = Cursor::new(buf.to_vec());
+        if let Err(e) = reader.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+            assert!(false, "{:?}", e);
+        };
+
+        // init indexer and expected records
+        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        indexer.header.indexed = true;
+        indexer.header.indexed_count = record_count;
+        let all_values = match fake_values() {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+        let mut updated_value = Value::new();
+        updated_value.data.match_flag = MatchFlag::Yes;
+        updated_value.data.spent_time = 123;
+        updated_value.input_start_pos = 234;
+        updated_value.input_end_pos = 345;
+        let expected_updated = vec![
+            all_values[0].clone(),
+            all_values[1].clone(),
+            updated_value
+        ];
+        let limit = all_values.len() as u64;
+        let expected_read = all_values;
+        
+        // filter values
+        let read_values = Mutex::<Vec<Value>>::new(Vec::new());
+        match indexer.process_from(&mut reader, &mut writer, 0, |mut value| {
+            let mut list = read_values.lock().unwrap();
+            (*list).push(value.clone());
+            if let MatchFlag::Skip = value.data.match_flag {
+                value.data.match_flag = MatchFlag::Yes;
+                value.data.spent_time = 123;
+                value.input_start_pos = 234;
+                value.input_end_pos = 345;
+                return Ok((Some(value), false))
+            }
+            Ok((None, false))
+        }) {
+            Ok(list) => list,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+
+        // read updated values
+        if let Err(e) = writer.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+            assert!(false, "{:?}", e);
+        };
+        let mut list = Vec::new();
+        for i in 0..limit {
+            let value = match indexer.seek_value_from(&mut writer, i, false) {
+                Ok(v) => match v {
+                    Some(w) => w,
+                    None => {
+                        assert!(false, "expected a value");
+                        return
+                    }
+                },
+                Err(e) => {
+                    assert!(false, "{:?}", e);
+                    return
+                }
+            };
+            list.push(value);
+        }
+
+        // test results
+        assert_eq!(expected_read, (*read_values.lock().unwrap()));
+        assert_eq!(expected_updated, list);
+    }
+
+    #[test]
+    fn process_from_update_all() {
+        // init buffer
+        let (buf, record_count) = match fake_index() {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+        let mut reader = Cursor::new(buf.to_vec());
+        let mut writer = Cursor::new(buf.to_vec());
+        if let Err(e) = reader.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+            assert!(false, "{:?}", e);
+        };
+
+        // init indexer and expected records
+        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        indexer.header.indexed = true;
+        indexer.header.indexed_count = record_count;
+        let all_values = match fake_values() {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+        let mut expected_updated = vec![
+            all_values[0].clone(),
+            all_values[1].clone(),
+            all_values[2].clone()
+        ];
+        expected_updated[0].input_end_pos = 555;
+        expected_updated[0].data.match_flag = MatchFlag::None;
+        expected_updated[1].input_end_pos = 555;
+        expected_updated[1].data.match_flag = MatchFlag::None;
+        expected_updated[2].input_end_pos = 555;
+        expected_updated[2].data.match_flag = MatchFlag::None;
+        let expected_read = all_values;
+        
+        // filter values
+        let read_values = Mutex::<Vec<Value>>::new(Vec::new());
+        match indexer.process_from(&mut reader, &mut writer, 0, |mut value| {
+            let mut list = read_values.lock().unwrap();
+            (*list).push(value.clone());
+            value.data.match_flag = MatchFlag::None;
+            value.input_end_pos = 555;
+            Ok((Some(value), false))
+        }) {
+            Ok(list) => list,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+
+        // read updated values
+        if let Err(e) = writer.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+            assert!(false, "{:?}", e);
+        };
+        let mut list = Vec::new();
+        let limit = read_values.lock().unwrap().len() as u64;
+        for i in 0..limit {
+            let value = match indexer.seek_value_from(&mut writer, i, false) {
+                Ok(v) => match v {
+                    Some(w) => w,
+                    None => {
+                        assert!(false, "expected a value");
+                        return
+                    }
+                },
+                Err(e) => {
+                    assert!(false, "{:?}", e);
+                    return
+                }
+            };
+            list.push(value);
+        }
+
+        // test results
+        assert_eq!(expected_read, (*read_values.lock().unwrap()));
+        assert_eq!(expected_updated, list);
+    }
+
+    #[test]
+    fn process_from_size() {
+        // init buffer
+        let (buf, record_count) = match fake_index() {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+        let mut reader = Cursor::new(buf.to_vec());
+        let mut writer = Cursor::new(buf.to_vec());
+        if let Err(e) = reader.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+            assert!(false, "{:?}", e);
+        };
+
+        // init indexer and expected records
+        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        indexer.header.indexed = true;
+        indexer.header.indexed_count = record_count;
+        let all_values = match fake_values() {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+        let mut expected_updated = vec![
+            all_values[0].clone(),
+            all_values[1].clone(),
+            all_values[2].clone()
+        ];
+        expected_updated[0].input_end_pos = 555;
+        expected_updated[0].data.match_flag = MatchFlag::None;
+        expected_updated[1].input_end_pos = 555;
+        expected_updated[1].data.match_flag = MatchFlag::None;
+        let expected_read = vec![
+            all_values[0].clone(),
+            all_values[1].clone()
+        ];
+        
+        // filter values
+        let read_values = Mutex::<Vec<Value>>::new(Vec::new());
+        match indexer.process_from(&mut reader, &mut writer, 2, |mut value| {
+            let mut list = read_values.lock().unwrap();
+            (*list).push(value.clone());
+            value.data.match_flag = MatchFlag::None;
+            value.input_end_pos = 555;
+            Ok((Some(value), false))
+        }) {
+            Ok(list) => list,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+
+        // read updated values
+        if let Err(e) = writer.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+            assert!(false, "{:?}", e);
+        };
+        let mut list = Vec::new();
+        let limit = all_values.len() as u64;
+        for i in 0..limit {
+            let value = match indexer.seek_value_from(&mut writer, i, false) {
+                Ok(v) => match v {
+                    Some(w) => w,
+                    None => {
+                        assert!(false, "expected a value");
+                        return
+                    }
+                },
+                Err(e) => {
+                    assert!(false, "{:?}", e);
+                    return
+                }
+            };
+            list.push(value);
+        }
+
+        // test results
+        assert_eq!(expected_read, (*read_values.lock().unwrap()));
+        assert_eq!(expected_updated, list);
+    }
+
+    #[test]
+    fn process_from_break() {
+        // init buffer
+        let (buf, record_count) = match fake_index() {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+        let mut reader = Cursor::new(buf.to_vec());
+        let mut writer = Cursor::new(buf.to_vec());
+        if let Err(e) = reader.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+            assert!(false, "{:?}", e);
+        };
+
+        // init indexer and expected records
+        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        indexer.header.indexed = true;
+        indexer.header.indexed_count = record_count;
+        let all_values = match fake_values() {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+        let mut expected_updated = vec![
+            all_values[0].clone(),
+            all_values[1].clone(),
+            all_values[2].clone()
+        ];
+        expected_updated[0].input_end_pos = 555;
+        expected_updated[0].data.match_flag = MatchFlag::None;
+        let expected_read = vec![
+            all_values[0].clone(),
+        ];
+        
+        // filter values
+        let read_values = Mutex::<Vec<Value>>::new(Vec::new());
+        match indexer.process_from(&mut reader, &mut writer, 2, |mut value| {
+            let mut list = read_values.lock().unwrap();
+            (*list).push(value.clone());
+            value.data.match_flag = MatchFlag::None;
+            value.input_end_pos = 555;
+            Ok((Some(value), true))
+        }) {
+            Ok(list) => list,
+            Err(e) => {
+                assert!(false, "{:?}", e);
+                return;
+            }
+        };
+
+        // read updated values
+        if let Err(e) = writer.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+            assert!(false, "{:?}", e);
+        };
+        let mut list = Vec::new();
+        let limit = all_values.len() as u64;
+        for i in 0..limit {
+            let value = match indexer.seek_value_from(&mut writer, i, false) {
+                Ok(v) => match v {
+                    Some(w) => w,
+                    None => {
+                        assert!(false, "expected a value");
+                        return
+                    }
+                },
+                Err(e) => {
+                    assert!(false, "{:?}", e);
+                    return
+                }
+            };
+            list.push(value);
+        }
+
+        // test results
+        assert_eq!(expected_read, (*read_values.lock().unwrap()));
+        assert_eq!(expected_updated, list);
+    }
+
+    #[test]
+    fn process_index() {
+        with_tmpdir_and_indexer(&|_, indexer| {
+            // init buffer
+            let (buf, value_count) = match fake_index() {
+                Ok(v) => v,
+                Err(e) => {
+                    assert!(false, "{:?}", e);
+                    bail!(e)
+                }
+            };
+            create_file_with_bytes(&indexer.index_path, &buf)?;
+
+            // init indexer and expected records
+            indexer.header.indexed = true;
+            indexer.header.indexed_count = value_count;
+            let all_values = match fake_values() {
+                Ok(v) => v,
+                Err(e) => {
+                    assert!(false, "{:?}", e);
+                    bail!(e)
+                }
+            };
+            let mut expected_updated = vec![
+                all_values[0].clone(),
+                all_values[1].clone(),
+                all_values[2].clone()
+            ];
+            expected_updated[1].input_end_pos = 555;
+            expected_updated[1].data.match_flag = MatchFlag::None;
+            expected_updated[2].input_end_pos = 555;
+            expected_updated[2].data.match_flag = MatchFlag::None;
+            let expected_read = vec![
+                all_values[1].clone(),
+                all_values[2].clone()
+            ];
+            
+            // filter values
+            let read_values = Mutex::<Vec<Value>>::new(Vec::new());
+            match indexer.process(1, 0, |mut value| {
+                let mut list = read_values.lock().unwrap();
+                (*list).push(value.clone());
+                value.data.match_flag = MatchFlag::None;
+                value.input_end_pos = 555;
+                Ok((Some(value), false))
+            }) {
+                Ok(list) => list,
+                Err(e) => {
+                    assert!(false, "{:?}", e);
+                    bail!(e);
+                }
+            };
+
+            // read updated values
+            let mut list = Vec::new();
+            let limit = all_values.len() as u64;
+            for i in 0..limit {
+                let value = match indexer.value(i) {
+                    Ok(v) => match v {
+                        Some(w) => w,
+                        None => {
+                            assert!(false, "expected a value");
+                            bail!("expected value");
+                        }
+                    },
+                    Err(e) => {
+                        assert!(false, "{:?}", e);
+                        bail!(e);
+                    }
+                };
+                list.push(value);
+            }
+
+            // test results
+            assert_eq!(expected_read, (*read_values.lock().unwrap()));
+            assert_eq!(expected_updated, list);
 
             Ok(())
         });
