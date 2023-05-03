@@ -17,6 +17,7 @@ macro_rules! impl_byte_sized {
 
 // implement `BYTES` constant on numeric types and boolean
 impl_byte_sized!(bool, 8);
+impl_byte_sized!(u128, u128::BITS);   // --> Ale
 impl_byte_sized!(u64, u64::BITS);
 impl_byte_sized!(u32, u32::BITS);
 impl_byte_sized!(u16, u16::BITS);
@@ -102,6 +103,8 @@ macro_rules! impl_from_byte_reader {
 }
 
 // implement `from_byte_slice` function on numeric types
+impl_from_byte_reader!(u128, from_be_bytes);  // --> Ale
+//impl_from_byte_reader!(String, from_be_bytes);  // --> Ale
 impl_from_byte_reader!(u64, from_be_bytes);
 impl_from_byte_reader!(u32, from_be_bytes);
 impl_from_byte_reader!(u16, from_be_bytes);
@@ -143,7 +146,146 @@ impl WriteAsBytes for bool {
         Ok(())
     }
 }
+/*
+pub struct Gid{
+    value: String
+}
 
+impl Gid {
+    fn get(&self)-> &str{
+        &self.value
+    }
+
+    fn set(&mut self, value: String) -> Result<()>{
+        // validate string value
+        let value_size = value.as_bytes().len();
+        if value_size > Self::BYTES {
+            bail!(
+                "string value size ({} bytes) is bigger than field size ({} bytes)",
+                value_size,
+                Self::BYTES
+            );
+        }
+        // write value
+        self.value = value;
+    Ok(())
+    }
+}
+
+impl ByteSized for Gid {
+    const BYTES: usize = 38;
+}
+
+impl FromByteSlice for Gid {
+    fn from_byte_slice(buf: &[u8]) -> Result<Self> {
+        // validate buf size
+        if buf.len() != Self::BYTES {
+            bail!(ParseError::InvalidSize);
+        }
+
+        // convert bytes into the type value
+        let mut bytes = [0u8; Self::BYTES];
+        bytes.copy_from_slice(buf);
+        let value = match String::from_utf8(bytes.to_vec()) {
+            Ok(v) => v,
+            Err(ee) => bail!(ParseError::ParseString) 
+        };
+        Ok(Self{value})
+    }
+}
+
+impl ReadFrom for Gid {
+    fn read_from(reader: &mut impl Read) -> Result<Self> {
+        // read and convert bytes into the type value
+        let mut buf = [0u8; Self::BYTES];
+        reader.read_exact(&mut buf)?;
+        let value = match String::from_utf8(buf.to_vec()) {
+            Ok(v) => v,
+            Err(ee) => bail!(ParseError::ParseString) 
+        };
+        Ok(Self{value})
+    }
+}
+
+impl WriteAsBytes for Gid {
+    fn write_as_bytes(&self, buf: &mut [u8]) -> Result<()> {
+        // validate value size
+        if buf.len() != Self::BYTES {
+            bail!(ParseError::InvalidSize);
+        }
+
+        // save value as bytes
+        // validate string value
+        let value_buf = self.value.as_bytes();
+        let value_size = value_buf.len();
+        if value_size > Self::BYTES {
+            bail!(
+                "string value size ({} bytes) is bigger than gid size ({} bytes)",
+                value_size,
+                Self::BYTES
+            );
+        }
+
+        // write value
+        buf.copy_from_slice(&value_buf);
+        if value_size < Self::BYTES {
+            // fill with zeros
+            let mut zero_buf = &mut buf[value_size..];
+            zero_buf.copy_from_slice(&vec![0u8; (Self::BYTES - value_size) as usize]);
+        }
+    
+        Ok(())
+    }
+}
+
+ */
+
+/*
+impl ReadFrom for String {
+    fn read_from(reader: &mut impl Read) -> Result<Self> {
+        // read and convert bytes into the type value
+        let mut buf = [0u8; Self::BYTES];
+        reader.read_exact(&mut buf)?;
+        let value = match String::from_utf8(buf.to_vec()) {
+            Ok(v) => v,
+            Err(ee) => bail!(ParseError::ParseString) 
+        };
+        Ok(value)
+    }
+}
+
+impl WriteAsBytes for String {
+    fn write_as_bytes(&self, buf: &mut [u8]) -> Result<()> {
+        // validate value size
+        if buf.len() != Self::BYTES {
+            bail!(ParseError::InvalidSize);
+        }
+
+        // save value as bytes
+        // validate string value
+        let value_buf = self.value.as_bytes();
+        let value_size = value_buf.len();
+        if value_size > Self::BYTES {
+            bail!(
+                "string value size ({} bytes) is bigger than gid size ({} bytes)",
+                value_size,
+                Self::BYTES
+            );
+        }
+
+        // write value
+        buf.copy_from_slice(&value_buf);
+        if value_size < Self::BYTES {
+            // fill with zeros
+            let mut zero_buf = &mut buf[value_size..];
+            zero_buf.copy_from_slice(&vec![0u8; (Self::BYTES - value_size) as usize]);
+        }
+    
+        Ok(())
+    }
+}
+  */
+ 
 impl WriteTo for bool {
     fn write_to(&self, writer: &mut impl Write) -> Result<()> {
         let buf: [u8; 1] = [(*self).into()];
@@ -176,8 +318,61 @@ macro_rules! impl_write_as_bytes {
         }
     };
 }
+/*
+macro_rules! impl_write_as_bytes_S {
+    ($t:ty, $fn:ident) => {
+        impl WriteAsBytesS for $t {
+            fn write_as_bytes(&self, buf: &mut [u8]) -> Result<()> {
+                // validate value size
+                if buf.len() != Self::BYTES {
+                    bail!(ParseError::InvalidSize);
+                }
+ if $t.type == String {
+    // save value as bytes
+                // validate string value
+                let value_buf = self.value.as_bytes();
+                let value_size = value_buf.len();
+                if value_size > Self::BYTES {
+                    bail!(
+                        "string value size ({} bytes) is bigger than gid size ({} bytes)",
+                        value_size,
+                        Self::BYTES
+                    );
+                }
+        
+                // write value
+                buf.copy_from_slice(&value_buf);
+                if value_size < Self::BYTES {
+                    // fill with zeros
+                    let mut zero_buf = &mut buf[value_size..];
+                    zero_buf.copy_from_slice(&vec![0u8; (Self::BYTES - value_size) as usize]);
+                }
+            
+                Ok(())
+ }
 
+                // save value as bytes
+                buf.copy_from_slice(&self.$fn());
+
+                Ok(())
+            }
+        }
+
+        impl WriteTo for $t {
+            fn write_to(&self, writer: &mut impl Write) -> Result<()> {
+                writer.write_all(&self.$fn())?;
+                Ok(())
+            }
+        }
+
+
+
+
+    };
+}
+ */
 // implement `write_as_bytes` function on numeric types
+//impl_write_as_bytes!(String, to_be_bytes); // --> Ale
 impl_write_as_bytes!(u64, to_be_bytes);
 impl_write_as_bytes!(u32, to_be_bytes);
 impl_write_as_bytes!(u16, to_be_bytes);
@@ -205,6 +400,12 @@ mod tests {
     #[test]
     fn bool_byte_size() {
         assert_eq!(1, bool::BYTES);
+        assert_eq!(1, bool::BYTES);
+    }
+    
+    #[test]  // --> Ale
+    fn u128_byte_size() {  // --> Ale
+        assert_eq!(16, u128::BYTES);  // --> Ale
     }
 
     #[test]
@@ -1006,6 +1207,87 @@ mod tests {
             Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
         };
     }
+
+
+    // --> Ale INICIO
+    #[test]
+    fn u128_from_byte_slice() {
+        let expected = 6924106375311862602u128;
+        match u128::from_byte_slice(&[0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 96u8, 23u8, 94u8, 16u8, 23u8, 123u8, 43u8, 74u8]) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+        match u128::from_byte_slice(&[0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8]) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn u128_read_from() {
+        let expected = 7299246708500139070u128;
+        match u128::read_from(&mut (&[0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 101u8, 76u8, 34u8, 53u8, 84u8, 23u8, 12u8, 62u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+        let expected = 1681263416360839989u128;
+        match u128::read_from(&mut (&[0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 23u8, 85u8, 12u8, 43u8, 98u8, 12u8, 43u8, 53u8, 17u8] as &[u8])) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+/*
+    #[test]
+    fn u128_write_as_bytes() {
+        let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        let expected = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 14u8, 52u8, 30u8, 100u8, 83u8, 149u8, 249u8, 20u8];
+        match 1023476431567845652u128.write_as_bytes(&mut buf) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+
+    #[test]
+    fn u128_invalid_buf_size_on_write_as_bytes() {
+        let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        match 7634642314545343u128.write_as_bytes(&mut buf) {
+            Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
+            Err(e) => match e.downcast() {
+                Ok(ex) => match ex {
+                    ParseError::InvalidSize => assert!(true),
+                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
+                },
+                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            }
+        };
+    }
+
+    #[test]
+    fn u128_on_write_to() {
+        let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 3u8, 92u8, 241u8, 252u8, 56u8, 24u8, 123u8, 126u8];
+        match 242334545546345342u128.write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+
+        let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
+        let mut writer = &mut buf as &mut [u8];
+        let expected = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 7u8, 150u8, 126u8, 118u8, 170u8, 3u8, 60u8, 234u8, 0u8];
+        match 546763452895673578u128.write_to(&mut writer) {
+            Ok(()) => assert_eq!(expected, buf),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        };
+    }
+ */
+    // --> Ale FIN
 
     #[test]
     fn f32_from_byte_slice() {

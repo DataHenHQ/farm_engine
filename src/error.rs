@@ -1,5 +1,10 @@
+//use thiserror::Error;
+//use crate::db::indexer::Status as IndexStatus;
+//use crate::db::table::Status as TableStatus;
+
+use std::fmt::Display;
+
 use thiserror::Error;
-use crate::db::indexer::Status as IndexStatus;
 use crate::db::table::Status as TableStatus;
 
 /// Parsing error.
@@ -13,6 +18,8 @@ pub enum ParseError {
     InvalidValue,
     #[error("retry limit reached")]
     RetryLimit,
+    #[error("can't convert bytes to string")]
+    ParseString,
     #[error("{}", .0)]
     Other(String)
 }
@@ -31,11 +38,11 @@ impl From<&str> for ParseError {
 
 /// Index error.
 #[derive(Error, Debug)]
-pub enum IndexError {
+pub enum IndexError<T> where T: Display {
     #[error("the input doesn't have any fields")]
     NoInputFields,
     #[error("unavailable due status \"{}\"", .0)]
-    Unavailable(IndexStatus)
+    Unavailable(T)
 }
 
 /// Table error.
@@ -46,3 +53,18 @@ pub enum TableError {
     #[error("unavailable due status \"{}\"", .0)]
     Unavailable(TableStatus)
 }
+
+
+/// Index error.
+#[derive(Error, Debug)]
+pub enum DbIndexError {
+    #[error("the node doesn't exist")]
+    NoInputFields,
+    #[error("the left node doesn't exist")]
+    NoLeftNode,
+    #[error("the right node doesn't exist")]
+    NoRightNode,
+    #[error("the node doesn't have data")]
+    NoData
+}
+

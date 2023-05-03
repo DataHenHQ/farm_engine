@@ -387,7 +387,7 @@ mod tests {
             let hash_buf = &mut expected[26..26+HASH_SIZE];
             let random_hash_buf = random_hash();
             if hash_buf.len() != HASH_SIZE {
-                panic!("invalid hash size, check test \"indexer::header::as_bytes\"");
+                panic!("invalid hash size, check test \"dbindexer::header::as_bytes\"");
             }
             hash_buf.copy_from_slice(&random_hash_buf);
 

@@ -72,7 +72,7 @@ impl Source {
     /// * `force_override` - Always creates a new table file with the current headers.
     pub fn init(&mut self, override_on_error: bool, force_override: bool) -> Result<()> {
         if let Err(e) = self.index.index() {
-            match e.downcast::<IndexError>() {
+            match e.downcast::<IndexError<IndexStatus>>() {
                 Ok(ex) => match ex {
                     IndexError::Unavailable(status) => match status {
                         IndexStatus::Indexing => bail!(IndexError::Unavailable(IndexStatus::Indexing)),
