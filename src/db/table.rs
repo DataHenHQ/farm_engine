@@ -2,6 +2,7 @@ pub mod header;
 pub mod record;
 
 use anyhow::{bail, Result};
+use uuid::Uuid;
 use regex::Regex;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::fs::{File, OpenOptions};
@@ -15,7 +16,7 @@ use record::header::{Header as RecordHeader};
 use record::Record;
 
 /// Table engine version.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 
 /// Table file extension.
 pub const FILE_EXTENSION: &str = "fmtable";
@@ -66,10 +67,10 @@ impl Table {
     /// 
     /// * `path` - Table file path.
     /// * `name` - Table name.
-    pub fn new(path: PathBuf, name: &str) -> Result<Self> {
+    pub fn new(path: PathBuf, name: &str, uuid: Option<Uuid>) -> Result<Self> {
         Ok(Self{
             path,
-            header: Header::new(name)?,
+            header: Header::new(name, uuid)?,
             record_header: RecordHeader::new()
         })
     }
@@ -80,7 +81,7 @@ impl Table {
     /// 
     /// * `path` - Table file path.
     pub fn from_file(path: PathBuf) -> Result<Self> {
-        let mut table = Self::new(path, "")?;
+        let mut table = Self::new(path, "", Some(Uuid::from_bytes([0u8; Uuid::BYTES])))?;
         match table.healthcheck() {
             Ok(v) => match v {
                 Status::Good => Ok(table),
@@ -329,8 +330,8 @@ impl Table {
 pub mod test_helper {
     use super::*;
     use crate::test_helper::*;
-    use crate::db::table::record::header::{FieldType, Field};
-    use crate::db::table::record::value::{Value};
+    use crate::db::field::{field_type::FieldType, Field};
+    use crate::db::field::value::Value;
     use crate::db::table::header::test_helper::build_header_bytes;
     use tempfile::TempDir;
 
@@ -442,11 +443,16 @@ pub mod test_helper {
         Ok(records)
     }
 
+    /// Resturn a fake table uuid.
+    pub fn fake_table_uuid() -> Uuid {
+        Uuid::from_bytes([0u8; Uuid::BYTES])
+    }
+
     /// Return a fake table file with fields as byte slice and the record count.
     pub fn fake_table_with_fields() -> Result<([u8; FAKE_INDEX_BYTES], u64)> {
         // init buffer
         let mut buf = [0u8; FAKE_INDEX_BYTES];
-        let header_buf = build_header_bytes("my_table", 3245634545244324234u64);
+        let header_buf = build_header_bytes("my_table", 3245634545244324234u64, Some(fake_table_uuid()));
         copy_bytes(&mut buf, &header_buf, 0)?;
         copy_bytes(&mut buf, &ADD_FIELDS_HEADER_BYTE_SLICE, Header::BYTES)?;
         copy_bytes(&mut buf, &FAKE_RECORDS_BYTE_SLICE, Header::BYTES + ADD_FIELDS_HEADER_BYTES)?;
@@ -463,7 +469,7 @@ pub mod test_helper {
         let mut records = Vec::new();
 
         // write table header
-        let mut header = Header::new("my_table")?;
+        let mut header = Header::new("my_table", Some(fake_table_uuid()))?;
         header.record_count = 4;
         header.write_to(writer)?;
 
@@ -475,8 +481,8 @@ pub mod test_helper {
         // write first record
         let mut record = record_header.new_record()?;
         if !unprocessed {
-            record.set("foo", Value::I32(111i32))?;
-            record.set("bar", Value::Str("first".to_string()))?;
+            record.set("foo", Value::I32(111i32));
+            record.set("bar", Value::Str("first".to_string()));
         }
         record_header.write_record(writer, &record)?;
         records.push(record);
@@ -484,8 +490,8 @@ pub mod test_helper {
         // write second record date
         let mut record = record_header.new_record()?;
         if !unprocessed {
-            record.set("foo", Value::I32(222i32))?;
-            record.set("bar", Value::Str("2th".to_string()))?;
+            record.set("foo", Value::I32(222i32));
+            record.set("bar", Value::Str("2th".to_string()));
         }
         record_header.write_record(writer, &record)?;
         records.push(record);
@@ -493,8 +499,8 @@ pub mod test_helper {
         // write third record date
         let mut record = record_header.new_record()?;
         if !unprocessed {
-            record.set("foo", Value::I32(333i32))?;
-            record.set("bar", Value::Str("3rd".to_string()))?;
+            record.set("foo", Value::I32(333i32));
+            record.set("bar", Value::Str("3rd".to_string()));
         }
         record_header.write_record(writer, &record)?;
         records.push(record);
@@ -502,8 +508,8 @@ pub mod test_helper {
         // write fourth record date
         let mut record = record_header.new_record()?;
         if !unprocessed {
-            record.set("foo", Value::I32(444i32))?;
-            record.set("bar", Value::Str("4th".to_string()))?;
+            record.set("foo", Value::I32(444i32));
+            record.set("bar", Value::Str("4th".to_string()));
         }
         record_header.write_record(writer, &record)?;
         records.push(record);
@@ -540,7 +546,8 @@ pub mod test_helper {
             // create Table and execute
             let mut table = Table::new(
                 dir.path().join("t.fmtable"),
-                "my_table"
+                "my_table",
+                Some(fake_table_uuid())
             )?;
 
             // execute function
@@ -559,7 +566,7 @@ mod tests {
     use test_helper::*;
     use std::io::Cursor;
     use crate::test_helper::*;
-    use crate::db::table::record::Value;
+    use crate::db::field::value::Value;
     use crate::db::table::header::test_helper::build_header_bytes;
 
     #[test]
@@ -572,13 +579,13 @@ mod tests {
 
     #[test]
     fn new() {
-        let header = Header::new("my_table").unwrap();
+        let header = Header::new("my_table", Some(fake_table_uuid())).unwrap();
         let expected = Table{
             path: "my_table.fmtable".into(),
             header,
             record_header: RecordHeader::new()
         };
-        match Table::new("my_table.fmtable".into(), "my_table") {
+        match Table::new("my_table.fmtable".into(), "my_table", Some(fake_table_uuid())) {
             Ok(v) => assert_eq!(expected, v),
             Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
         }
@@ -586,19 +593,19 @@ mod tests {
 
     #[test]
     fn calc_record_pos_with_fields() {
-        let mut table = Table::new("my_table.fmtable".into(), "my_table").unwrap();
+        let mut table = Table::new("my_table.fmtable".into(), "my_table", Some(fake_table_uuid())).unwrap();
 
         // add fields
         if let Err(e) = add_fields(&mut table.record_header) {
             assert!(false, "expected to add fields, but got error: {:?}", e);
         }
-        assert_eq!(225, table.calc_record_pos(2));
-        assert_eq!(238, table.calc_record_pos(3));
+        assert_eq!(241, table.calc_record_pos(2));
+        assert_eq!(254, table.calc_record_pos(3));
     }
 
     #[test]
     fn calc_record_pos_without_fields() {
-        let table = Table::new("my_table.fmtable".into(), "my_table").unwrap();
+        let table = Table::new("my_table.fmtable".into(), "my_table", Some(fake_table_uuid())).unwrap();
         let pos = Header::BYTES as u64 + table.record_header.size_as_bytes();
         assert_eq!(pos, table.calc_record_pos(1));
         assert_eq!(pos, table.calc_record_pos(2));
@@ -609,7 +616,7 @@ mod tests {
     fn load_headers_from() {
         // create buffer
         let mut buf = [0u8; Header::BYTES + ADD_FIELDS_HEADER_BYTES];
-        let index_header_buf = build_header_bytes("my_table", 3245634545244324234u64);
+        let index_header_buf = build_header_bytes("my_table", 3245634545244324234u64, Some(fake_table_uuid()));
         if let Err(e) = copy_bytes(&mut buf, &index_header_buf, 0) {
             assert!(false, "{:?}", e);
         }
@@ -619,13 +626,13 @@ mod tests {
         let mut reader = Cursor::new(buf.to_vec());
 
         // test load_headers
-        let mut table = Table::new("my_table.fmtable".into(), "my_table").unwrap();
+        let mut table = Table::new("my_table.fmtable".into(), "my_table", Some(fake_table_uuid())).unwrap();
         if let Err(e) = table.load_headers_from(&mut reader) {
             assert!(false, "expected success but got error: {:?}", e);
         }
 
         // check expected index header
-        let mut expected = Header::new("my_table").unwrap();
+        let mut expected = Header::new("my_table", Some(fake_table_uuid())).unwrap();
         expected.record_count = 3245634545244324234u64;
         assert_eq!(expected, table.header);
 
@@ -650,7 +657,7 @@ mod tests {
         let mut reader = Cursor::new(buf.to_vec());
 
         // init table and expected records
-        let mut table = Table::new("my_table.fmtable".into(), "my_table").unwrap();
+        let mut table = Table::new("my_table.fmtable".into(), "my_table", Some(fake_table_uuid())).unwrap();
         table.header.record_count = record_count;
         if let Err(e) = add_fields(&mut table.record_header) {
             assert!(false, "{:?}", e);
@@ -719,7 +726,7 @@ mod tests {
         let mut reader = Cursor::new(buf.to_vec());
 
         // init table
-        let mut table = Table::new("my_table.fmtable".into(), "my_table").unwrap();
+        let mut table = Table::new("my_table.fmtable".into(), "my_table", Some(fake_table_uuid())).unwrap();
         table.header.record_count = 4;
 
         // test
@@ -850,8 +857,8 @@ mod tests {
 
             // test
             let expected = "can't write or append the record, the table file is too small";
-            records[2].set("foo", Value::I32(11))?;
-            records[2].set("bar", Value::Str("hello".to_string()))?;
+            records[2].set("foo", Value::I32(11));
+            records[2].set("bar", Value::Str("hello".to_string()));
             match table.save_record(2, &records[2], true) {
                 Ok(v) => assert!(false, "expected error but got {:?}", v),
                 Err(e) => assert_eq!(expected, e.to_string())
@@ -894,8 +901,8 @@ mod tests {
                 // bar field
                 0, 0, 0, 5u8, 104u8, 101u8, 108u8, 108u8, 111u8
             ];
-            records[2].set("foo", Value::I32(11))?;
-            records[2].set("bar", Value::Str("hello".to_string()))?;
+            records[2].set("foo", Value::I32(11));
+            records[2].set("bar", Value::Str("hello".to_string()));
             if let Err(e) = table.save_record(2, &records[2], true) {
                 assert!(false, "expected success but got error: {:?}", e)
             }
@@ -924,8 +931,8 @@ mod tests {
             reader.read_to_end(&mut expected)?;
 
             // test
-            records[2].set("foo", Value::I32(11))?;
-            records[2].set("bar", Value::Str("hello".to_string()))?;
+            records[2].set("foo", Value::I32(11));
+            records[2].set("bar", Value::Str("hello".to_string()));
             match table.save_record(2, &records[2], true) {
                 Ok(()) => assert!(false, "expected TableError::NoFields but got success"),
                 Err(e) => match e.downcast::<TableError>() {
@@ -996,7 +1003,7 @@ mod tests {
         with_tmpdir_and_table(&|_, table| -> Result<()> {
             let mut buf = [0u8; Header::BYTES+EMPTY_RECORD_HEADER_BYTES+5];
             let mut writer = &mut buf as &mut [u8];
-            let mut header = Header::new("my_table")?;
+            let mut header = Header::new("my_table", Some(fake_table_uuid()))?;
             header.record_count = 10;
             header.write_to(&mut writer)?;
 

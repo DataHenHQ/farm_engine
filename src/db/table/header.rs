@@ -1,10 +1,11 @@
 use std::io::{Read, Write};
 use std::convert::TryFrom;
 use anyhow::{bail, Result};
+use uuid::Uuid;
 use crate::traits::{ByteSized, FromByteSlice, WriteAsBytes, ReadFrom, WriteTo, LoadFrom};
 use super::VERSION;
-use super::record::header::FieldType;
-use super::record::value::Value;
+use crate::db::field::field_type::FieldType;
+use crate::db::field::value::Value;
 
 /// File's magic numbervalue size bytes.
 pub const MAGIC_NUMBER_SIZE: usize = 11;
@@ -25,7 +26,10 @@ pub struct Header {
     pub record_count: u64,
 
     /// Table name.
-    _name: String
+    _name: String,
+
+    /// Table UUID.
+    _uuid: Uuid
 }
 
 impl Header {
@@ -34,19 +38,28 @@ impl Header {
     /// # Arguments
     /// 
     /// * `name` - Table name.
-    pub fn new(name: &str) -> Result<Self> {
+    pub fn new(name: &str, uuid: Option<Uuid>) -> Result<Self> {
         if !TABLE_NAME_FIELD.is_valid(&Value::Str(name.to_string())) {
             bail!("table name must be shorter than {} bytes", TABLE_NAME_MAX_SIZE);
         }
+        let uuid = match uuid {
+            Some(v) => v,
+            None => Uuid::new_v4()
+        };
         Ok(Self{
             record_count: 0,
-            _name: name.to_string()
+            _name: name.to_string(),
+            _uuid: uuid
         })
     }
 
     /// Gets the table name.
     pub fn get_name(&self) -> &str {
         &self._name
+    }
+
+    pub fn get_uuid(&self) -> &Uuid {
+        &self._uuid
     }
 
     /// Serialize the instance to a fixed byte slice.
@@ -69,8 +82,13 @@ impl Header {
 
         // save table name
         let name_value = Value::Str(self._name.clone());
-        let mut name_writer = &mut buf[carry..carry+TABLE_NAME_FIELD.value_byte_size()] as &mut [u8];
+        let name_byte_size = TABLE_NAME_FIELD.value_byte_size();
+        let mut name_writer = &mut buf[carry..carry+name_byte_size] as &mut [u8];
         TABLE_NAME_FIELD.write_value(&mut name_writer, &name_value).unwrap();
+        carry += name_byte_size;
+
+        // save table uuid
+        self._uuid.write_as_bytes(&mut buf[carry..carry+Uuid::BYTES]).unwrap();
 
         buf
     }
@@ -80,8 +98,8 @@ impl ByteSized for Header {
     /// Table header size in bytes.
     /// 
     /// Byte Format
-    /// `<magic_number:11><version:4><record_count:8><name_size:4><name_value:50>`.
-    const BYTES: usize = 66 + MAGIC_NUMBER_SIZE;
+    /// `<magic_number:11><version:4><record_count:8><name_size:4><name_value:50><uuid:16>`.
+    const BYTES: usize = 82 + MAGIC_NUMBER_SIZE;
 }
 
 impl LoadFrom for Header {
@@ -109,8 +127,13 @@ impl LoadFrom for Header {
         carry += u64::BYTES;
 
         // read table name
-        let mut name_reader = &buf[carry..carry+TABLE_NAME_FIELD.value_byte_size()] as &[u8];
+        let name_byte_size = TABLE_NAME_FIELD.value_byte_size();
+        let mut name_reader = &buf[carry..carry+name_byte_size] as &[u8];
         let name_value = TABLE_NAME_FIELD.read_value(&mut name_reader)?;
+        carry += name_byte_size;
+
+        // read uuid
+        let uuid = Uuid::from_byte_slice(&buf[carry..carry+Uuid::BYTES])?;
 
         // save values
         self.record_count = record_count;
@@ -118,6 +141,7 @@ impl LoadFrom for Header {
             Value::Str(s) => s,
             _ => bail!("name value should be a string")
         };
+        self._uuid = uuid;
 
         Ok(())
     }
@@ -125,7 +149,7 @@ impl LoadFrom for Header {
 
 impl FromByteSlice for Header {
     fn from_byte_slice(buf: &[u8]) -> Result<Self> {
-        let mut header = Self::new("")?;
+        let mut header = Self::new("", Some(Uuid::from_bytes([0u8; Uuid::BYTES])))?;
         let mut reader = buf;
         header.load_from(&mut reader)?;
         Ok(header)
@@ -134,7 +158,7 @@ impl FromByteSlice for Header {
 
 impl ReadFrom for Header {
     fn read_from(reader: &mut impl Read) -> Result<Self> {
-        let mut header = Self::new("")?;
+        let mut header = Self::new("", Some(Uuid::from_bytes([0u8; Uuid::BYTES])))?;
         header.load_from(reader)?;
         Ok(header)
     }
@@ -144,7 +168,7 @@ impl TryFrom<&[u8]> for Header {
     type Error = anyhow::Error;
 
     fn try_from(buf: &[u8]) -> Result<Self, Self::Error> {
-        let mut header = Self::new("")?;
+        let mut header = Self::new("", Some(Uuid::from_bytes([0u8; Uuid::BYTES])))?;
         let mut reader = buf;
         header.load_from(&mut reader)?;
         Ok(header)
@@ -162,6 +186,10 @@ impl WriteTo for Header {
 pub mod test_helper {
     use super::*;
 
+    /// Builds a table random uuid.
+    pub fn table_uuid() -> Uuid {
+        Uuid::new_v4()
+    }
 
     /// Builds an table header as byte slice from the values provided.
     /// 
@@ -169,10 +197,15 @@ pub mod test_helper {
     /// 
     /// * `name` - Table name.
     /// * `record_count` - Total record count.
-    pub fn build_header_bytes(name: &str, record_count: u64) -> [u8; Header::BYTES] {
+    pub fn build_header_bytes(name: &str, record_count: u64, uuid: Option<Uuid>) -> [u8; Header::BYTES] {
+        let uuid = match uuid {
+            Some(v) => v,
+            None => table_uuid()
+        };
         Header{
             record_count,
-            _name: name.to_string()
+            _name: name.to_string(),
+            _uuid: uuid,
         }.as_bytes()
     }
 }
@@ -199,11 +232,13 @@ mod tests {
 
     #[test]
     fn new() {
+        let uuid = table_uuid();
         let expected = Header{
             record_count: 0,
-            _name: "hello".to_string()
+            _name: "hello".to_string(),
+            _uuid: uuid
         };
-        match Header::new("hello") {
+        match Header::new("hello", Some(uuid)) {
             Ok(v) => assert_eq!(expected, v),
             Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
         }
@@ -214,10 +249,22 @@ mod tests {
         let expected = "table name must be shorter than 50 bytes";
         let buf = vec![b'a'; 51];
         let invalid_name = String::from_utf8_lossy(buf.as_slice());
-        match Header::new(&invalid_name) {
+        match Header::new(&invalid_name, Some(table_uuid())) {
             Ok(v) => assert!(false, "expected error but got {:?}", v),
             Err(e) => assert_eq!(expected, e.to_string())
         }
+    }
+
+    #[test]
+    fn new_random_uuid() {
+        let res = Header::new("hello", None);
+        if res.is_err() {
+            assert!(false, "expected new header but got error: {:?}", res.err().unwrap())
+        }
+        let header = res.unwrap();
+        assert_eq!("hello".to_string(), header._name);
+        assert_eq!(0, header.record_count);
+        assert_ne!([0u8; Uuid::BYTES], header._uuid.into_bytes());
     }
 
     #[test]
@@ -227,7 +274,7 @@ mod tests {
             // magic number
             100, 97, 116, 97, 104, 101, 110, 95, 116, 98, 108,
             // version
-            0, 0, 0, 1,
+            0, 0, 0, 2,
             // record count = 2311457452320998632
             32, 19, 242, 78, 103, 5, 196, 232,
             // name size
@@ -235,13 +282,16 @@ mod tests {
             // name value: "my_table"
             109, 121, 95, 116, 97, 98, 108, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0
+            0, 0, 0, 0, 0,
+            // uuid: "a1a2a3a4-b1b2-c1c2-d1d2-d3d4d5d6d7d8"
+            161, 162, 163, 164, 177, 178, 193, 194, 209, 210, 211, 212, 213, 214, 215, 216
         ];
 
         // test header as_bytes function
         let header = Header{
             record_count: 2311457452320998632,
-            _name: "my_table".to_string()
+            _name: "my_table".to_string(),
+            _uuid: Uuid::parse_str("a1a2a3a4-b1b2-c1c2-d1d2-d3d4d5d6d7d8").unwrap()
         };
         assert_eq!(expected, header.as_bytes());
 
@@ -250,7 +300,7 @@ mod tests {
             // magic number
             100, 97, 116, 97, 104, 101, 110, 95, 116, 98, 108,
             // version
-            0, 0, 0, 1,
+            0, 0, 0, 2,
             // record count = 4525325654675485867
             62, 205, 47, 180, 235, 228, 244, 171,
             // name size
@@ -258,34 +308,40 @@ mod tests {
             // name value: "hellotbl"
             104, 101, 108, 108, 111, 95, 116, 98, 108, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0
+            0, 0, 0, 0, 0,
+            // uuid: "b1a2a3a4-b1b2-c1c2-d1d2-d3d4d5d6d7d8"
+            177, 162, 163, 164, 177, 178, 193, 194, 209, 210, 211, 212, 213, 214, 215, 216
         ];
 
         // test header as_bytes function
         let header = Header{
             record_count: 4525325654675485867,
-            _name: "hello_tbl".to_string()
+            _name: "hello_tbl".to_string(),
+            _uuid: Uuid::parse_str("b1a2a3a4-b1b2-c1c2-d1d2-d3d4d5d6d7d8").unwrap()
         };
         assert_eq!(expected, header.as_bytes());
     }
 
     #[test]
     fn byte_sized() {
-        assert_eq!(77, Header::BYTES);
+        assert_eq!(93, Header::BYTES);
     }
 
     #[test]
     fn load_from_u8_slice() {
         // first random try
+        let uuid = table_uuid();
         let mut header = Header{
             record_count: 0,
-            _name: "".to_string()
+            _name: "".to_string(),
+            _uuid: uuid
         };
         let expected = Header{
             record_count: 4535435,
-            _name: "my_table".to_string()
+            _name: "my_table".to_string(),
+            _uuid: uuid
         };
-        let buf = build_header_bytes("my_table", 4535435);
+        let buf = build_header_bytes("my_table", 4535435, Some(uuid));
         let mut reader = &buf as &[u8];
         if let Err(e) = header.load_from(&mut reader) {
             assert!(false, "expected success but got error: {:?}", e);
@@ -294,15 +350,18 @@ mod tests {
         assert_eq!(expected, header);
 
         // second random try
+        let uuid = table_uuid();
         let mut header = Header{
             record_count: 0,
-            _name: "".to_string()
+            _name: "".to_string(),
+            _uuid: uuid
         };
         let expected = Header{
             record_count: 6572646535124,
-            _name: "hello_tbl".to_string()
+            _name: "hello_tbl".to_string(),
+            _uuid: uuid
         };
-        let buf = build_header_bytes("hello_tbl", 6572646535124);
+        let buf = build_header_bytes("hello_tbl", 6572646535124, Some(uuid));
         let mut reader = &buf as &[u8];
         if let Err(e) = header.load_from(&mut reader) {
             assert!(false, "expected success but got error: {:?}", e);
@@ -314,11 +373,13 @@ mod tests {
     #[test]
     fn from_byte_slice() {
         // first random try
+        let uuid = table_uuid();
         let expected = Header{
             record_count: 2341234,
-            _name: "my_table".to_string()
+            _name: "my_table".to_string(),
+            _uuid: uuid
         };
-        let buf = build_header_bytes("my_table", 2341234);
+        let buf = build_header_bytes("my_table", 2341234, Some(uuid));
         let value = match Header::from_byte_slice(&buf) {
             Ok(v) => v,
             Err(e) => {
@@ -329,11 +390,13 @@ mod tests {
         assert_eq!(expected, value);
 
         // second random try
+        let uuid = table_uuid();
         let expected = Header{
             record_count: 9879873495743,
-            _name: "hello_tbl".to_string()
+            _name: "hello_tbl".to_string(),
+            _uuid: uuid
         };
-        let buf = build_header_bytes("hello_tbl", 9879873495743);
+        let buf = build_header_bytes("hello_tbl", 9879873495743, Some(uuid));
         let value = match Header::from_byte_slice(&buf) {
             Ok(v) => v,
             Err(e) => {
@@ -347,11 +410,13 @@ mod tests {
     #[test]
     fn read_from_reader() {
         // first random try
+        let uuid = table_uuid();
         let expected = Header{
             record_count: 974734838473874,
-            _name: "my_table".to_string()
+            _name: "my_table".to_string(),
+            _uuid: uuid
         };
-        let buf = build_header_bytes("my_table", 974734838473874);
+        let buf = build_header_bytes("my_table", 974734838473874, Some(uuid));
         let mut reader = &buf as &[u8];
         let value = match Header::read_from(&mut reader) {
             Ok(v) => v,
@@ -363,11 +428,13 @@ mod tests {
         assert_eq!(expected, value);
 
         // second random try
+        let uuid = table_uuid();
         let expected = Header{
             record_count: 3434232315645344,
-            _name: "hello_tbl".to_string()
+            _name: "hello_tbl".to_string(),
+            _uuid: uuid
         };
-        let buf = build_header_bytes("hello_tbl", 3434232315645344);
+        let buf = build_header_bytes("hello_tbl", 3434232315645344, Some(uuid));
         let mut reader = &buf as &[u8];
         let value = match Header::read_from(&mut reader) {
             Ok(v) => v,
@@ -382,11 +449,13 @@ mod tests {
     #[test]
     fn try_from_u8_slice() {
         // first random try
+        let uuid = table_uuid();
         let expected = Header{
             record_count: 32412342134234,
-            _name: "my_table".to_string()
+            _name: "my_table".to_string(),
+            _uuid: uuid
         };
-        let buf = build_header_bytes("my_table", 32412342134234);
+        let buf = build_header_bytes("my_table", 32412342134234, Some(uuid));
         let value = match Header::try_from(&buf[..]) {
             Ok(v) => v,
             Err(e) => {
@@ -397,11 +466,13 @@ mod tests {
         assert_eq!(expected, value);
 
         // second random try
+        let uuid = table_uuid();
         let expected = Header{
             record_count: 56535423143214,
-            _name: "hello_tbl".to_string()
+            _name: "hello_tbl".to_string(),
+            _uuid: uuid
         };
-        let buf = build_header_bytes("hello_tbl", 56535423143214);
+        let buf = build_header_bytes("hello_tbl", 56535423143214, Some(uuid));
         let value = match Header::try_from(&buf[..]) {
             Ok(v) => v,
             Err(e) => {
@@ -415,10 +486,12 @@ mod tests {
     #[test]
     fn write_to_writer() {
         // first random try
-        let expected = build_header_bytes("my_table", 788477630402843);
+        let uuid = table_uuid();
+        let expected = build_header_bytes("my_table", 788477630402843, Some(uuid));
         let header = Header{
             record_count: 788477630402843,
-            _name: "my_table".to_string()
+            _name: "my_table".to_string(),
+            _uuid: uuid
         };
         let mut buf = [0u8; Header::BYTES];
         let mut writer = &mut buf as &mut [u8];
@@ -429,10 +502,12 @@ mod tests {
         assert_eq!(expected, buf);
 
         // second random try
-        let expected = build_header_bytes("hello_tbl", 63439320337562938);
+        let uuid = table_uuid();
+        let expected = build_header_bytes("hello_tbl", 63439320337562938, Some(uuid));
         let header = Header{
             record_count: 63439320337562938,
-            _name: "hello_tbl".to_string()
+            _name: "hello_tbl".to_string(),
+            _uuid: uuid
         };
         let mut buf = [0u8; Header::BYTES];
         let mut writer = &mut buf as &mut [u8];

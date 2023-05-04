@@ -1,25 +1,22 @@
 pub mod header;
-pub mod value;
 
+use indexmap::IndexMap;
 use serde::ser::{Serialize, Serializer, SerializeMap};
-use std::collections::HashMap;
 use anyhow::{bail, Result};
+use crate::db::field::value::Value;
 pub use header::Header;
-pub use value::Value;
 
 /// Represents a data record.
 #[derive(Debug, PartialEq)]
 pub struct Record {
-    _list: Vec<(String, Value)>,
-    _map: HashMap<String, usize>
+    _values: IndexMap<String, Value>
 }
 
 impl Record {
     // Creates a new record.
     pub fn new() -> Self {
         Self{
-            _list: Vec::new(),
-            _map: HashMap::new()
+            _values: IndexMap::new()
         }
     }
 
@@ -30,14 +27,12 @@ impl Record {
     /// * `name` - Field name.
     pub fn add(&mut self, name: &str, value: Value) -> Result<&Self> {
         // avoid duplicated fields
-        if let Some(_) = self._map.get(name) {
+        if let Some(_) = self._values.get(name) {
             bail!("field \"{}\" already exists within the record", name);
         }
 
         // add field
-        let item = (name.to_string(), value);
-        self._list.push(item);
-        self._map.insert(name.to_string(), self._list.len()-1);
+        self._values.insert(name.to_string(), value);
         
         Ok(self)
     }
@@ -48,14 +43,8 @@ impl Record {
     /// 
     /// * `name` - Field name.
     /// * `value` - New value.
-    pub fn set(&mut self, name: &str, value: Value) -> Result<()> {
-        // update value
-        let index = match self._map.get(name) {
-            Some(v) => *v,
-            None => bail!("can't update: unknown field \"{}\"", name)
-        };
-        self._list[index].1 = value;
-        Ok(())
+    pub fn set(&mut self, name: &str, value: Value) {
+        self._values[name] = value;
     }
 
     /// Set a field value by field index.
@@ -65,7 +54,7 @@ impl Record {
     /// * `index` - Field index.
     /// * `value` - New value.
     pub fn set_by_index(&mut self, index: usize, value: Value) {
-        self._list[index].1 = value;
+        self._values[index] = value;
     }
 
     /// Get a value by name.
@@ -74,11 +63,7 @@ impl Record {
     /// 
     /// * `name` - Field name.
     pub fn get(&self, name: &str) -> Option<&Value> {
-        let index = match self._map.get(name) {
-            Some(v) => *v,
-            None => return None
-        };
-        Some(&self._list[index].1)
+        self._values.get(name)
     }
 
     /// Get a value by it's index.
@@ -87,20 +72,18 @@ impl Record {
     /// 
     /// * `index` - Value index.
     pub fn get_by_index(&self, index: usize) -> Option<&Value> {
-        if self._list.len() > index {
-            return Some(&self._list[index].1);
-        }
-        None
+        let (_, value) = self._values.get_index(index)?;
+        Some(value)
     }
 
     /// Returns the number of fields on the header.
     pub fn len(&self) -> usize {
-        self._list.len()
+        self._values.len()
     }
 
     /// Returns a column iterator.
-    pub fn iter(&self) -> std::slice::Iter<(String, Value)> {
-        self._list.iter()
+    pub fn iter(&self) -> indexmap::map::Iter<String, Value> {
+        self._values.iter()
     }
 }
 
@@ -109,8 +92,8 @@ impl Serialize for Record {
     where
         S: Serializer,
     {
-        let mut s = serializer.serialize_map(Some(self._list.len()))?;
-        for (k, v) in self._list.iter() {
+        let mut s = serializer.serialize_map(Some(self._values.len()))?;
+        for (k, v) in self._values.iter() {
             s.serialize_entry(k, v)?;
         }
         s.end()
@@ -127,8 +110,7 @@ mod tests {
         #[test]
         fn new_record() {
             let expected = Record{
-                _list: Vec::new(),
-                _map: HashMap::new()
+                _values: IndexMap::new()
             };
             let record = Record::new();
             assert_eq!(expected, record);
@@ -158,21 +140,27 @@ mod tests {
                 assert!(false, "expected to add {:?} value to \"foo\" field but got error: {:?}", expected, e);
                 return;
             }
-            assert_eq!(expected, record._list[0]);
-            match record._map.get("foo") {
-                Some(v) => assert_eq!(0, *v),
+            match record._values.get_index(0) {
+                Some((k, v)) => assert_eq!(expected, (k.to_string(), v.clone())),
+                None => assert!(false, "expected {:?} but got None", expected)
+            }
+            match record._values.get("foo") {
+                Some(v) => assert_eq!(expected.1, *v),
                 None => assert!(false, "expected {:?} but got None", 0)
             }
 
-            // add first field
+            // add second field
             let expected = ("bar".to_string(), Value::I64(765i64));
             if let Err(e) = record.add("bar", Value::I64(765i64)) {
                 assert!(false, "expected to add {:?} value to \"bar\" field but got error: {:?}", expected, e);
                 return;
             }
-            assert_eq!(expected, record._list[1]);
-            match record._map.get("bar") {
-                Some(v) => assert_eq!(1, *v),
+            match record._values.get_index(1) {
+                Some((k, v)) => assert_eq!(expected, (k.to_string(), v.clone())),
+                None => assert!(false, "expected {:?} but got None", expected)
+            }
+            match record._values.get("bar") {
+                Some(v) => assert_eq!(expected.1, *v),
                 None => assert!(false, "expected {:?} but got None", 0)
             }
         }
@@ -213,35 +201,43 @@ mod tests {
             }
 
             // check the inserted values
-            assert_eq!(3, record._list.len());
-            assert_eq!(3, record._map.len());
-            assert_eq!(("foo".to_string(), Value::F32(23.12f32)), record._list[0]);
-            assert_eq!(("abcde".to_string(), Value::I64(12i64)), record._list[1]);
-            assert_eq!(("bar".to_string(), Value::U64(34u64)), record._list[2]);
+            assert_eq!(3, record._values.len());
+            match record._values.get_index(0) {
+                Some((k, v)) => assert_eq!(("foo".to_string(), Value::F32(23.12f32)), (k.to_string(), v.clone())),
+                None => assert!(false, "expected {:?} but got None", 0)
+            }
+            match record._values.get_index(1) {
+                Some((k, v)) => assert_eq!(("abcde".to_string(), Value::I64(12i64)), (k.to_string(), v.clone())),
+                None => assert!(false, "expected {:?} but got None", 0)
+            }
+            match record._values.get_index(2) {
+                Some((k, v)) => assert_eq!(("bar".to_string(), Value::U64(34u64)), (k.to_string(), v.clone())),
+                None => assert!(false, "expected {:?} but got None", 0)
+            }
 
             // update values
-            if let Err(e) = record.set("foo", Value::F32(657.54f32)) {
-                assert!(false, "expected to set {:?} value to \"foo\" field but got error: {:?}", Value::F32(657.54f32), e);
-                return;
-            }
-            if let Err(e) = record.set("abcde", Value::I64(956i64)) {
-                assert!(false, "expected to set {:?} value to \"abcde\" field but got error: {:?}", Value::I64(956i64), e);
-                return;
-            }
-            if let Err(e) = record.set("bar", Value::U64(45596u64)) {
-                assert!(false, "expected to set {:?} value to \"bar\" field but got error: {:?}", Value::U64(45596u64), e);
-                return;
-            }
+            record.set("foo", Value::F32(657.54f32));
+            record.set("abcde", Value::I64(956i64));
+            record.set("bar", Value::U64(45596u64));
 
             // check the new values
-            assert_eq!(3, record._list.len());
-            assert_eq!(3, record._map.len());
-            assert_eq!(("foo".to_string(), Value::F32(657.54f32)), record._list[0]);
-            assert_eq!(("abcde".to_string(), Value::I64(956i64)), record._list[1]);
-            assert_eq!(("bar".to_string(), Value::U64(45596u64)), record._list[2]);
+            assert_eq!(3, record._values.len());
+            match record._values.get_index(0) {
+                Some((k, v)) => assert_eq!(("foo".to_string(), Value::F32(657.54f32)), (k.to_string(), v.clone())),
+                None => assert!(false, "expected {:?} but got None", 0)
+            }
+            match record._values.get_index(1) {
+                Some((k, v)) => assert_eq!(("abcde".to_string(), Value::I64(956i64)), (k.to_string(), v.clone())),
+                None => assert!(false, "expected {:?} but got None", 0)
+            }
+            match record._values.get_index(2) {
+                Some((k, v)) => assert_eq!(("bar".to_string(), Value::U64(45596u64)), (k.to_string(), v.clone())),
+                None => assert!(false, "expected {:?} but got None", 0)
+            }
         }
 
         #[test]
+        #[should_panic(expected="IndexMap: key not found")]
         fn set_invalid_field() {
             let mut record = Record::new();
 
@@ -260,25 +256,22 @@ mod tests {
             }
 
             // check the inserted values
-            assert_eq!(3, record._list.len());
-            assert_eq!(3, record._map.len());
-            assert_eq!(("foo".to_string(), Value::F32(23.12f32)), record._list[0]);
-            assert_eq!(("abcde".to_string(), Value::I64(12i64)), record._list[1]);
-            assert_eq!(("bar".to_string(), Value::U64(34u64)), record._list[2]);
-
-            // update values
-            let expected = "can't update: unknown field \"aaa\"";
-            match record.set("aaa", Value::U64(20u64)) {
-                Ok(()) => assert!(false, "expected an error but got success"),
-                Err(e) => assert_eq!(expected, e.to_string())
+            assert_eq!(3, record._values.len());
+            match record._values.get_index(0) {
+                Some((k, v)) => assert_eq!(("foo".to_string(), Value::F32(23.12f32)), (k.to_string(), v.clone())),
+                None => assert!(false, "expected {:?} but got None", 0)
+            }
+            match record._values.get_index(1) {
+                Some((k, v)) => assert_eq!(("abcde".to_string(), Value::I64(12i64)), (k.to_string(), v.clone())),
+                None => assert!(false, "expected {:?} but got None", 0)
+            }
+            match record._values.get_index(2) {
+                Some((k, v)) => assert_eq!(("bar".to_string(), Value::U64(34u64)), (k.to_string(), v.clone())),
+                None => assert!(false, "expected {:?} but got None", 0)
             }
 
-            // check the new values
-            assert_eq!(3, record._list.len());
-            assert_eq!(3, record._map.len());
-            assert_eq!(("foo".to_string(), Value::F32(23.12f32)), record._list[0]);
-            assert_eq!(("abcde".to_string(), Value::I64(12i64)), record._list[1]);
-            assert_eq!(("bar".to_string(), Value::U64(34u64)), record._list[2]);
+            // update values
+            record.set("aaa", Value::U64(20u64));
         }
 
         #[test]
@@ -300,11 +293,19 @@ mod tests {
             }
 
             // check the inserted values
-            assert_eq!(3, record._list.len());
-            assert_eq!(3, record._map.len());
-            assert_eq!(("foo".to_string(), Value::F32(23.12f32)), record._list[0]);
-            assert_eq!(("abcde".to_string(), Value::I64(12i64)), record._list[1]);
-            assert_eq!(("bar".to_string(), Value::U64(34u64)), record._list[2]);
+            assert_eq!(3, record._values.len());
+            match record._values.get_index(0) {
+                Some((k, v)) => assert_eq!(("foo".to_string(), Value::F32(23.12f32)), (k.to_string(), v.clone())),
+                None => assert!(false, "expected {:?} but got None", 0)
+            }
+            match record._values.get_index(1) {
+                Some((k, v)) => assert_eq!(("abcde".to_string(), Value::I64(12i64)), (k.to_string(), v.clone())),
+                None => assert!(false, "expected {:?} but got None", 0)
+            }
+            match record._values.get_index(2) {
+                Some((k, v)) => assert_eq!(("bar".to_string(), Value::U64(34u64)), (k.to_string(), v.clone())),
+                None => assert!(false, "expected {:?} but got None", 0)
+            }
 
             // update values
             record.set_by_index(0, Value::F32(657.54f32));
@@ -312,11 +313,19 @@ mod tests {
             record.set_by_index(2, Value::U64(45596u64));
 
             // check the new values
-            assert_eq!(3, record._list.len());
-            assert_eq!(3, record._map.len());
-            assert_eq!(("foo".to_string(), Value::F32(657.54f32)), record._list[0]);
-            assert_eq!(("abcde".to_string(), Value::I64(956i64)), record._list[1]);
-            assert_eq!(("bar".to_string(), Value::U64(45596u64)), record._list[2]);
+            assert_eq!(3, record._values.len());
+            match record._values.get_index(0) {
+                Some((k, v)) => assert_eq!(("foo".to_string(), Value::F32(657.54f32)), (k.to_string(), v.clone())),
+                None => assert!(false, "expected {:?} but got None", 0)
+            }
+            match record._values.get_index(1) {
+                Some((k, v)) => assert_eq!(("abcde".to_string(), Value::I64(956i64)), (k.to_string(), v.clone())),
+                None => assert!(false, "expected {:?} but got None", 0)
+            }
+            match record._values.get_index(2) {
+                Some((k, v)) => assert_eq!(("bar".to_string(), Value::U64(45596u64)), (k.to_string(), v.clone())),
+                None => assert!(false, "expected {:?} but got None", 0)
+            }
         }
 
         #[test]
@@ -336,11 +345,14 @@ mod tests {
                 assert!(false, "expected to add {:?} value to  \"bar\" field but got error: {:?}", Value::U64(34u64), e);
                 return;
             }
-            assert_eq!(3, record._list.len());
+            assert_eq!(3, record._values.len());
 
             // first test search by index
             let expected = ("abcde".to_string(), Value::I64(12i64));
-            assert_eq!(expected, record._list[1]);
+            match record._values.get_index(1) {
+                Some((k, v)) => assert_eq!(expected, (k.to_string(), v.clone())),
+                None => assert!(false, "expected {:?} but got None", expected)
+            }
             match record.get_by_index(1) {
                 Some(v) => assert_eq!(&expected.1, v),
                 None => assert!(false, "expected {:?} but got None", expected)
@@ -348,7 +360,10 @@ mod tests {
 
             // second test search by index
             let expected = ("foo".to_string(), Value::F32(23.12f32));
-            assert_eq!(expected, record._list[0]);
+            match record._values.get_index(0) {
+                Some((k, v)) => assert_eq!(expected, (k.to_string(), v.clone())),
+                None => assert!(false, "expected {:?} but got None", expected)
+            }
             match record.get_by_index(0) {
                 Some(v) => assert_eq!(&expected.1, v),
                 None => assert!(false, "expected {:?} but got None", expected)
@@ -372,7 +387,7 @@ mod tests {
                 assert!(false, "expected to add {:?} value to  \"bar\" field but got error: {:?}", Value::U64(34u64), e);
                 return;
             }
-            assert_eq!(3, record._list.len());
+            assert_eq!(3, record._values.len());
 
             // test search
             match record.get_by_index(4) {
@@ -398,12 +413,14 @@ mod tests {
                 assert!(false, "expected to add {:?} value to  \"bar\" field but got error: {:?}", Value::U64(34u64), e);
                 return;
             }
-            assert_eq!(3, record._list.len());
-            assert_eq!(3, record._map.len());
+            assert_eq!(3, record._values.len());
 
             // first test search by index
             let expected = ("abcde".to_string(), Value::I64(12i64));
-            assert_eq!(expected, record._list[1]);
+            match record._values.get_index(1) {
+                Some((k, v)) => assert_eq!(expected, (k.to_string(), v.clone())),
+                None => assert!(false, "expected {:?} but got None", expected)
+            }
             match record.get("abcde") {
                 Some(v) => assert_eq!(&expected.1, v),
                 None => assert!(false, "expected {:?} but got None", expected)
@@ -411,7 +428,10 @@ mod tests {
 
             // second test search by index
             let mut expected = ("bar".to_string(), Value::U64(34u64));
-            assert_eq!(expected, record._list[2]);
+            match record._values.get_index(2) {
+                Some((k, v)) => assert_eq!(expected, (k.to_string(), v.clone())),
+                None => assert!(false, "expected {:?} but got None", expected)
+            }
             match record.get("bar") {
                 Some(v) => assert_eq!(&mut expected.1, v),
                 None => assert!(false, "expected {:?} but got None", expected)
@@ -435,8 +455,7 @@ mod tests {
                 assert!(false, "expected to add {:?} value to  \"bar\" field but got error: {:?}", Value::U64(34u64), e);
                 return;
             }
-            assert_eq!(3, record._list.len());
-            assert_eq!(3, record._map.len());
+            assert_eq!(3, record._values.len());
 
             // test search
             match record.get("aaa") {
@@ -479,10 +498,6 @@ mod tests {
                 ("bar".to_string(), Value::Str("hello".to_string())),
                 ("abc".to_string(), Value::U16(32u16))
             ];
-            let mut expected_map = HashMap::new();
-            expected_map.insert("foo".to_string(), 0usize);
-            expected_map.insert("bar".to_string(), 1usize);
-            expected_map.insert("abc".to_string(), 2usize);
             let mut record = Record::new();
 
             // add field values
@@ -500,18 +515,14 @@ mod tests {
             }
 
             // test
-            let mut list = Vec::new();
-            let mut map = HashMap::new();
-            let mut i: usize = 0;
+            let mut values: IndexMap<String, Value> = IndexMap::new();
             for (s, v) in record.iter() {
-                list.push((s.to_string(), v.clone()));
-                map.insert(s.to_string(), i);
-                i += 1;
+                values.insert(s.to_string(), v.clone());
             }
-            assert_eq!(expected_list, record._list);
-            assert_eq!(expected_map, record._map);
-            assert_eq!(expected_list, list);
-            assert_eq!(expected_map, map);
+            assert_eq!(values, record._values);
+            for (index, (k, v)) in values.iter().enumerate() {
+                assert_eq!(expected_list[index], (k.to_string(), v.clone()));
+            }
         }
     }
 }

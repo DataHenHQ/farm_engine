@@ -7,8 +7,8 @@ use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
 use std::path::PathBuf;
 use crate::error::{ParseError, IndexError};
 use crate::traits::{ReadFrom, WriteTo};
-use super::indexer::{Indexer, Status as IndexStatus};
-use super::indexer::value::{MatchFlag, Data as IndexData, Value as IndexValue};
+use super::index::raw_match::{RawMatch, Status as IndexStatus};
+use super::index::raw_match::value::{MatchFlag, Data as IndexData, Value as IndexValue};
 use super::table::Table;
 use super::table::record::Record;
 
@@ -57,8 +57,8 @@ impl SourceJoinItem<BufWriter<File>, BufWriter<File>> {
 /// Represents a data source.
 #[derive(Debug, Clone)]
 pub struct Source {
-    /// Indexer.
-    pub index: Indexer,
+    /// RawMatch.
+    pub index: RawMatch,
     /// Table.
     pub table: Table
 }
@@ -233,7 +233,7 @@ impl Source {
         target.table.save_headers_into(&mut target_wrt.table)?;
 
         // move target writers to the first record position
-        let index_pos = Indexer::calc_value_pos(0);
+        let index_pos = RawMatch::calc_value_pos(0);
         let table_pos = target.table.calc_record_pos(0);
         target_wrt.index.seek(SeekFrom::Start(index_pos))?;
         target_wrt.table.seek(SeekFrom::Start(table_pos))?;
@@ -333,7 +333,7 @@ mod test_helper {
     use super::*;
     use tempfile::TempDir;
     use crate::test_helper::*;
-    use crate::db::indexer::header::InputType;
+    use crate::db::index::raw_match::header::InputType;
 
     /// Execute a function with both a temp directory and a new Source.
     /// 
@@ -349,14 +349,15 @@ mod test_helper {
 
             // create source
             let mut source = Source{
-                index: Indexer::new(
+                index: RawMatch::new(
                     input_path,
                     index_path,
                     InputType::Unknown
                 ),
                 table: Table::new(
                     table_path,
-                    "my_table"
+                    "my_table",
+                    None
                 )?
             };
 
@@ -375,9 +376,9 @@ mod tests {
     use super::*;
     use super::test_helper::*;
     // use crate::test_helper::*;
-    use crate::db::indexer::test_helper::{create_fake_index};
+    use crate::db::index::raw_match::test_helper::{create_fake_index};
     use crate::db::table::test_helper::create_fake_table;
-    use crate::db::indexer::header::{Header as IndexHeader};
+    use crate::db::index::raw_match::header::{Header as IndexHeader};
     use crate::db::table::header::{Header as TableHeader};
     use crate::db::table::record::header::{Header as RecordHeader};
 

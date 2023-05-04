@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 use anyhow::{bail, Result};
+use uuid::Uuid;
 use crate::error::ParseError;
 
 pub trait ByteSized: Sized {
@@ -28,6 +29,7 @@ impl_byte_sized!(i16, i16::BITS);
 impl_byte_sized!(i8, i8::BITS);
 impl_byte_sized!(f64, 64);
 impl_byte_sized!(f32, 32);
+impl_byte_sized!(Uuid, 128);
 
 pub trait FromByteSlice: ByteSized {
     /// Creates a value from its representation as bytes from a byte buffer.
@@ -115,6 +117,7 @@ impl_from_byte_reader!(i16, from_be_bytes);
 impl_from_byte_reader!(i8, from_be_bytes);
 impl_from_byte_reader!(f64, from_be_bytes);
 impl_from_byte_reader!(f32, from_be_bytes);
+impl_from_byte_reader!(Uuid, from_bytes);
 
 pub trait WriteAsBytes: ByteSized {
     /// Write the value representation as bytes into a buffer.
@@ -290,6 +293,27 @@ impl WriteTo for bool {
     fn write_to(&self, writer: &mut impl Write) -> Result<()> {
         let buf: [u8; 1] = [(*self).into()];
         writer.write_all(&buf)?;
+        Ok(())
+    }
+}
+
+impl WriteAsBytes for Uuid {
+    fn write_as_bytes(&self, buf: &mut [u8]) -> Result<()> {
+        // validate value size
+        if buf.len() != Self::BYTES {
+            bail!(ParseError::InvalidSize);
+        }
+
+        // save value as bytes
+        buf.copy_from_slice(self.as_bytes());
+
+        Ok(())
+    }
+}
+
+impl WriteTo for Uuid {
+    fn write_to(&self, writer: &mut impl Write) -> Result<()> {
+        writer.write_all(self.as_bytes())?;
         Ok(())
     }
 }

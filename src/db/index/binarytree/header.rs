@@ -1,8 +1,8 @@
 use std::io::{Read, Write};
 use std::convert::TryFrom;
 use anyhow::{bail, Result};
+use uuid::Uuid;
 use super::VERSION;
-use crate::error::ParseError;
 use crate::traits::{ByteSized, FromByteSlice, WriteAsBytes, ReadFrom, WriteTo, LoadFrom};
 
 /// File's magic numbervalue size bytes.
@@ -11,109 +11,27 @@ pub const MAGIC_NUMBER_SIZE: usize = 11;
 /// File's magic number value `datahen_idx` as bytes.
 pub const MAGIC_NUMBER_BYTES: [u8; MAGIC_NUMBER_SIZE] = [100, 97, 116, 97, 104, 101, 110, 95, 105, 100, 120];
 
-/// Unsigned hash value size. Currently using SHA3-256 = key 32 bytes
-pub const HASH_SIZE: usize = 32;
-
-/// Signed hash value size.
-pub const HASH_U_SIZE: usize = HASH_SIZE + 1;
-
-/// Input supported file types.
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub enum InputType {
-    Unknown,
-    CSV,
-    JSON
-}
-
-impl TryFrom<u8> for InputType {
-    type Error = ParseError;
-
-    fn try_from(v: u8) -> std::result::Result<Self, Self::Error> {
-        let status_flag = match v {
-            0 => Self::Unknown,
-            1 => Self::CSV,
-            2 => Self::JSON,
-            _ => return Err(ParseError::InvalidFormat)
-        };
-
-        Ok(status_flag)
-    }
-}
-
-impl From<&InputType> for u8 {
-    fn from(v: &InputType) -> Self {
-        match v {
-            InputType::Unknown => 0,
-            InputType::CSV => 1,
-            InputType::JSON => 2
-        }
-    }
-}
-
-impl From<InputType> for u8 {
-    fn from(v: InputType) -> Self {
-        (&v).into()
-    }
-}
-
-impl ByteSized for InputType {
-    const BYTES: usize = 1;
-}
-
-impl WriteAsBytes for InputType {
-    fn write_as_bytes(&self, buf: &mut [u8]) -> Result<()> {
-        // validate value size
-        if buf.len() != Self::BYTES {
-            bail!(ParseError::InvalidSize);
-        }
-
-        // save value as bytes
-        buf.copy_from_slice(&[self.into()]);
-
-        Ok(())
-    }
-}
-
 //// Describes an Indexer file header.
 #[derive(Debug, PartialEq, Clone)]
 pub struct Header {
     /// `true` when the input file has been indexed successfully.
     pub indexed: bool,
 
-    /// Input file hash.
-    pub hash: Option<[u8; HASH_SIZE]>,
-
     /// Indexed records count.
     pub indexed_count: u64,
 
-    /// input file type
-    pub input_type: InputType
+    /// Table reference uuid.
+    table_uuid: Option<Uuid>
 }
 
 impl Header {
     /// Creates a new header.
-    pub fn new() -> Self {
+    pub fn new(table_uuid: Option<Uuid>) -> Self {
         Self{
             indexed: false,
-            hash: None,
             indexed_count: 0,
-            input_type: InputType::Unknown
+            table_uuid
         }
-    }
-
-    /// Clone input file hash value.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `buf` - Bytes to clone hash from.
-    pub fn clone_hash(buf: &[u8]) -> Result<[u8; HASH_SIZE], ParseError> {
-        if buf.len() != HASH_SIZE {
-            return Err(ParseError::InvalidSize);
-        }
-
-        let mut hash = [0u8; HASH_SIZE];
-        hash.copy_from_slice(buf);
-        Ok(hash)
     }
 
     /// Serialize the instance to a fixed byte slice.
@@ -138,17 +56,20 @@ impl Header {
         self.indexed_count.write_as_bytes(&mut buf[carry..carry+u64::BYTES]).unwrap();
         carry += u64::BYTES;
 
-        // save input type
-        buf[carry] = self.input_type.into();
-        carry += InputType::BYTES;
-
-        // save hash flag and value
-        if let Some(hash_bytes) = self.hash {
-            buf[carry] = 1;
-            carry += 1;
-            let hash_buf = &mut buf[carry..carry+HASH_SIZE];
-            hash_buf.copy_from_slice(&hash_bytes);
+        // save table uuid
+        match self.table_uuid {
+            Some(v) => {
+                true.write_as_bytes(&mut buf[carry..carry+bool::BYTES]).unwrap();
+                carry += bool::BYTES;
+                v.write_as_bytes(&mut buf[carry..carry+Uuid::BYTES]).unwrap()
+            },
+            None => {
+                false.write_as_bytes(&mut buf[carry..carry+bool::BYTES]).unwrap();
+                carry += bool::BYTES;
+                buf[carry..carry+Uuid::BYTES].copy_from_slice(&[0u8; Uuid::BYTES])
+            }
         }
+
         buf
     }
 }
@@ -157,8 +78,8 @@ impl ByteSized for Header {
     /// Index header size in bytes.
     /// 
     /// Byte Format
-    /// `<magic_number:11><version:4><indexed:1><indexed_count:8><input_type:1><hash_valid:1><hash:32>`.
-    const BYTES: usize = 47 + MAGIC_NUMBER_SIZE;
+    /// `<magic_number:11><version:4><indexed:1><indexed_count:8><table_nul:1><table_uuid:16>`.
+    const BYTES: usize = 30 + MAGIC_NUMBER_SIZE;
 }
 
 impl LoadFrom for Header {
@@ -189,23 +110,17 @@ impl LoadFrom for Header {
         let indexed_count = u64::from_byte_slice(&buf[carry..carry+u64::BYTES])?;
         carry += u64::BYTES;
 
-        // read input type
-        let input_type = buf[carry].try_into()?;
-        carry += InputType::BYTES;
-
-        // extract hash
-        let hash = if buf[carry] > 0 {
-            carry += 1;
-            Some(Self::clone_hash(&buf[carry..carry+HASH_SIZE])?)
-        } else {
-            None
-        };
+        // read uuid
+        let has_uuid = bool::from_byte_slice(&buf[carry..carry+bool::BYTES])?;
+        let mut uuid = None;
+        if has_uuid {
+            uuid = Some(Uuid::from_byte_slice(&buf[carry..carry+Uuid::BYTES])?);
+        }
 
         // save values
         self.indexed = indexed;
         self.indexed_count = indexed_count;
-        self.hash = hash;
-        self.input_type = input_type;
+        self.table_uuid = uuid;
 
         Ok(())
     }
@@ -213,7 +128,7 @@ impl LoadFrom for Header {
 
 impl FromByteSlice for Header {
     fn from_byte_slice(buf: &[u8]) -> Result<Self> {
-        let mut header = Self::new();
+        let mut header = Self::new(None);
         let mut reader = buf;
         header.load_from(&mut reader)?;
         Ok(header)
@@ -222,7 +137,7 @@ impl FromByteSlice for Header {
 
 impl ReadFrom for Header {
     fn read_from(reader: &mut impl Read) -> Result<Self> {
-        let mut header = Self::new();
+        let mut header = Self::new(None);
         header.load_from(reader)?;
         Ok(header)
     }
@@ -232,7 +147,7 @@ impl TryFrom<&[u8]> for Header {
     type Error = anyhow::Error;
 
     fn try_from(buf: &[u8]) -> Result<Self, Self::Error> {
-        let mut header = Self::new();
+        let mut header = Self::new(None);
         let mut reader = buf;
         header.load_from(&mut reader)?;
         Ok(header)

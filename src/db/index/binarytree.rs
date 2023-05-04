@@ -3,26 +3,27 @@ pub mod value;
 
 use anyhow::{bail, Result};
 use regex::Regex;
-use serde_json::{Map as JSMap, Value as JSValue};
+use uuid::Uuid;
+//use std::f32::consts::E;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
 use std::path::PathBuf;
-use crate::error::ParseError;
-use crate::{file_size, generate_hash};
-use crate::error::IndexError;
+//use std::str::pattern::Pattern;
+use crate::error::DbIndexError;
+use crate::file_size;
 use crate::traits::{ByteSized, LoadFrom, ReadFrom, WriteTo};
-use header::{Header, InputType};
-use value::{MatchFlag, Data, Value};
+use header::Header;
+use value::{StatusFlag, Data, Value, Gid};
 
-/// Indexer version.
-pub const VERSION: u32 = 2;
+/// BinaryTree version.
+pub const VERSION: u32 = 1;
 
 /// Index file extension.
-pub const FILE_EXTENSION: &str = "fmindex";
+pub const FILE_EXTENSION: &str = "fmbindex";
 
-/// Default indexing batch size before updating headers.
-const DEFAULT_BATCH_SIZE: u64 = 100;
+// /// Default indexing batch size before updating headers.
+// const DEFAULT_BATCH_SIZE: u64 = 100;
 
 /// index healthcheck status.
 #[derive(Debug, PartialEq)]
@@ -31,8 +32,8 @@ pub enum Status {
     Indexed,
     Incomplete,
     Corrupted,
-    Indexing,
-    WrongInputFile
+    // Indexing,
+    // WrongInputFile
 }
 
 impl Display for Status{
@@ -42,32 +43,23 @@ impl Display for Status{
             Self::Indexed => "indexed",
             Self::Incomplete => "incomplete",
             Self::Corrupted => "corrupted",
-            Self::Indexing => "indexing",
-            Self::WrongInputFile => "wrong input file"
+            //Self::Indexing => "indexing",
+            //Self::WrongInputFile => "wrong input file"
         })
     }
 }
 
-/// Indexer engine.
+/// BinaryTree engine.
 #[derive(Debug, PartialEq, Clone)]
-pub struct Indexer {
-    /// Input file path.
-    pub input_path: PathBuf,
-
+pub struct BinaryTree {
     /// Index file path.
     pub index_path: PathBuf,
 
     /// Index header data.
-    pub header: Header,
-
-    /// Indexing batch size before updating the index header.
-    pub batch_size: u64,
-
-    /// Input field name list.
-    pub input_fields: Vec<String>,
+    pub header: Header
 }
 
-impl Indexer {
+impl BinaryTree {
     /// Generates a regex expression to validate the index file extension.
     pub fn file_extension_regex() -> Regex {
         let expression = format!(r"(?i)\.{}$", FILE_EXTENSION);
@@ -87,24 +79,14 @@ impl Indexer {
     /// 
     /// # Arguments
     /// 
-    /// * `input_path` - Source Input file path.
+    /// * `table` - Table instance.
     /// * `index_path` - Target index file path.
-    pub fn new(input_path: PathBuf, index_path: PathBuf, input_type: InputType) -> Self {
-        let mut header = Header::new();
-        header.input_type = input_type;
+    pub fn new(index_path: PathBuf, uuid: Option<Uuid>) -> Self {
+        let header = Header::new(uuid);
         Self{
-            input_path,
             index_path,
             header,
-            batch_size: DEFAULT_BATCH_SIZE,
-            input_fields: Vec::new()
         }
-    }
-
-    /// Returns an input file buffered reader.
-    pub fn new_input_reader(&self) -> Result<BufReader<File>> {
-        let file = File::open(&self.input_path)?;
-        Ok(BufReader::new(file))
     }
 
     /// Returns an index file buffered reader.
@@ -140,7 +122,7 @@ impl Indexer {
     }
 
     /// Move to index position on a reader and returns `true` if a value
-    /// exists on that index, or `false` if doesn't.
+    /// exists on that index or would be an append, or `false` if doesn't.
     /// 
     /// # Arguments
     /// 
@@ -180,7 +162,7 @@ impl Indexer {
     /// * `index` - Record index.
     pub fn value(&self, index: u64) -> Result<Option<Value>> {
         let mut reader = self.new_index_reader()?;
-        self.seek_value_from(&mut reader, index, false)
+        return self.seek_value_from(&mut reader, index, false)
     }
 
     /// Reads a batch of index values from a reader at it's current position
@@ -332,81 +314,6 @@ impl Indexer {
         Ok(())
     }
 
-    /// Parse the input record from an index value as CSV.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `value` - Index value
-    fn parse_csv_input(&self, value: &Value) -> Result<JSMap<String, JSValue>> {
-        // create CSV headers
-        let mut buf = Vec::new();
-        let limit = self.input_fields.len();
-        if limit < 1 {
-            let err: IndexError<Status> = IndexError::NoInputFields;
-            bail!(err)
-        }
-        buf.extend_from_slice(self.input_fields[0].as_bytes());
-        if limit > 1 {
-            for i in 1..limit {
-                buf.push(b',');
-                buf.extend(self.input_fields[i].as_bytes());
-            }
-        }
-        buf.push(b'\n');
-
-        // read input record
-        let mut reader = self.new_input_reader()?;
-        buf.append(&mut value.read_input_from(&mut reader)?);
-
-        // deserialize CSV string object into a JSON map
-        let mut csv_reader = csv::ReaderBuilder::new()
-            .has_headers(true)
-            .flexible(true)
-            .from_reader(buf.as_slice());
-        match csv_reader.deserialize().next() {
-            Some(result) => match result {
-                Ok(record) => Ok(record),
-                Err(e) => {
-                    eprintln!(
-                        "Couldn't parse input record at byte position {}: {}",
-                        value.input_start_pos,
-                        e
-                    );
-                    bail!(ParseError::InvalidFormat)
-                }
-            },
-            None => bail!(ParseError::InvalidValue)
-        }
-    }
-
-    /// Parse the input record from an index value as JSON.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `value` - Index value
-    fn parse_json_input(&self, value: &Value) -> Result<JSMap<String, JSValue>> {
-        let mut reader = self.new_input_reader()?;
-        let buf = value.read_input_from(&mut reader)?;
-        Ok(serde_json::from_reader(buf.as_slice())?)
-    }
-
-    /// Parse the input record from an index value.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `value` - Index value
-    pub fn parse_input(&self, value: &Value) -> Result<JSMap<String, JSValue>> {
-        if !self.header.indexed {
-            bail!("input file must be indexed before parsing and input value")
-        }
-
-        match self.header.input_type {
-            InputType::CSV => self.parse_csv_input(value),
-            InputType::JSON => self.parse_json_input(value),
-            InputType::Unknown => bail!("not supported input file type")
-        }
-    }
-
     /// Updates or append an index value into the index file.
     /// 
     /// # Arguments
@@ -437,50 +344,9 @@ impl Indexer {
         Ok(())
     }
 
-    /// Return the index of the closest non-processed value.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `from_index` - Index offset as search starting point.
-    pub fn find_pending(&self, from_index: u64) -> Result<Option<u64>> {
-        // validate indexed
-        if !self.header.indexed {
-            bail!(IndexError::Unavailable(Status::Incomplete));
-        }
-
-        // validate index size
-        if self.header.indexed_count < 1 {
-            return Ok(None);
-        }
-
-        // seek start point by using the provided offset
-        let mut reader = self.new_index_reader()?;
-        let mut index = from_index;
-        let mut pos = Self::calc_value_pos(index);
-        reader.seek(SeekFrom::Start(pos))?;
-
-        // search next unmatched record
-        let mut buf = [0u8; Value::BYTES];
-        let limit = Self::calc_value_pos(self.header.indexed_count);
-        while pos < limit {
-            reader.read_exact(&mut buf)?;
-            if buf[Value::MATCH_FLAG_BYTE_INDEX] < 1u8 {
-                return Ok(Some(index));
-            }
-            index += 1;
-            pos += Value::BYTES as u64;
-        }
-
-        Ok(None)
-    }
-
     /// Perform a healthckeck over the index file by reading
     /// the headers and checking the file size.
     pub fn healthcheck(&mut self) -> Result<Status> {
-        // calculate the input hash
-        let mut reader = self.new_input_reader()?;
-        let hash = generate_hash(&mut reader)?;
-
         // check whenever index file exists
         match self.new_index_reader() {
             // try to load the index headers
@@ -495,8 +361,7 @@ impl Indexer {
                             // if the file is empty then is new
                             let real_size = file_size(&self.index_path)?;
                             if real_size < 1 {
-                                // store hash and return as new index
-                                self.header.hash = Some(hash);
+                                // return as new index
                                 return Ok(Status::New);
                             }
 
@@ -511,8 +376,7 @@ impl Indexer {
             Err(e) => match e.downcast::<std::io::Error>() {
                 Ok(ex) => match ex.kind() {
                     std::io::ErrorKind::NotFound => {
-                        // store hash and return as new index
-                        self.header.hash = Some(hash);
+                        // return as new index
                         return Ok(Status::New)
                     },
                     _ => bail!(ex)
@@ -520,21 +384,6 @@ impl Indexer {
                 Err(ex) => bail!(ex)
             }
         };
-        
-        // validate input hash match
-        match self.header.hash {
-            Some(saved_hash) => {
-                // validate input file hash
-                if saved_hash != hash {
-                    return Ok(Status::WrongInputFile);
-                }
-            },
-            None => {
-                // not having a hash means the index is corrupted
-                return Ok(Status::Corrupted)
-            }
-        }
-        
 
         // validate corrupted index
         let real_size = file_size(&self.index_path)?;
@@ -578,190 +427,1014 @@ impl Indexer {
         self.save_header_into(&mut writer)
     }
 
-    /// Loads fields names from a CSV input file.
-    fn load_input_csv_fields(&mut self) -> Result<()> {
-        let reader = self.new_input_reader()?;
-        let mut csv_reader = csv::ReaderBuilder::new()
-            .has_headers(true)
-            .from_reader(reader);
-        let mut fields = Vec::new();
-        for field in csv_reader.headers()? {
-            fields.push(field.to_string());
-        }
-        self.input_fields = fields;
-        Ok(())
-    }
+    pub fn insertNewNode_v0 (&mut self, index_nuevo:u64) -> Result<()> {
+        let indexPadre = index_nuevo/2;
+//        println!("{} {}",indexPadre*2 , index_nuevo);
 
-    /// Loads fields names from a CSV input file.
-    fn load_input_json_fields(&mut self) -> Result<()> {
-        unimplemented!()
-    }
+            // modificar la data del indice nuevo
+            let mut value = self.value(index_nuevo).unwrap().unwrap();
+            
+            value.data.spent_time = value.data.spent_time;
+            value.data.parent = indexPadre;
+            value.data.left_node = 0;
+            value.data.right_node = 0;
+            value.data.gid = value.data.gid;
+            self.save_value(index_nuevo, &value).unwrap();
 
-    /// Loads the input fields.
-    pub fn load_input_fields(&mut self) -> Result<()> {
-        match self.header.input_type {
-            InputType::CSV => self.load_input_csv_fields(),
-            InputType::JSON => self.load_input_json_fields(),
-            InputType::Unknown => bail!("not supported input file type")
-        }
-    }
+            // modificar la data del padre del nuevo indice
+            let mut value = self.value(indexPadre).unwrap().unwrap();
 
-    /// Process a CSV item into an Value.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `iter` - CSV iterator.
-    /// * `item` - Last CSV item read from the iterator.
-    /// * `input_reader` - Input navigation reader used to adjust positions.
-    fn index_csv_record(&self, iter: &csv::StringRecordsIter<impl Read>, item: csv::StringRecord, input_reader: &mut (impl Read + Seek)) -> Result<Value> {
-        // calculate input positions
-        let mut start_pos = item.position().unwrap().byte();
-        let mut end_pos = iter.reader().position().byte() - 1;
-        let length: usize = (end_pos - start_pos + 1) as usize;
-
-        // read CSV file line and store it on the buffer
-        let mut buf: Vec<u8> = vec![0u8; length];
-        input_reader.seek(SeekFrom::Start(start_pos))?;
-        input_reader.read_exact(&mut buf)?;
-
-        // remove new line at the beginning and end of buffer
-        let mut limit = buf.len();
-        let mut start_index = 0;
-        for _ in 0..2 {
-            if limit - start_index + 1 < 1 {
-                break;
+            
+            value.data.spent_time = value.data.spent_time;
+            value.data.parent = value.data.parent;
+            if indexPadre*2 == index_nuevo{
+                value.data.left_node = index_nuevo;
+                value.data.right_node = value.data.right_node;
+            } else {
+                value.data.left_node = value.data.left_node;
+                value.data.right_node = index_nuevo;
             }
-            if buf[limit-1] == b'\n' || buf[limit-1] == b'\r' {
-                end_pos -= 1;
-                limit -= 1;
-            }
-            if limit - start_index + 1 < 1 {
-                break;
-            }
-            if buf[start_index] == b'\n' || buf[start_index] == b'\r' {
-                start_pos += 1;
-                start_index += 1;
-            }
-        }
-
-        // create index value
-        Ok(Value{
-            input_start_pos: start_pos,
-            input_end_pos: end_pos,
-            data: Data{
-                spent_time: 0,
-                match_flag: MatchFlag::None
-            }
-        })
-    }
-
-    /// Index a new or incomplete index by tracking each item position
-    /// from a CSV input file.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `input_rdr` - Input byte reader.
-    /// * `index_wrt` - Index byte writer.
-    /// * `is_first` - `true` when the input reader is set at position 0.
-    fn index_csv(&mut self, input_rdr: impl Read, index_wrt: &mut (impl Seek + Write), is_first: bool) -> Result<()> {
-        // index records
-        let mut is_first = is_first;
-        let mut input_rdr_nav = self.new_input_reader()?;
-        let mut input_csv = csv::ReaderBuilder::new()
-            .has_headers(false)
-            .flexible(true)
-            .from_reader(input_rdr);
-        let mut iter = input_csv.records();
-        'records: loop {
-            match iter.next() {
-                None => break 'records,
-                Some(item) => {
-                    // skip CSV headers
-                    if is_first {
-                        is_first = false;
-                        continue 'records;
-                    }
-
-                    // create index value
-                    let value = match item {
-                        Ok(v) => self.index_csv_record(&iter, v, &mut input_rdr_nav)?,
-                        Err(e) => bail!(e)
-                    };
-
-                    // write index value for this record
-                    value.write_to(index_wrt)?;
-                    self.header.indexed_count += 1;
-
-                    // save headers every batch
-                    if self.header.indexed_count % self.batch_size < 1 {
-                        self.save_header_into(index_wrt)?;
-                    }
-                }
-            }
-        }
-
-        // write headers
-        self.header.indexed = true;
-        self.save_header_into(index_wrt)?;
+            value.data.gid = value.data.gid;
+            self.save_value(indexPadre, &value).unwrap();
 
         Ok(())
     }
 
-    /// Index a new or incomplete index by tracking each item position
-    /// from the input file.
-    pub fn index(&mut self) -> Result<()> {
-        // create reader and writer buffers
-        let mut input_rdr = self.new_input_reader()?;
-        let mut index_wrt = self.new_index_writer(true)?;
-        let mut is_first = true;
+    pub fn printIndex(&mut self){
+        let mut counter = 0;
+    println!("--- {}",self.header.indexed_count);
+        for i in 0..self.header.indexed_count {
+            counter = i;
+            let value = self.value(i).unwrap();
+            println!("{0} - {1} - {2} - {3} - {4} - {5} - {6} - {7}",i,self.value(i).unwrap().unwrap().data.height,self.value(i).unwrap().unwrap().data.spent_time,self.value(i).unwrap().unwrap().data.status_flag,self.value(i).unwrap().unwrap().data.parent,self.value(i).unwrap().unwrap().data.left_node,self.value(i).unwrap().unwrap().data.right_node,self.value(i).unwrap().unwrap().data.gid);
+        }
+    }
 
-        // perform index healthcheck
-        match self.healthcheck() {
-            Ok(v) => match v {
-                Status::Indexed => {
-                    self.load_input_fields()?;
-                    return Ok(())
-                },
-                Status::Incomplete => {
-                    // read last indexed record or create the index file
-                    let mut reader = self.new_index_reader()?;
-                    match self.seek_value_from(&mut reader, self.header.indexed_count, true)? {
-                        Some(value) => {
-                            // load last known indexed value position
-                            is_first = false;
-                            input_rdr.seek(SeekFrom::Start(value.input_end_pos + 1))?;
-                            let next_pos = Self::calc_value_pos(self.header.indexed_count);
-                            index_wrt.seek(SeekFrom::Start(next_pos))?;
-                        },
-                        None => {}
-                    }
-                },
-                Status::New => {
-                    // create index headers
-                    self.header.write_to(&mut index_wrt)?;
-                    index_wrt.flush()?;
+    pub fn sortingIndex_v0(&mut self, index_nuevo:u64) -> Result<()> {      
+        
+        let mut value = self.value(index_nuevo).unwrap().unwrap();
+        let nuevospendTime = value.data.spent_time;
+        let nuevoStatus = value.data.status_flag;
+        let nuevoparent = value.data.parent;
+        let nuevoIzquierda = value.data.left_node;
+        let nuevoDerecha = value.data.right_node;
+        let nuevoGid = value.data.gid;
+        
+        
+        let padre = value.data.parent;
+        
+        let mut valuePadre = self.value(padre).unwrap().unwrap();
+        let padrespendTime = valuePadre.data.spent_time;
+        let padreStatus = valuePadre.data.status_flag;
+        let padreparent = valuePadre.data.parent;
+        let padreIzquierda = valuePadre.data.left_node;
+        let padreDerecha = valuePadre.data.right_node;
+        let padreGid = valuePadre.data.gid;
+        
+        
+        if nuevoGid.get().lt(padreGid.get()) { //} < padreGid {
+
+            // NuevoHijo
+            value.data.status_flag = padreStatus;
+            value.data.spent_time = padrespendTime;
+            value.data.parent = padre;
+            value.data.left_node = nuevoIzquierda;
+            value.data.right_node = nuevoDerecha;  
+            value.data.gid = padreGid;
+            self.save_value(index_nuevo, &value).unwrap();
+            
+            
+            let indexPadre = index_nuevo/2;
+                    
+            // NuevoPadre
+            value.data.status_flag = nuevoStatus;
+            value.data.spent_time = nuevospendTime;
+            value.data.parent = padreparent;
+            if indexPadre*2 == index_nuevo{
+                value.data.left_node = index_nuevo;
+                value.data.right_node = padreDerecha;
+            } else {
+                value.data.left_node = padreIzquierda;
+                value.data.right_node = index_nuevo;
+            }
+            value.data.gid = nuevoGid.clone();
+            self.save_value(padre, &value).unwrap();
+
+        }
+
+        let mut valueGrandpa = self.value(padreparent).unwrap().unwrap();
+        let mut grandpaGid = valueGrandpa.data.gid;
+
+        if nuevoGid.get().lt(grandpaGid.get()) {
+            self.sortingIndex_v0(padre);
+ 
+    }
+
+        
+
+
+        Ok(())
+    }
+
+
+    pub fn insertIndex (&mut self, data: Gid) -> Result<()> {
+        
+
+println!("Insert {}",self.header.indexed_count);
+
+        let last_index = self.header.indexed_count;
+        let newNodeWasInserted = self.insertNewIndex(1, data, 0, last_index)?;
+        Ok(())
+    }
+
+    pub fn insertNewIndex (&mut self, i: u64, data: Gid, prev_node: u64, last_index: u64) -> Result<()> {
+        println!("insertando");
+        let newNodeWasInserted = self.insertNewAVLNode(i, data, prev_node, last_index);
+println!("debe rebalancear {}",newNodeWasInserted);
+        if newNodeWasInserted{
+//self.header.indexed_count += 1;
+            let (desbalanceado, height_diff) = self.rebalance(last_index);
+
+            let height = match self.value(last_index)? {               
+                Some(v) => v.data.height,
+                None => bail!(DbIndexError::NoLeftNode),
+            }; //self.value(last_index).unwrap().unwrap().data.height;
+            
+
+            let desbalanceado_values =  match self.value(desbalanceado)? {
+                    Some(v) => v,
+                    None => panic!(" no hay valor")
+                }; //i  - 2 -- A
+
+
+
+            let mut L = desbalanceado_values.data.left_node;  // B
+            let mut R = desbalanceado_values.data.right_node;  // D
+
+            let mut L_H : i64 = -1;
+            let mut R_H : i64 = -1;
+            let mut LL:u64;
+            let mut LL_v :Value;
+            let mut LL_H : i64 = -1;
+            let mut LR:u64;
+            let mut LR_v :Value;
+            let mut LR_H : i64 = -1;
+
+            let RR:u64;
+            let mut RR_v :Value;
+            let mut RR_H : i64 = -1;
+            let mut RL:u64;
+            let mut RL_v :Value;
+            let mut RL_H : i64 = -1;
+            
+            if L != 0{ // B
+                let L_v = match self.value(L)? {
+                    Some(v) => v,
+                    None => panic!(" no hay valor")
+                };  // B
+                L_H = L_v.data.height;       
+
+                LL = L_v.data.left_node;  //C
+                if LL !=0{
+                    LL_v = match self.value(LL)? {
+                        Some(v) => v,
+                        None => panic!(" no hay valor")
+                    };  // C
+                    LL_H = LL_v.data.height;   
+                } else {
+                    LL_H = -1;    
                 }
-                vu => bail!(IndexError::Unavailable(vu))
+
+                LR = L_v.data.right_node;  //E
+                if LR !=0{
+                    LR_v = match self.value(LR)? {
+                        Some(v) => v,
+                        None => panic!(" no hay valor")
+                    };  // E
+                    LR_H = LR_v.data.height;   
+                } else {
+                    LR_H = -1;            
+                }
+            }
+
+            if R != 0{ // exists  D
+                let R_v =  match self.value(R)? {
+                    Some(v) => v,
+                    None => panic!(" no hay valor")
+                };  // D
+                R_H = R_v.data.height;       
+
+                RR = R_v.data.right_node;  //G
+                if RR !=0{
+                    RR_v = match self.value(RR)? {
+                        Some(v) => v,
+                        None => panic!(" no hay valor")
+                    };  // G
+                    RR_H = RR_v.data.height;
+                } else {
+                    RR_H = -1;
+                }
+
+                RL = R_v.data.left_node;  //F
+                if RL !=0{
+                    RL_v = match self.value(RL)? {
+                        Some(v) => v,
+                        None => panic!(" no hay valor")
+                    };  // F
+                    RL_H = RL_v.data.height;
+                } else {
+                    RL_H = -1;
+                } 
+            }
+
+            //println!("L_H {} R_H {} LL_H {} LR_H {} RR_H {} RL_H {}", L_H , R_H, LL_H , LR_H,RR_H, RL_H);
+
+            if height_diff > 1 { // left is bigger
+                if L_H > R_H {
+                    if LL_H > LR_H {
+                        //LL
+                        self.ll_rotation(desbalanceado);
+                    }
+                    if LL_H < LR_H{
+                        //LR
+                        self.lr_rotation(desbalanceado);
+                    }
+                }
+            }
+
+            if height_diff < -1 { // right is bigger
+                if L_H < R_H {
+                    if RR_H > RL_H{
+                        //RR
+                        self.rr_rotation(desbalanceado);
+                    }
+                    if RR_H < RL_H{
+                        //RL
+                        self.rl_rotation(desbalanceado);
+                    }
+                }
+            }
+ //           self.header.indexed_count -= 1;
+            //self.printIndex();
+        }
+        Ok(())
+    }
+
+    pub fn insertNewAVLNode (&mut self, i: u64, data: Gid, prev_node: u64, last_index: u64) -> bool{//-> Result<()> {
+        //let value = self.value(i).unwrap(); // lo quite al final
+println!("data a insertar {}, del nodo {}", data.get(),last_index);
+        //let mut index_nuevo=0;
+        let mut newNodeWasInserted = false;
+        let mut next_node =0;
+        let mut parentToStartBalance=0;
+
+        let actual_node = match self.value(i) {
+            Ok(opt) => match opt {
+                Some(existing_node) => existing_node,
+                None => panic!(" no hay valor -"),
             },
-            Err(e) => return Err(e)
-        }
+            Err(err) => panic!(" no hay valor --{}",err)
+        };
+        let gid = &actual_node.data.gid;
 
-        // index input file
-        self.load_input_fields()?;
-        match self.header.input_type {
-            InputType::CSV => self.index_csv(&mut input_rdr, &mut index_wrt, is_first),
-            InputType::JSON => unimplemented!(),
-            InputType::Unknown => bail!("not supported input file type")
+        let mut should_be_left: bool = false;
+        let mut should_be_right: bool = false;
+        let mut should_create_node = true;
+
+        if data.get().lt(gid.get()){ //data < gid{
+            
+            next_node = actual_node.data.left_node;
+            //index_nuevo = existing_node.data.left_node;
+            should_be_left = true;
+        
+        } 
+        if data.get().gt(gid.get()){ //data > gid{
+            next_node = actual_node.data.right_node;
+            //index_nuevo = existing_node.data.right_node;
+            should_be_right = true;
+        } 
+        if data.get().eq(gid.get()){
+            should_create_node = false;
+        } 
+
+        if next_node == 0 { // Is Empty
+            if should_be_left || should_be_right{    
+println!("Encontro el nodo a actualizar");
+                /* If we already have de Index records and we are reindexing
+                // New node
+                let mut value = self.value(last_index).unwrap().unwrap();
+                value.data.status_flag = value.data.status_flag;
+                value.data.spent_time = value.data.spent_time;
+                value.data.parent = i;
+                value.data.left_node = value.data.left_node;
+                value.data.right_node = value.data.right_node;
+                value.data.height = value.data.height;
+                value.data.gid = value.data.gid;
+                self.save_value(last_index, &value).unwrap();
+                */
+
+                // New node
+                let mut value = Value::new();
+                value.data.status_flag = StatusFlag::Yes;
+                value.data.spent_time = 0;
+                value.data.parent = i;
+                value.data.left_node = 0;
+                value.data.right_node = 0;
+                value.data.height = 1;
+                value.data.gid = data;
+                self.save_value(last_index, &value).unwrap();
+
+                // Actual node
+                let mut value = actual_node.clone();
+
+                if should_be_left{
+                    value.data.left_node = last_index;
+                    value.data.right_node = value.data.right_node;
+                    value.data.height = value.data.height;
+                    //println!("Inserted left");
+                } else {
+                    value.data.left_node = value.data.left_node;
+                    value.data.right_node = last_index;
+                    value.data.height = value.data.height;
+                    //println!("Inserted right");
+                }
+                self.save_value(i, &value).unwrap();
+
+                newNodeWasInserted = true;
+                parentToStartBalance = value.data.parent;
+                //self.printIndex();                
+            }
+        } else {
+            if should_create_node{
+                println!("New iteration id:{} data:{} last id:{} newNodeWasInserted {}",prev_node, data, i,newNodeWasInserted);
+                newNodeWasInserted = self.insertNewAVLNode(next_node, data, i,last_index);
+            }
         }
+println!("{}",newNodeWasInserted);
+        return newNodeWasInserted;
+        //Ok(())
     }
+
+    pub fn searchKey (&mut self, i: u64, data: Gid) -> Option<u64>{
+       
+        let mut index_id = 0;
+        let mut next_node =0;
+
+        let existing_node = match self.value(i) {
+            Ok(opt) => match opt {
+                Some(v) => v,
+                None => panic!(" no hay valor"),
+            },
+            Err(err) => panic!(" no hay valor {}",err)
+        };
+
+        let gid = existing_node.data.gid;
+
+        let mut keep_searching = true;
+println!("data{} git{}",data.get(),gid.get());
+        if data.get().lt(gid.get()){//data < gid{
+            next_node = existing_node.data.left_node;
+          
+        } 
+        if data.get().gt(gid.get()){//data > gid{
+            if i !=0 {
+                next_node = existing_node.data.right_node;
+            } else {
+                next_node = existing_node.data.left_node;
+            }
+        } 
+    println!("3333333");
+        if data.get().eq(gid.get()){
+            println!("44444-1");
+            keep_searching = false;
+            index_id = i;
+            println!("444444");
+        } else {     
+            if keep_searching && next_node != 0 {
+                println!("5555555");
+                println!("{} - {}",keep_searching, next_node);
+                index_id = self.searchKey(next_node, data)?;
+                println!("6666666666 - {}",index_id);
+            } else {
+                print!("sssssssssss");
+                index_id =0; //return None;
+            }
+        }
+println!("salioooo");
+
+        return Some(index_id);
+        //Ok(())
+    }
+
+fn rebalance(&self,i:u64) -> (u64, i64){
+println!("rebalanceo");
+    let mut counter = i;
+    let mut last_counter = i;
+    let mut height = 0;
+    let mut calculated;
+    let mut dif=0;
+
+    while (counter != 0) && (dif > -2) && (dif < 2) {
+        calculated= self.calc_height(counter);
+
+        height= calculated.0;
+        dif =calculated.1;
+        
+        let mut value = match self.value(counter) {
+            Ok(opt) => match opt {
+                Some(v) => v,
+                None => panic!(" no hay valor"),
+            },
+            Err(err) => panic!(" no hay valor {}",err)
+        };
+        value.data.height = height;
+        self.save_value(counter, &value).unwrap();
+
+        last_counter = counter;
+        //println!("      rebalanced {} parent: {} height: {} dif: {}",counter,value.data.parent,height,dif);
+        counter = value.data.parent;
+
+        if (dif < -1) || (dif > 1) || (counter== last_counter) {
+            //println!("      Last reviewed: {} D: {} H: {}", last_counter, dif, height);
+            counter = 0;
+        } 
+    }
+    return (last_counter,dif);
+
+}
+
+fn calc_height (&self,i:u64) -> (i64, i64){
+println!("recalculando height");
+    let mut existing_node = match self.value(i) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+    let left_node_id = existing_node.data.left_node;
+    let right_node_id = existing_node.data.right_node;
+
+    let mut last_left_height = match self.value(left_node_id) {
+        Ok(opt) => match opt {
+            Some(v) => v.data.height,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+    let mut last_right_height = match self.value(right_node_id) {
+        Ok(opt) => match opt {
+            Some(v) => v.data.height,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+
+    let last_left_height= if left_node_id != 0 {last_left_height+1} else{0};
+    let last_right_height= if right_node_id != 0 {last_right_height+1} else{0};
+
+    let recalculated_height = i64::max(last_left_height, last_right_height);
+    let height_dif = last_left_height- last_right_height;
+
+    return (recalculated_height,height_dif);
+}
+
+fn ll_rotation(&self, index_id: u64){
+println!("ll");
+    let oldparent = index_id;
+    let newright = oldparent;
+    let oldparent_values = match self.value(oldparent) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+    let newparent = oldparent_values.data.left_node;
+    let newparent_right = 0;
+    // New parent
+    let valuenewparent = match self.value(newparent) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+    let newright_left = valuenewparent.data.right_node;
+    let newparent_parent = oldparent_values.data.parent;
+    let oldparent_parent = oldparent_values.data.parent;
+
+    
+    // Old parent of parent
+    let valueoldparent_parent = match self.value(oldparent_parent) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+    // New right
+    let valuenewright = match self.value(newright) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+    // New left for right
+    let valuenewright_left = match self.value(newright_left) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+
+    //println!("      LL id: {}",index_id);
+
+    // New parent
+    let mut value = valuenewparent.clone();
+    value.data.parent = newparent_parent;
+    value.data.right_node = oldparent;
+    self.save_value(newparent, &value).unwrap();
+
+    // Old parent of parent
+    let mut value = valueoldparent_parent.clone();
+    if value.data.left_node == oldparent {
+        value.data.left_node = newparent;
+        value.data.right_node = valueoldparent_parent.data.right_node;
+    } else {
+        value.data.left_node = valueoldparent_parent.data.left_node;
+        value.data.right_node = newparent;
+    }
+    self.save_value(oldparent_parent, &value).unwrap();
+
+
+    // New right
+    let mut value = valuenewright.clone();
+    value.data.parent = newparent;
+    value.data.left_node = newright_left;
+    value.data.height = valuenewright.data.height - valuenewparent.data.height;
+
+    self.save_value(newright, &value).unwrap();
+
+    // New left for right
+    if newright_left !=0 {
+        let mut value = valuenewright_left.clone();
+        value.data.parent = newright;
+        self.save_value(newright_left, &value).unwrap();
+    }
+
+    self.rebalance(index_id);
+
+}
+
+fn lr_rotation(&self, index_id: u64){
+    let oldparent = index_id;  // A
+    let newright = oldparent;  // A
+    let valueoldparent= match self.value(oldparent) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+    let oldparent_left = valueoldparent.data.left_node;   // B
+    let newparent= match self.value(oldparent_left) {
+        Ok(opt) => match opt {
+            Some(v) => v.data.right_node,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };  // C
+
+    let newparent_right = oldparent;
+    let oldparent_parent = valueoldparent.data.parent;
+    let newparent_parent = valueoldparent.data.parent;
+
+
+    let valuenewparent = match self.value(newparent) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+    let newright_left = valuenewparent.data.right_node; // CR
+    let oldleft_right_left = valuenewparent.data.left_node; //CL
+    
+    // Old parent of parent
+    let valueoldparent_parent = match self.value(oldparent_parent) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+    // New right
+    let valuenewright = match self.value(newright) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+    // New left for right
+    let valuenewright_left = match self.value(newright_left) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+    // New right for Old left
+    let valueoldleft_right = match self.value(oldleft_right_left) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+    // Old left
+    let valueoldparent_left = match self.value(oldparent_left) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+
+    //println!("      LR id: {}",index_id);
+
+    // New parent
+    let mut value = valuenewparent.clone();
+    value.data.parent = newparent_parent;
+    value.data.left_node = oldparent_left;  // B
+    value.data.right_node = newright; // A
+    self.save_value(newparent, &value).unwrap();
+
+
+    // Old parent of parent
+    let mut value = valueoldparent_parent.clone();
+    if value.data.left_node == oldparent {
+        value.data.left_node = newparent;
+        value.data.right_node = valueoldparent_parent.data.right_node;
+    } else {
+        value.data.left_node = valueoldparent_parent.data.left_node;
+        value.data.right_node = newparent;
+    }
+    self.save_value(oldparent_parent, &value).unwrap();
+
+
+    // New right
+    let mut value = valuenewright.clone();
+    value.data.parent = newparent;
+    value.data.left_node = newright_left;
+    self.save_value(newright, &value).unwrap();
+
+
+    // New left for right
+    if newright_left !=0 {        
+        let mut value = valuenewright_left.clone() ;
+        value.data.parent = newright;
+        self.save_value(newright_left, &value).unwrap();
+    }
+
+
+    // New right for old left
+    if oldleft_right_left !=0 {        
+        let mut value = match self.value(oldleft_right_left) {
+            Ok(opt) => match opt {
+                Some(v) => v,
+                None => panic!(" no hay valor"),
+            },
+            Err(err) => panic!(" no hay valor {}",err)
+        };
+        value.data.status_flag = valueoldleft_right.data.status_flag;
+        value.data.spent_time = valueoldleft_right.data.spent_time;
+        value.data.parent = oldparent_left;
+        value.data.left_node = valueoldleft_right.data.left_node;
+        value.data.right_node = valueoldleft_right.data.right_node;
+        value.data.height = valueoldleft_right.data.height;
+        value.data.gid = valueoldleft_right.data.gid;
+        self.save_value(oldleft_right_left, &value).unwrap();
+    }
+
+    // old parent left  // B
+    let mut value = valueoldparent_left.clone();
+    value.data.parent = newparent;
+    value.data.right_node = oldleft_right_left;
+
+    self.save_value(oldparent_left, &value).unwrap();
+
+    let height= self.calc_height(oldparent_left).0;
+    
+    let mut value = valueoldparent_left;
+    value.data.height = height;
+    self.save_value(oldparent_left, &value).unwrap();
+
+    self.rebalance(index_id);
+
+}
+
+fn rr_rotation(&self, index_id: u64){
+    let oldparent = index_id; // A
+    let newleft = oldparent; // A
+    let valueoldparent = match self.value(oldparent) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+    let newparent = valueoldparent.data.right_node; // B
+    let newparent_left = oldparent; // A
+    // New parent
+    let valuenewparent = match self.value(newparent) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+    let newleft_right = valuenewparent.data.left_node; // BL
+    let newparent_parent = valueoldparent.data.parent; // 0
+    let oldparent_parent = valueoldparent.data.parent; // 0 -- 3
+
+    // Old parent of parent
+    let valueoldparent_parent = match self.value(oldparent_parent) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+    // New left
+    let valuenewleft = match self.value(newleft) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+    // New right for left
+    let valuenewleft_right = match self.value(newleft_right) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+
+    //println!("      RR id: {}",index_id);
+
+    // New parent
+    let mut value = valuenewparent.clone();
+    value.data.status_flag = valuenewparent.data.status_flag;
+    value.data.spent_time = valuenewparent.data.spent_time;
+    value.data.parent = newparent_parent;
+    value.data.right_node = valuenewparent.data.right_node;
+    value.data.left_node = oldparent;
+    value.data.gid = valuenewparent.data.gid;
+    self.save_value(newparent, &value).unwrap();
+
+
+    // Old parent of parent
+    let mut value = valueoldparent_parent.clone();
+    value.data.status_flag = valueoldparent_parent.data.status_flag;
+    value.data.spent_time = valueoldparent_parent.data.spent_time;
+    value.data.parent = valueoldparent_parent.data.parent;
+    if value.data.right_node == oldparent {
+        value.data.right_node = newparent;
+        value.data.left_node = valueoldparent_parent.data.left_node;
+    } else {
+        value.data.right_node = valueoldparent_parent.data.right_node;
+        value.data.left_node = newparent;
+    }
+    value.data.height = valueoldparent_parent.data.height;
+    value.data.gid = valueoldparent_parent.data.gid;
+    self.save_value(oldparent_parent, &value).unwrap();
+
+
+    // New left
+    let mut value = valuenewleft.clone();
+    value.data.status_flag = valuenewleft.data.status_flag;
+    value.data.spent_time = valuenewleft.data.spent_time;
+    value.data.parent = newparent;
+    value.data.right_node = newleft_right;
+    value.data.left_node = valuenewleft.data.left_node;
+    value.data.height = valuenewleft.data.height - valuenewparent.data.height;
+    value.data.gid = valuenewleft.data.gid;
+    self.save_value(newleft, &value).unwrap();
+
+
+    // New right for left
+    if newleft_right !=0 {
+        let mut value = valuenewleft_right.clone();
+        value.data.status_flag = valuenewleft_right.data.status_flag;
+        value.data.spent_time = valuenewleft_right.data.spent_time;
+        value.data.parent = newleft;
+        value.data.right_node = valuenewleft_right.data.right_node;
+        value.data.left_node = valuenewleft_right.data.left_node;
+        value.data.height = valuenewleft_right.data.height;
+        value.data.gid = valuenewleft_right.data.gid;
+        self.save_value(newleft_right, &value).unwrap();
+    }
+
+    self.rebalance(index_id);
+
+}
+
+fn rl_rotation(&self, index_id: u64){
+    let oldparent = index_id;  // A
+    let newleft = oldparent;
+
+    let valueoldparent =match self.value(oldparent) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+
+    let oldparent_right = valueoldparent.data.right_node;
+    let newparent= match self.value(oldparent_right) {
+        Ok(opt) => match opt {
+            Some(v) => v.data.left_node,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+
+    let newparent_left = oldparent;
+    let oldparent_parent = valueoldparent.data.parent;
+    let newparent_parent = valueoldparent.data.parent;
+
+     
+    let valuenewparent = match self.value(newparent) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+    let newleft_right = valuenewparent.data.left_node;
+    let oldright_left_right = valuenewparent.data.right_node;
+   
+    // Old parent of parent
+    let valueoldparent_parent = match self.value(oldparent_parent) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+    // New left
+    let valuenewleft = match self.value(newleft) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+    // New right for left
+    let valuenewleft_right = match self.value(newleft) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+    // New left for Old right
+    let valueoldright_left = match self.value(oldright_left_right) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+    // Old right
+    let valueoldparent_right = match self.value(oldparent_right) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+
+    //println!("      RL id: {}",index_id);
+
+    // New parent
+    let mut value = valuenewparent.clone();
+    value.data.status_flag = valuenewparent.data.status_flag;
+    value.data.spent_time = valuenewparent.data.spent_time;
+    value.data.parent = newparent_parent;
+    value.data.right_node = oldparent_right;
+    value.data.left_node = newleft;
+    value.data.gid = valuenewparent.data.gid;
+    value.data.height = valuenewparent.data.height;
+    self.save_value(newparent, &value).unwrap();
+
+
+    // Old parent of parent
+    let mut value = valueoldparent_parent.clone();
+    value.data.status_flag = valueoldparent_parent.data.status_flag;
+    value.data.spent_time = valueoldparent_parent.data.spent_time;
+    value.data.parent = valueoldparent_parent.data.parent;
+    if value.data.right_node == oldparent {
+        value.data.right_node = newparent;
+        value.data.left_node = valueoldparent_parent.data.left_node;
+    } else {
+        value.data.right_node = valueoldparent_parent.data.right_node;
+        value.data.left_node = newparent;
+    }
+    value.data.height = valueoldparent_parent.data.height;
+    value.data.gid = valueoldparent_parent.data.gid;
+    self.save_value(oldparent_parent, &value).unwrap();
+
+
+    // New left
+    let mut value = valuenewleft.clone();
+    value.data.status_flag = valuenewleft.data.status_flag;
+    value.data.spent_time = valuenewleft.data.spent_time;
+    value.data.parent = newparent;
+    value.data.right_node = newleft_right;
+    value.data.left_node = valuenewleft.data.left_node;
+    value.data.height = valuenewleft.data.height;
+    value.data.gid = valuenewleft.data.gid;
+    self.save_value(newleft, &value).unwrap();
+
+
+    // New right for left
+    if newleft_right !=0 {
+        let mut value = valuenewleft_right.clone();
+        value.data.status_flag = valuenewleft_right.data.status_flag;
+        value.data.spent_time = valuenewleft_right.data.spent_time;
+        value.data.parent = newleft;
+        value.data.right_node = valuenewleft_right.data.right_node;
+        value.data.left_node = valuenewleft_right.data.left_node;
+        value.data.height = valuenewleft_right.data.height;
+        value.data.gid = valuenewleft_right.data.gid;
+        self.save_value(newleft_right, &value).unwrap();
+    }
+
+
+    // New left for old right
+    if oldright_left_right !=0 {
+        let mut value = match self.value(oldright_left_right) {
+            Ok(opt) => match opt {
+                Some(v) => v,
+                None => panic!(" no hay valor"),
+            },
+            Err(err) => panic!(" no hay valor {}",err)
+        };
+        value.data.status_flag = valueoldright_left.data.status_flag;
+        value.data.spent_time = valueoldright_left.data.spent_time;
+        value.data.parent = oldparent_right;
+        value.data.right_node = valueoldright_left.data.right_node;
+        value.data.left_node = valueoldright_left.data.left_node;
+        value.data.height = valueoldright_left.data.height;
+        value.data.gid = valueoldright_left.data.gid;
+        self.save_value(oldright_left_right, &value).unwrap();
+    }
+
+
+    // old parent left  // B
+    let mut value = valueoldparent_right.clone();
+    value.data.status_flag = valueoldparent_right.data.status_flag;
+    value.data.spent_time = valueoldparent_right.data.spent_time;
+    value.data.parent = newparent;
+    value.data.left_node = oldright_left_right;
+    value.data.right_node = valueoldparent_right.data.right_node;
+    value.data.height = valueoldparent_right.data.height;
+    value.data.gid = valueoldparent_right.data.gid;
+    self.save_value(oldparent_right, &value).unwrap();
+
+    let height= self.calc_height(oldparent_right).0;
+    
+    let mut value = match self.value(oldparent_right) {
+        Ok(opt) => match opt {
+            Some(v) => v,
+            None => panic!(" no hay valor"),
+        },
+        Err(err) => panic!(" no hay valor {}",err)
+    };
+    value.data.height = height;
+    self.save_value(oldparent_right, &value).unwrap();
+
+    self.rebalance(index_id);
+
+}
+
+
 }
 
 #[cfg(test)]
 pub mod test_helper {
     use super::*;
     use crate::test_helper::*;
-    use crate::db::indexer::header::{HASH_SIZE};
-    use crate::db::indexer::header::test_helper::{random_hash, build_header_bytes};
+    use crate::db::dbindex::header::{HASH_SIZE};
+    use crate::db::dbindex::header::test_helper::{random_hash, build_header_bytes};
     use tempfile::TempDir;
 
     /// Fake records without fields bytes.
@@ -777,30 +1450,75 @@ pub mod test_helper {
         0, 0, 0, 0, 0, 0, 0, 50u8,
         // end_pos
         0, 0, 0, 0, 0, 0, 0, 100u8,
+        // status flag
+        b'Y',
         // spent_time
         0, 0, 0, 0, 0, 0, 0, 150u8,
-        // match flag
-        b'Y',
+        // parent  // --> Ale
+        0, 0, 0, 0, 0, 0, 0, 150u8,   // --> Ale
+        // left_node  // --> Ale
+        0, 0, 0, 0, 0, 0, 0, 150u8,   // --> Ale
+        // right_node  // --> Ale
+        0, 0, 0, 0, 0, 0, 0, 150u8,   // --> Ale
+        // height
+        0, 0, 0, 0, 0, 0, 0,0,   // --> Ale
+        // gid  // --> Ale
+        0, 0, 0, 0, 0, 0, 0,0
+        ,0, 0, 0, 0, 0, 0, 0,0,
+        0, 0, 0, 0, 0, 0, 0,0
+        ,0, 0, 0, 0, 0, 0, 0,0,
+        0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 130u8,   // --> Ale
 
         // second record
         // start_pos
         0, 0, 0, 0, 0, 0, 0, 200u8,
         // end_pos
         0, 0, 0, 0, 0, 0, 0, 250u8,
+        // status flag
+        0,
         // spent_time
         0, 0, 0, 0, 0, 0, 1u8, 44u8,
-        // match flag
-        0,
+        // parent  // --> Ale
+        0, 0, 0, 0, 0, 0, 0, 170u8,   // --> Ale
+        // left_node  // --> Ale
+        0, 0, 0, 0, 0, 0, 0, 170u8,   // --> Ale
+        // right_node  // --> Ale
+        0, 0, 0, 0, 0, 0, 0, 170u8,   // --> Ale
+        // height
+        0, 0, 0, 0, 0, 0, 0,0,   // --> Ale
+        // gid  // --> Ale
+        0, 0, 0, 0, 0, 0, 0,0
+                ,0, 0, 0, 0, 0, 0, 0,0,
+                0, 0, 0, 0, 0, 0, 0,0,
+                0, 0, 0, 0, 0, 0, 0,0
+                ,0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 133u8,   // --> Ale
 
         // third record
         // start_pos
         0, 0, 0, 0, 0, 0, 1u8, 94u8,
         // end_pos
         0, 0, 0, 0, 0, 0, 1u8, 144u8,
+        // status flag
+        b'S',
         // spent_time
-        0, 0, 0, 0, 0, 0, 1u8, 194u8,
-        // match flag
-        b'S'
+        0, 0, 0, 0, 0, 0, 1u8, 194u8
+        // parent  // --> Ale
+        ,0, 0, 0, 0, 0, 0, 0, 180u8   // --> Ale
+        // left_node  // --> Ale
+        ,0, 0, 0, 0, 0, 0, 0, 180u8   // --> Ale
+        // right_node  // --> Ale
+        ,0, 0, 0, 0, 0, 0, 0, 180u8   // --> Ale
+        // height
+        ,0, 0, 0, 0, 0, 0, 0,0   // --> Ale
+        // gid  // --> Ale
+        ,0, 0, 0, 0, 0, 0, 0,0
+        ,0, 0, 0, 0, 0, 0, 0,0
+        ,0, 0, 0, 0, 0, 0, 0,0
+                ,0, 0, 0, 0, 0, 0, 0,0
+                ,0, 0, 0, 0, 0, 0
+        ,0, 0, 0, 0, 0, 0, 0, 180u8   // --> Ale
     ];
 
     /// Create fake records without fields.
@@ -816,8 +1534,13 @@ pub mod test_helper {
             input_start_pos: 50,
             input_end_pos: 100,
             data: Data{
-                match_flag: MatchFlag::Yes,
+                status_flag: StatusFlag::Yes,
                 spent_time: 150
+                ,parent: 150 // --> Ale
+                ,left_node: 150 // --> Ale
+                ,right_node: 150 // --> Ale
+                ,gid:Gid::new("130") // --> Ale
+                ,height:0 // --> Ale
             }
         });
 
@@ -826,8 +1549,13 @@ pub mod test_helper {
             input_start_pos: 200,
             input_end_pos: 250,
             data: Data{
-                match_flag: MatchFlag::None,
+                status_flag: StatusFlag::None,
                 spent_time: 300
+                ,parent: 170 // --> Ale
+                ,left_node: 170 // --> Ale
+                ,right_node: 170 // --> Ale
+                ,gid:Gid::new("133") // --> Ale
+                ,height:0 // --> Ale
             }
         });
 
@@ -836,8 +1564,13 @@ pub mod test_helper {
             input_start_pos: 350,
             input_end_pos: 400,
             data: Data{
-                match_flag: MatchFlag::Skip,
+                status_flag: StatusFlag::Skip,
                 spent_time: 450
+                ,parent: 180 // --> Ale
+                ,left_node: 180 // --> Ale
+                ,right_node: 180 // --> Ale
+                ,gid:Gid::new("180") // --> Ale
+                ,height:0 // --> Ale
             }
         });
 
@@ -896,7 +1629,7 @@ pub mod test_helper {
     /// # Arguments
     /// 
     /// * `writer` - Byte writer.
-    /// * `unprocessed` - If `true` then build all values with MatchFlag::None.
+    /// * `unprocessed` - If `true` then build all values with StatusFlag::None.
     pub fn write_fake_index(writer: &mut (impl Seek + Write), unprocessed: bool) -> Result<Vec<Value>> {
         let mut values = Vec::new();
 
@@ -913,8 +1646,13 @@ pub mod test_helper {
         value.input_start_pos = 22;
         value.input_end_pos = 44;
         if !unprocessed {
-            value.data.match_flag = MatchFlag::Yes;
+            value.data.status_flag = StatusFlag::Yes;
             value.data.spent_time = 23;
+            value.data.parent = 34;  // --> Ale
+            value.data.left_node = 35;
+            value.data.right_node = 36;
+            value.data.height =0;
+            value.data.gid = Gid::new("37");
         }
         value.write_to(writer)?;
         values.push(value);
@@ -924,8 +1662,13 @@ pub mod test_helper {
         value.input_start_pos = 46;
         value.input_end_pos = 80;
         if !unprocessed {
-            value.data.match_flag = MatchFlag::No;
+            value.data.status_flag = StatusFlag::No;
             value.data.spent_time = 25;
+            value.data.parent = 44;  // --> Ale
+            value.data.left_node = 45;
+            value.data.right_node = 46;
+            value.data.height =0;
+            value.data.gid = Gid::new("47");
         }
         value.write_to(writer)?;
         values.push(value);
@@ -935,8 +1678,13 @@ pub mod test_helper {
         value.input_start_pos = 82;
         value.input_end_pos = 106;
         if !unprocessed {
-            value.data.match_flag = MatchFlag::None;
+            value.data.status_flag = StatusFlag::None;
             value.data.spent_time = 30;
+            value.data.parent = 54;  // --> Ale
+            value.data.left_node = 55;
+            value.data.right_node = 56;
+            value.data.height =0;
+            value.data.gid = Gid::new("57");
         }
         value.write_to(writer)?;
         values.push(value);
@@ -946,8 +1694,13 @@ pub mod test_helper {
         value.input_start_pos = 108;
         value.input_end_pos = 139;
         if !unprocessed {
-            value.data.match_flag = MatchFlag::Skip;
+            value.data.status_flag = StatusFlag::Skip;
             value.data.spent_time = 41;
+            value.data.parent = 64;  // --> Ale
+            value.data.left_node = 65;
+            value.data.right_node = 66;
+            value.data.height =0;
+            value.data.gid = Gid::new("67");
         }
         value.write_to(writer)?;
         values.push(value);
@@ -960,7 +1713,7 @@ pub mod test_helper {
     /// # Arguments
     /// 
     /// * `path` - Index file path.
-    /// * `empty` - If `true` then build all values with MatchFlag::None.
+    /// * `empty` - If `true` then build all values with StatusFlag::None.
     pub fn create_fake_index(path: &PathBuf, unprocessed: bool) -> Result<Vec<Value>> {
         let file = OpenOptions::new()
             .create(true)
@@ -974,19 +1727,19 @@ pub mod test_helper {
         Ok(values)
     }
 
-    /// Execute a function with both a temp directory and a new Indexer.
+    /// Execute a function with both a temp directory and a new BinaryTree.
     /// 
     /// # Arguments
     /// 
     /// * `f` - Function to execute.
-    pub fn with_tmpdir_and_indexer(f: &impl Fn(&TempDir, &mut Indexer) -> Result<()>) {
+    pub fn with_tmpdir_and_indexer(f: &impl Fn(&TempDir, &mut BinaryTree) -> Result<()>) {
         let sub = |dir: &TempDir| -> Result<()> {
             // generate default file names for files
             let input_path = dir.path().join("i.csv");
             let index_path = dir.path().join("i.fmindex");
 
-            // create Indexer and execute
-            let mut indexer = Indexer::new(
+            // create BinaryTree and execute
+            let mut indexer = BinaryTree::new(
                 input_path,
                 index_path,
                 InputType::Unknown
@@ -1010,12 +1763,12 @@ mod tests {
     use std::io::Cursor;
     use std::sync::Mutex;
     use crate::test_helper::*;
-    use crate::db::indexer::header::{HASH_SIZE};
-    use crate::db::indexer::header::test_helper::{random_hash, build_header_bytes};
+    use crate::db::dbindex::header::{HASH_SIZE};
+    use crate::db::dbindex::header::test_helper::{random_hash, build_header_bytes};
 
     #[test]
     fn file_extension_regex() {
-        let rx = Indexer::file_extension_regex();
+        let rx = BinaryTree::file_extension_regex();
         assert!(rx.is_match("hello.fmindex"), "expected to match \"hello.fmindex\" but got false");
         assert!(rx.is_match("/path/to/hello.fmindex"), "expected to match \"/path/to/hello.fmindex\" but got false");
         assert!(!rx.is_match("hello.index"), "expected to not match \"hello.index\" but got true");
@@ -1025,20 +1778,20 @@ mod tests {
     fn new() {
         let mut header = Header::new();
         header.input_type = InputType::JSON;
-        let expected = Indexer{
+        let expected = BinaryTree{
             input_path: "my_input.csv".into(),
             index_path: "my_index.fmidx".into(),
             header,
             batch_size: DEFAULT_BATCH_SIZE,
             input_fields: Vec::new()
         };
-        let indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::JSON);
+        let indexer = BinaryTree::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::JSON);
         assert_eq!(expected, indexer);
     }
 
     #[test]
     fn calc_record_pos() {
-        assert_eq!(108, Indexer::calc_value_pos(2));
+        assert_eq!(264, BinaryTree::calc_value_pos(2));  // --> Ale assert_eq!(108, BinaryTree::calc_value_pos(2));
     }
 
     #[test]
@@ -1053,7 +1806,7 @@ mod tests {
         let mut reader = Cursor::new(buf.to_vec());
 
         // test load_headers
-        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        let mut indexer = BinaryTree::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
         if let Err(e) = indexer.load_header_from(&mut reader) {
             assert!(false, "expected success but got error: {:?}", e);
         }
@@ -1080,7 +1833,7 @@ mod tests {
         let mut reader = Cursor::new(buf.to_vec());
 
         // init indexer and expected records
-        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        let mut indexer = BinaryTree::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
         indexer.header.indexed = true;
         indexer.header.indexed_count = record_count;
         let expected = match fake_values() {
@@ -1227,12 +1980,12 @@ mod tests {
             }
         };
         let mut reader = Cursor::new(buf.to_vec());
-        if let Err(e) = reader.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+        if let Err(e) = reader.seek(SeekFrom::Start(BinaryTree::calc_value_pos(0))) {
             assert!(false, "{:?}", e);
         };
 
         // init indexer and expected records
-        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        let mut indexer = BinaryTree::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
         indexer.header.indexed = true;
         indexer.header.indexed_count = record_count;
         let all_values = match fake_values() {
@@ -1281,12 +2034,12 @@ mod tests {
             }
         };
         let mut reader = Cursor::new(buf.to_vec());
-        if let Err(e) = reader.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+        if let Err(e) = reader.seek(SeekFrom::Start(BinaryTree::calc_value_pos(0))) {
             assert!(false, "{:?}", e);
         };
 
         // init indexer and expected records
-        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        let mut indexer = BinaryTree::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
         indexer.header.indexed = true;
         indexer.header.indexed_count = record_count;
         let all_values = match fake_values() {
@@ -1328,12 +2081,12 @@ mod tests {
             }
         };
         let mut reader = Cursor::new(buf.to_vec());
-        if let Err(e) = reader.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+        if let Err(e) = reader.seek(SeekFrom::Start(BinaryTree::calc_value_pos(0))) {
             assert!(false, "{:?}", e);
         };
 
         // init indexer and expected records
-        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        let mut indexer = BinaryTree::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
         indexer.header.indexed = true;
         indexer.header.indexed_count = record_count;
         let all_values = match fake_values() {
@@ -1437,12 +2190,12 @@ mod tests {
         };
         let mut reader = Cursor::new(buf.to_vec());
         let mut writer = Cursor::new(buf.to_vec());
-        if let Err(e) = reader.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+        if let Err(e) = reader.seek(SeekFrom::Start(BinaryTree::calc_value_pos(0))) {
             assert!(false, "{:?}", e);
         };
 
         // init indexer and expected records
-        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        let mut indexer = BinaryTree::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
         indexer.header.indexed = true;
         indexer.header.indexed_count = record_count;
         let all_values = match fake_values() {
@@ -1453,8 +2206,12 @@ mod tests {
             }
         };
         let mut updated_value = Value::new();
-        updated_value.data.match_flag = MatchFlag::Yes;
+        updated_value.data.status_flag = StatusFlag::Yes;
         updated_value.data.spent_time = 123;
+        updated_value.data.parent = 180;  // --> Ale
+        updated_value.data.left_node = 180;  // --> Ale
+        updated_value.data.right_node = 188;  // --> Ale
+        updated_value.data.gid = Gid::new("199");  // --> Ale
         updated_value.input_start_pos = 234;
         updated_value.input_end_pos = 345;
         let expected_updated = vec![
@@ -1470,9 +2227,13 @@ mod tests {
         match indexer.process_from(&mut reader, &mut writer, 0, |mut value| {
             let mut list = read_values.lock().unwrap();
             (*list).push(value.clone());
-            if let MatchFlag::Skip = value.data.match_flag {
-                value.data.match_flag = MatchFlag::Yes;
+            if let StatusFlag::Skip = value.data.status_flag {
+                value.data.status_flag = StatusFlag::Yes;
                 value.data.spent_time = 123;
+                value.data.parent = 180;  // --> Ale
+                value.data.left_node = 180;  // --> Ale
+                value.data.right_node = 188;  // --> Ale
+                value.data.gid = Gid::new("199");  // --> Ale
                 value.input_start_pos = 234;
                 value.input_end_pos = 345;
                 return Ok((Some(value), false))
@@ -1487,7 +2248,7 @@ mod tests {
         };
 
         // read updated values
-        if let Err(e) = writer.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+        if let Err(e) = writer.seek(SeekFrom::Start(BinaryTree::calc_value_pos(0))) {
             assert!(false, "{:?}", e);
         };
         let mut list = Vec::new();
@@ -1525,12 +2286,12 @@ mod tests {
         };
         let mut reader = Cursor::new(buf.to_vec());
         let mut writer = Cursor::new(buf.to_vec());
-        if let Err(e) = reader.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+        if let Err(e) = reader.seek(SeekFrom::Start(BinaryTree::calc_value_pos(0))) {
             assert!(false, "{:?}", e);
         };
 
         // init indexer and expected records
-        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        let mut indexer = BinaryTree::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
         indexer.header.indexed = true;
         indexer.header.indexed_count = record_count;
         let all_values = match fake_values() {
@@ -1546,11 +2307,11 @@ mod tests {
             all_values[2].clone()
         ];
         expected_updated[0].input_end_pos = 555;
-        expected_updated[0].data.match_flag = MatchFlag::None;
+        expected_updated[0].data.status_flag = StatusFlag::None;
         expected_updated[1].input_end_pos = 555;
-        expected_updated[1].data.match_flag = MatchFlag::None;
+        expected_updated[1].data.status_flag = StatusFlag::None;
         expected_updated[2].input_end_pos = 555;
-        expected_updated[2].data.match_flag = MatchFlag::None;
+        expected_updated[2].data.status_flag = StatusFlag::None;
         let expected_read = all_values;
         
         // filter values
@@ -1558,7 +2319,7 @@ mod tests {
         match indexer.process_from(&mut reader, &mut writer, 0, |mut value| {
             let mut list = read_values.lock().unwrap();
             (*list).push(value.clone());
-            value.data.match_flag = MatchFlag::None;
+            value.data.status_flag = StatusFlag::None;
             value.input_end_pos = 555;
             Ok((Some(value), false))
         }) {
@@ -1570,7 +2331,7 @@ mod tests {
         };
 
         // read updated values
-        if let Err(e) = writer.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+        if let Err(e) = writer.seek(SeekFrom::Start(BinaryTree::calc_value_pos(0))) {
             assert!(false, "{:?}", e);
         };
         let mut list = Vec::new();
@@ -1609,12 +2370,12 @@ mod tests {
         };
         let mut reader = Cursor::new(buf.to_vec());
         let mut writer = Cursor::new(buf.to_vec());
-        if let Err(e) = reader.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+        if let Err(e) = reader.seek(SeekFrom::Start(BinaryTree::calc_value_pos(0))) {
             assert!(false, "{:?}", e);
         };
 
         // init indexer and expected records
-        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        let mut indexer = BinaryTree::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
         indexer.header.indexed = true;
         indexer.header.indexed_count = record_count;
         let all_values = match fake_values() {
@@ -1630,9 +2391,9 @@ mod tests {
             all_values[2].clone()
         ];
         expected_updated[0].input_end_pos = 555;
-        expected_updated[0].data.match_flag = MatchFlag::None;
+        expected_updated[0].data.status_flag = StatusFlag::None;
         expected_updated[1].input_end_pos = 555;
-        expected_updated[1].data.match_flag = MatchFlag::None;
+        expected_updated[1].data.status_flag = StatusFlag::None;
         let expected_read = vec![
             all_values[0].clone(),
             all_values[1].clone()
@@ -1643,7 +2404,7 @@ mod tests {
         match indexer.process_from(&mut reader, &mut writer, 2, |mut value| {
             let mut list = read_values.lock().unwrap();
             (*list).push(value.clone());
-            value.data.match_flag = MatchFlag::None;
+            value.data.status_flag = StatusFlag::None;
             value.input_end_pos = 555;
             Ok((Some(value), false))
         }) {
@@ -1655,7 +2416,7 @@ mod tests {
         };
 
         // read updated values
-        if let Err(e) = writer.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+        if let Err(e) = writer.seek(SeekFrom::Start(BinaryTree::calc_value_pos(0))) {
             assert!(false, "{:?}", e);
         };
         let mut list = Vec::new();
@@ -1694,12 +2455,12 @@ mod tests {
         };
         let mut reader = Cursor::new(buf.to_vec());
         let mut writer = Cursor::new(buf.to_vec());
-        if let Err(e) = reader.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+        if let Err(e) = reader.seek(SeekFrom::Start(BinaryTree::calc_value_pos(0))) {
             assert!(false, "{:?}", e);
         };
 
         // init indexer and expected records
-        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        let mut indexer = BinaryTree::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
         indexer.header.indexed = true;
         indexer.header.indexed_count = record_count;
         let all_values = match fake_values() {
@@ -1715,7 +2476,7 @@ mod tests {
             all_values[2].clone()
         ];
         expected_updated[0].input_end_pos = 555;
-        expected_updated[0].data.match_flag = MatchFlag::None;
+        expected_updated[0].data.status_flag = StatusFlag::None;
         let expected_read = vec![
             all_values[0].clone(),
         ];
@@ -1725,7 +2486,7 @@ mod tests {
         match indexer.process_from(&mut reader, &mut writer, 2, |mut value| {
             let mut list = read_values.lock().unwrap();
             (*list).push(value.clone());
-            value.data.match_flag = MatchFlag::None;
+            value.data.status_flag = StatusFlag::None;
             value.input_end_pos = 555;
             Ok((Some(value), true))
         }) {
@@ -1737,7 +2498,7 @@ mod tests {
         };
 
         // read updated values
-        if let Err(e) = writer.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+        if let Err(e) = writer.seek(SeekFrom::Start(BinaryTree::calc_value_pos(0))) {
             assert!(false, "{:?}", e);
         };
         let mut list = Vec::new();
@@ -1793,9 +2554,9 @@ mod tests {
                 all_values[2].clone()
             ];
             expected_updated[1].input_end_pos = 555;
-            expected_updated[1].data.match_flag = MatchFlag::None;
+            expected_updated[1].data.status_flag = StatusFlag::None;
             expected_updated[2].input_end_pos = 555;
-            expected_updated[2].data.match_flag = MatchFlag::None;
+            expected_updated[2].data.status_flag = StatusFlag::None;
             let expected_read = vec![
                 all_values[1].clone(),
                 all_values[2].clone()
@@ -1806,7 +2567,7 @@ mod tests {
             match indexer.process(1, 0, |mut value| {
                 let mut list = read_values.lock().unwrap();
                 (*list).push(value.clone());
-                value.data.match_flag = MatchFlag::None;
+                value.data.status_flag = StatusFlag::None;
                 value.input_end_pos = 555;
                 Ok((Some(value), false))
             }) {
@@ -1861,7 +2622,12 @@ mod tests {
                 input_end_pos: 80,
                 data: Data{
                     spent_time: 0,
-                    match_flag: MatchFlag::None
+                    status_flag: StatusFlag::None
+                    ,parent: 0 // --> Ale
+                    ,left_node: 0 // --> Ale
+                    ,right_node: 0 // --> Ale
+                    ,gid: Gid::new("") // --> Ale
+                    ,height:0 // --> Ale
                 }
             };
             
@@ -1890,7 +2656,12 @@ mod tests {
                 input_end_pos: 80,
                 data: Data{
                     spent_time: 0,
-                    match_flag: MatchFlag::None
+                    status_flag: StatusFlag::None
+                    ,parent: 0 // --> Ale
+                    ,left_node: 0 // --> Ale
+                    ,right_node: 0 // --> Ale
+                    ,gid: Gid::new("") // --> Ale
+                    ,height:0 // --> Ale
                 }
             };
             
@@ -1910,7 +2681,7 @@ mod tests {
         with_tmpdir_and_indexer(&|_, indexer| {
             // create index and check original value
             let mut values = create_fake_index(&indexer.index_path, true)?;
-            let pos = Indexer::calc_value_pos(2);
+            let pos = BinaryTree::calc_value_pos(2);
             let mut buf = [0u8; Value::BYTES];
             let file = File::open(&indexer.index_path)?;
             let mut reader = BufReader::new(file);
@@ -1926,8 +2697,23 @@ mod tests {
                 0, 0, 0, 0, 0, 0, 0, 106u8,
                 // spent_time
                 0, 0, 0, 0, 0, 0, 0, 0,
-                // match flag
+                // status flag
                 0
+                // parent  // --> Ale
+                ,0, 0, 0, 0, 0, 0, 0, 0   // --> Ale
+                // left_node  // --> Ale
+                ,0, 0, 0, 0, 0, 0, 0, 0   // --> Ale
+                // right_node  // --> Ale
+                ,0, 0, 0, 0, 0, 0, 0, 0   // --> Ale
+                // height
+                ,0, 0, 0, 0, 0, 0, 0,0   // --> Ale
+                // gid  // --> Ale
+                ,0, 0, 0, 0, 0, 0, 0,0
+                ,0, 0, 0, 0, 0, 0, 0,0
+                ,0, 0, 0, 0, 0, 0, 0,0
+                ,0, 0, 0, 0, 0, 0, 0,0
+                ,0, 0, 0, 0, 0, 0
+                ,0, 0, 0, 0, 0, 0, 0, 0   // --> Ale
             ];
             assert_eq!(expected, buf);
 
@@ -1939,13 +2725,33 @@ mod tests {
                 0, 0, 0, 0, 0, 0, 0, 27u8,
                 // spent_time
                 0, 0, 0, 0, 0, 0, 0, 93u8,
-                // match flag
+                // status flag
                 b'Y'
+                // parent  // --> Ale
+                ,0, 0, 0, 0, 0, 0, 0, 80u8   // --> Ale
+                // left_node  // --> Ale
+                ,0, 0, 0, 0, 0, 0, 0, 10u8   // --> Ale
+                // right_node  // --> Ale
+                ,0, 0, 0, 0, 0, 0, 0, 14u8   // --> Ale
+                // height
+                ,0, 0, 0, 0, 0, 0, 0,0   // --> Ale
+                // gid  // --> Ale
+                ,0, 0, 0, 0, 0, 0, 0,2
+                ,49, 52, 0, 0, 0, 0, 0,0
+                ,0, 0, 0, 0, 0, 0, 0,0
+                ,0, 0, 0, 0, 0, 0, 0,0
+                ,0, 0, 0, 0, 0, 0
+                ,0, 0, 0, 0, 0, 0, 0, 0u8   // --> Ale
+                
             ];
             values[2].input_start_pos = 10;
             values[2].input_end_pos = 27;
-            values[2].data.match_flag = MatchFlag::Yes;
+            values[2].data.status_flag = StatusFlag::Yes;
             values[2].data.spent_time = 93;
+            values[2].data.parent = 80;   // --> Ale
+            values[2].data.left_node = 10;   // --> Ale
+            values[2].data.right_node = 14;   // --> Ale
+            values[2].data.gid = Gid::new("14");   // --> Ale
             if let Err(e) = indexer.save_value(2, &values[2]) {
                 assert!(false, "expected success but got error: {:?}", e)
             }
@@ -1968,7 +2774,7 @@ mod tests {
         with_tmpdir_and_indexer(&|_, indexer| {
             // create index and check original value
             let mut values = create_fake_index(&indexer.index_path, true)?;
-            let pos = Indexer::calc_value_pos(2);
+            let pos = BinaryTree::calc_value_pos(2);
             let mut buf = [0u8; Value::BYTES];
             let file = File::open(&indexer.index_path)?;
             let mut reader = BufReader::new(file);
@@ -1982,10 +2788,26 @@ mod tests {
                 0, 0, 0, 0, 0, 0, 0, 82u8,
                 // end_pos
                 0, 0, 0, 0, 0, 0, 0, 106u8,
+                // status flag
+                0,
                 // spent_time
-                0, 0, 0, 0, 0, 0, 0, 0,
-                // match flag
-                0
+                0, 0, 0, 0, 0, 0, 0, 0
+                
+                // parent  // --> Ale
+                ,0, 0, 0, 0, 0, 0, 0, 0   // --> Ale
+                // left_node  // --> Ale
+                ,0, 0, 0, 0, 0, 0, 0, 0   // --> Ale
+                // right_node  // --> Ale
+                ,0, 0, 0, 0, 0, 0, 0, 0   // --> Ale
+                // height
+                ,0, 0, 0, 0, 0, 0, 0,0   // --> Ale
+                // gid  // --> Ale
+                ,0, 0, 0, 0, 0, 0, 0,0
+                ,0, 0, 0, 0, 0, 0, 0,0
+                ,0, 0, 0, 0, 0, 0, 0,0
+                ,0, 0, 0, 0, 0, 0, 0,0
+                ,0, 0, 0, 0, 0, 0
+                ,0, 0, 0, 0, 0, 0, 0, 0   // --> Ale
             ];
             assert_eq!(expected, buf);
 
@@ -1997,11 +2819,33 @@ mod tests {
                 0, 0, 0, 0, 0, 0, 0, 106u8,
                 // spent_time
                 0, 0, 0, 0, 0, 0, 0, 93u8,
-                // match flag
+                // status flag
                 b'Y'
+                // parent  // --> Ale
+                ,0, 0, 0, 0, 0, 0, 0, 88u8   // --> Ale
+                // left_node  // --> Ale
+                ,0, 0, 0, 0, 0, 0, 0, 22u8   // --> Ale
+                // right_node  // --> Ale
+                ,0, 0, 0, 0, 0, 0, 0, 33u8   // --> Ale
+                // height
+                ,0, 0, 0, 0, 0, 0, 0,2   // --> Ale
+                // gid  // --> Ale
+                ,49, 0, 0, 0, 0, 0, 0,0
+                ,0, 0, 0, 0, 0, 0, 0,0
+                ,0, 0, 0, 0, 0, 0, 0,0
+                ,0, 0, 0, 0, 0, 0, 0,0
+                ,0, 0, 0, 0, 0, 0
+                ,0, 0, 0, 0, 0, 0, 0, 0u8   // --> Ale
+
+
             ];
-            values[2].data.match_flag = MatchFlag::Yes;
+            values[2].data.status_flag = StatusFlag::Yes;
             values[2].data.spent_time = 93;
+            values[2].data.parent = 88; // --> Ale
+            values[2].data.left_node = 22; // --> Ale
+            values[2].data.right_node = 33; // --> Ale
+            values[2].data.height = 2; // --> Ale
+            values[2].data.gid = Gid::new("1"); // --> Ale
             if let Err(e) = indexer.save_data(2, &values[2].data) {
                 assert!(false, "expected success but got error: {:?}", e)
             }
@@ -2037,7 +2881,7 @@ mod tests {
             }
 
             // find non-existing unmatched from starting point
-            values[2].data.match_flag = MatchFlag::Yes;
+            values[2].data.status_flag = StatusFlag::Yes;
             indexer.save_value(2, &values[2])?;
             match indexer.find_pending(3) {
                 Ok(opt) => match opt {
@@ -2416,7 +3260,7 @@ mod tests {
             }
 
             // create expected index
-            let mut expected = Indexer::new(
+            let mut expected = BinaryTree::new(
                 indexer.input_path.clone(),
                 indexer.index_path.clone(),
                 InputType::CSV
