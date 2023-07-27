@@ -7,10 +7,10 @@ use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
 use std::path::PathBuf;
 use crate::error::{ParseError, IndexError};
 use crate::traits::{ReadFrom, WriteTo};
+use crate::db::field::Record;
 use super::index::raw_match::{RawMatch, Status as IndexStatus};
 use super::index::raw_match::value::{MatchFlag, Data as IndexData, Value as IndexValue};
 use super::table::Table;
-use super::table::record::Record;
 
 /// Represents a data source single record.
 #[derive(Debug, Serialize, PartialEq)]
@@ -164,15 +164,15 @@ impl Source {
         }
 
         // ensure tables has the same fields count
-        if self.table.record_header.len() != source.table.record_header.len() {
+        if self.table.header.record.len() != source.table.header.record.len() {
             return (false, "table field count doesn't match")
         }
 
         // ensure tables has the same fields
-        let limit = self.table.record_header.len();
+        let limit = self.table.header.record.len();
         if limit > 0 {
             for i in 0..limit {
-                if self.table.record_header.get_by_index(i) != source.table.record_header.get_by_index(i) {
+                if self.table.header.record.get_by_index(i) != source.table.header.record.get_by_index(i) {
                     return (false, "table fields doesn't match")
                 }
             }
@@ -253,7 +253,7 @@ impl Source {
         // iterate and join sources
         let total_sources = sources.len() as f64;
         let match_values = MatchFlag::as_array();
-        let record_size = target.table.record_header.record_byte_size() as usize;
+        let record_size = target.table.header.record.record_byte_size() as usize;
         let mut base_record_buf = vec![0u8; record_size as usize];
         let mut record_buf = vec![0u8; record_size as usize];
         for index in 0..target.index.header.indexed_count {
@@ -376,11 +376,11 @@ mod tests {
     use super::*;
     use super::test_helper::*;
     // use crate::test_helper::*;
-    use crate::db::index::raw_match::test_helper::{create_fake_index};
+    use crate::db::index::raw_match::test_helper::create_fake_index;
     use crate::db::table::test_helper::create_fake_table;
-    use crate::db::index::raw_match::header::{Header as IndexHeader};
-    use crate::db::table::header::{Header as TableHeader};
-    use crate::db::table::record::header::{Header as RecordHeader};
+    use crate::db::index::raw_match::header::Header as IndexHeader;
+    use crate::db::table::header::Header as TableHeader;
+    use crate::db::field::Header as RecordHeader;
 
     mod source_join_item {
         use super::*;

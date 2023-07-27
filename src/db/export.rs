@@ -6,10 +6,10 @@ use std::fs::OpenOptions;
 use std::io::{Seek, SeekFrom, Write, BufWriter};
 use std::path::PathBuf;
 use crate::traits::ReadFrom;
+use crate::db::field::Record;
 use super::index::raw_match::RawMatch;
 use super::index::raw_match::header::InputType;
 use super::index::raw_match::value::{Value as IndexValue, MatchFlag};
-use super::table::record::Record;
 use super::source::Source;
 
 /// MatchFlag masked value.
@@ -426,7 +426,7 @@ impl<'s> Exporter<'s> {
                 return
             },
             ExportField::AllRecord{overrides} => {
-                for (k, _) in self.source.table.record_header.iter() {
+                for (k, _) in self.source.table.header.record.iter() {
                     let name = k;
 
                     // apply field override
@@ -490,7 +490,7 @@ impl<'s> Exporter<'s> {
                 input_headers: input_headers.clone(),
                 input: result?,
                 index: IndexValue::read_from(&mut index_rdr)?,
-                record: self.source.table.record_header.read_record(&mut table_rdr)?
+                record: self.source.table.header.record.read_record(&mut table_rdr)?
             };
 
             // filter by match flag when required

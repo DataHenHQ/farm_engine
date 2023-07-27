@@ -2,10 +2,9 @@ use std::io::{Read, Write};
 use std::convert::TryFrom;
 use anyhow::{bail, Result};
 use uuid::Uuid;
-use crate::traits::{ByteSized, FromByteSlice, WriteAsBytes, ReadFrom, WriteTo, LoadFrom};
+use crate::traits::{ByteSized, FromByteSlice, ReadFrom, WriteTo, LoadFrom};
 use super::VERSION;
-use crate::db::field::field_type::FieldType;
-use crate::db::field::value::Value;
+use crate::db::field::{FieldType, Value, Header as RecordHeader};
 
 /// File's magic numbervalue size bytes.
 pub const MAGIC_NUMBER_SIZE: usize = 11;
@@ -29,10 +28,19 @@ pub struct Header {
     _name: String,
 
     /// Table UUID.
-    _uuid: Uuid
+    _uuid: Uuid,
+
+    // Record header. It contains information about the fields.
+    pub record: RecordHeader
 }
 
 impl Header {
+    /// Table header size in bytes.
+    /// 
+    /// Byte Format
+    /// `<magic_number:11><version:4><record_count:8><name_size:4><name_value:50><uuid:16>`.
+    pub const META_BYTES: usize = 82 + MAGIC_NUMBER_SIZE;
+
     /// Creates a new header.
     /// 
     /// # Arguments
@@ -48,6 +56,7 @@ impl Header {
         };
         Ok(Self{
             record_count: 0,
+            record: RecordHeader::new(),
             _name: name.to_string(),
             _uuid: uuid
         })
@@ -58,55 +67,23 @@ impl Header {
         &self._name
     }
 
+    /// Gets the table uuid.
     pub fn get_uuid(&self) -> &Uuid {
         &self._uuid
     }
 
-    /// Serialize the instance to a fixed byte slice.
-    pub fn as_bytes(&self) -> [u8; Self::BYTES] {
-        let mut buf = [0u8; Self::BYTES];
-        let mut carry = 0;
-
-        // save magic number
-        let magic_buf = &mut buf[carry..carry+MAGIC_NUMBER_SIZE];
-        magic_buf.copy_from_slice(&MAGIC_NUMBER_BYTES);
-        carry += MAGIC_NUMBER_SIZE;
-
-        // save version
-        VERSION.write_as_bytes(&mut buf[carry..carry+u32::BYTES]).unwrap();
-        carry += u32::BYTES;
-
-        // save record count
-        self.record_count.write_as_bytes(&mut buf[carry..carry+u64::BYTES]).unwrap();
-        carry += u64::BYTES;
-
-        // save table name
-        let name_value = Value::Str(self._name.clone());
-        let name_byte_size = TABLE_NAME_FIELD.value_byte_size();
-        let mut name_writer = &mut buf[carry..carry+name_byte_size] as &mut [u8];
-        TABLE_NAME_FIELD.write_value(&mut name_writer, &name_value).unwrap();
-        carry += name_byte_size;
-
-        // save table uuid
-        self._uuid.write_as_bytes(&mut buf[carry..carry+Uuid::BYTES]).unwrap();
-
-        buf
+    /// Return the previously calculated byte count to be writed when
+    /// the header is converted into bytes.
+    pub fn size_as_bytes(&self) -> u64 {
+        Self::META_BYTES as u64 + self.record.size_as_bytes()
     }
-}
-
-impl ByteSized for Header {
-    /// Table header size in bytes.
-    /// 
-    /// Byte Format
-    /// `<magic_number:11><version:4><record_count:8><name_size:4><name_value:50><uuid:16>`.
-    const BYTES: usize = 82 + MAGIC_NUMBER_SIZE;
 }
 
 impl LoadFrom for Header {
     fn load_from(&mut self, reader: &mut impl Read) -> Result<()> {
         // read data
         let mut carry = 0;
-        let mut buf = [0u8; Self::BYTES];
+        let mut buf = [0u8; Self::META_BYTES];
         reader.read_exact(&mut buf)?;
 
         // read and validate magic number
@@ -147,15 +124,6 @@ impl LoadFrom for Header {
     }
 }
 
-impl FromByteSlice for Header {
-    fn from_byte_slice(buf: &[u8]) -> Result<Self> {
-        let mut header = Self::new("", Some(Uuid::from_bytes([0u8; Uuid::BYTES])))?;
-        let mut reader = buf;
-        header.load_from(&mut reader)?;
-        Ok(header)
-    }
-}
-
 impl ReadFrom for Header {
     fn read_from(reader: &mut impl Read) -> Result<Self> {
         let mut header = Self::new("", Some(Uuid::from_bytes([0u8; Uuid::BYTES])))?;
@@ -177,7 +145,22 @@ impl TryFrom<&[u8]> for Header {
 
 impl WriteTo for Header {
     fn write_to(&self, writer: &mut impl Write) -> Result<()> {
-        writer.write_all(&self.as_bytes())?;
+        // save magic number
+        writer.write_all(&MAGIC_NUMBER_BYTES)?;
+
+        // save version
+        VERSION.write_to(writer)?;
+
+        // save record count
+        self.record_count.write_to(writer)?;
+
+        // save table name
+        let name_value = Value::Str(self._name.clone());
+        TABLE_NAME_FIELD.write_value(writer, &name_value).unwrap();
+
+        // save table uuid
+        self._uuid.write_to(writer)?;
+
         Ok(())
     }
 }
@@ -204,6 +187,7 @@ pub mod test_helper {
         };
         Header{
             record_count,
+            record: RecordHeader::new(),
             _name: name.to_string(),
             _uuid: uuid,
         }.as_bytes()
@@ -235,6 +219,7 @@ mod tests {
         let uuid = table_uuid();
         let expected = Header{
             record_count: 0,
+            record: RecordHeader::new(),
             _name: "hello".to_string(),
             _uuid: uuid
         };
@@ -290,6 +275,7 @@ mod tests {
         // test header as_bytes function
         let header = Header{
             record_count: 2311457452320998632,
+            record: RecordHeader::new(),
             _name: "my_table".to_string(),
             _uuid: Uuid::parse_str("a1a2a3a4-b1b2-c1c2-d1d2-d3d4d5d6d7d8").unwrap()
         };
@@ -316,6 +302,7 @@ mod tests {
         // test header as_bytes function
         let header = Header{
             record_count: 4525325654675485867,
+            record: RecordHeader::new(),
             _name: "hello_tbl".to_string(),
             _uuid: Uuid::parse_str("b1a2a3a4-b1b2-c1c2-d1d2-d3d4d5d6d7d8").unwrap()
         };
@@ -333,11 +320,13 @@ mod tests {
         let uuid = table_uuid();
         let mut header = Header{
             record_count: 0,
+            record: RecordHeader::new(),
             _name: "".to_string(),
             _uuid: uuid
         };
         let expected = Header{
             record_count: 4535435,
+            record: RecordHeader::new(),
             _name: "my_table".to_string(),
             _uuid: uuid
         };
@@ -353,11 +342,13 @@ mod tests {
         let uuid = table_uuid();
         let mut header = Header{
             record_count: 0,
+            record: RecordHeader::new(),
             _name: "".to_string(),
             _uuid: uuid
         };
         let expected = Header{
             record_count: 6572646535124,
+            record: RecordHeader::new(),
             _name: "hello_tbl".to_string(),
             _uuid: uuid
         };
@@ -376,6 +367,7 @@ mod tests {
         let uuid = table_uuid();
         let expected = Header{
             record_count: 2341234,
+            record: RecordHeader::new(),
             _name: "my_table".to_string(),
             _uuid: uuid
         };
@@ -393,6 +385,7 @@ mod tests {
         let uuid = table_uuid();
         let expected = Header{
             record_count: 9879873495743,
+            record: RecordHeader::new(),
             _name: "hello_tbl".to_string(),
             _uuid: uuid
         };
@@ -413,6 +406,7 @@ mod tests {
         let uuid = table_uuid();
         let expected = Header{
             record_count: 974734838473874,
+            record: RecordHeader::new(),
             _name: "my_table".to_string(),
             _uuid: uuid
         };
@@ -431,6 +425,7 @@ mod tests {
         let uuid = table_uuid();
         let expected = Header{
             record_count: 3434232315645344,
+            record: RecordHeader::new(),
             _name: "hello_tbl".to_string(),
             _uuid: uuid
         };
@@ -452,6 +447,7 @@ mod tests {
         let uuid = table_uuid();
         let expected = Header{
             record_count: 32412342134234,
+            record: RecordHeader::new(),
             _name: "my_table".to_string(),
             _uuid: uuid
         };
@@ -469,6 +465,7 @@ mod tests {
         let uuid = table_uuid();
         let expected = Header{
             record_count: 56535423143214,
+            record: RecordHeader::new(),
             _name: "hello_tbl".to_string(),
             _uuid: uuid
         };
@@ -490,6 +487,7 @@ mod tests {
         let expected = build_header_bytes("my_table", 788477630402843, Some(uuid));
         let header = Header{
             record_count: 788477630402843,
+            record: RecordHeader::new(),
             _name: "my_table".to_string(),
             _uuid: uuid
         };
@@ -506,6 +504,7 @@ mod tests {
         let expected = build_header_bytes("hello_tbl", 63439320337562938, Some(uuid));
         let header = Header{
             record_count: 63439320337562938,
+            record: RecordHeader::new(),
             _name: "hello_tbl".to_string(),
             _uuid: uuid
         };

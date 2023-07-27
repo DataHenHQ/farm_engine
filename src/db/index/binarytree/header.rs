@@ -3,13 +3,14 @@ use std::convert::TryFrom;
 use anyhow::{bail, Result};
 use uuid::Uuid;
 use super::VERSION;
-use crate::traits::{ByteSized, FromByteSlice, WriteAsBytes, ReadFrom, WriteTo, LoadFrom};
+use crate::db::field::Header as FieldHeader;
+use crate::traits::{ByteSized, FromByteSlice, ReadFrom, WriteTo, LoadFrom};
 
 /// File's magic numbervalue size bytes.
 pub const MAGIC_NUMBER_SIZE: usize = 11;
 
-/// File's magic number value `datahen_idx` as bytes.
-pub const MAGIC_NUMBER_BYTES: [u8; MAGIC_NUMBER_SIZE] = [100, 97, 116, 97, 104, 101, 110, 95, 105, 100, 120];
+/// File's magic number value `datahen_bti` as bytes.
+pub const MAGIC_NUMBER_BYTES: [u8; MAGIC_NUMBER_SIZE] = [100, 97, 116, 97, 104, 101, 110, 95, 98, 116, 105];
 
 //// Describes an Indexer file header.
 #[derive(Debug, PartialEq, Clone)]
@@ -20,73 +21,51 @@ pub struct Header {
     /// Indexed records count.
     pub indexed_count: u64,
 
+    /// Indexed records previously deleted.
+    pub indexed_deleted: u64,
+
+    /// Offset Indexed records.
+    pub indexed_offset: u64,
+
     /// Table reference uuid.
-    table_uuid: Option<Uuid>
+    pub table_uuid: Option<Uuid>,
+
+
+    /// Index fields
+    pub fields: FieldHeader
 }
 
 impl Header {
+    /// Index header size in bytes.
+    /// 
+    /// Byte Format
+    /// `<magic_number:11><version:4><indexed:1><indexed_count:8><table_nul:1><table_uuid:16>`.
+    const META_BYTES: usize = 46 + MAGIC_NUMBER_SIZE;
+
     /// Creates a new header.
     pub fn new(table_uuid: Option<Uuid>) -> Self {
         Self{
             indexed: false,
             indexed_count: 0,
-            table_uuid
+            indexed_deleted: 0,
+            indexed_offset: 0,
+            table_uuid,
+            fields: FieldHeader::new()
         }
     }
 
-    /// Serialize the instance to a fixed byte slice.
-    pub fn as_bytes(&self) -> [u8; Self::BYTES] {
-        let mut buf = [0u8; Self::BYTES];
-        let mut carry = 0;
-
-        // save magic number
-        let magic_buf = &mut buf[carry..carry+MAGIC_NUMBER_SIZE];
-        magic_buf.copy_from_slice(&MAGIC_NUMBER_BYTES);
-        carry += MAGIC_NUMBER_SIZE;
-
-        // save version
-        VERSION.write_as_bytes(&mut buf[carry..carry+u32::BYTES]).unwrap();
-        carry += u32::BYTES;
-
-        // save indexed
-        self.indexed.write_as_bytes(&mut buf[carry..carry+bool::BYTES]).unwrap();
-        carry += bool::BYTES;
-
-        // save indexed record count
-        self.indexed_count.write_as_bytes(&mut buf[carry..carry+u64::BYTES]).unwrap();
-        carry += u64::BYTES;
-
-        // save table uuid
-        match self.table_uuid {
-            Some(v) => {
-                true.write_as_bytes(&mut buf[carry..carry+bool::BYTES]).unwrap();
-                carry += bool::BYTES;
-                v.write_as_bytes(&mut buf[carry..carry+Uuid::BYTES]).unwrap()
-            },
-            None => {
-                false.write_as_bytes(&mut buf[carry..carry+bool::BYTES]).unwrap();
-                carry += bool::BYTES;
-                buf[carry..carry+Uuid::BYTES].copy_from_slice(&[0u8; Uuid::BYTES])
-            }
-        }
-
-        buf
+    /// Return the previously calculated byte count to be writed when
+    /// the header is converted into bytes.
+    pub fn size_as_bytes(&self) -> u64 {
+        Self::META_BYTES as u64 + self.fields.size_as_bytes()
     }
-}
-
-impl ByteSized for Header {
-    /// Index header size in bytes.
-    /// 
-    /// Byte Format
-    /// `<magic_number:11><version:4><indexed:1><indexed_count:8><table_nul:1><table_uuid:16>`.
-    const BYTES: usize = 30 + MAGIC_NUMBER_SIZE;
 }
 
 impl LoadFrom for Header {
     fn load_from(&mut self, reader: &mut impl Read) -> Result<()> {
         // read data
         let mut carry = 0;
-        let mut buf = [0u8; Self::BYTES];
+        let mut buf = [0u8; Self::META_BYTES];
         reader.read_exact(&mut buf)?;
 
         // read and validate magic number
@@ -110,6 +89,14 @@ impl LoadFrom for Header {
         let indexed_count = u64::from_byte_slice(&buf[carry..carry+u64::BYTES])?;
         carry += u64::BYTES;
 
+        // read indexed record previously deleted
+        let indexed_deleted = u64::from_byte_slice(&buf[carry..carry+u64::BYTES])?;
+        carry += u64::BYTES;
+
+        // read indexed record offset count
+        let indexed_offset = u64::from_byte_slice(&buf[carry..carry+u64::BYTES])?;
+        carry += u64::BYTES;
+
         // read uuid
         let has_uuid = bool::from_byte_slice(&buf[carry..carry+bool::BYTES])?;
         let mut uuid = None;
@@ -118,20 +105,14 @@ impl LoadFrom for Header {
         }
 
         // save values
+        self.fields.load_from(reader)?;
         self.indexed = indexed;
         self.indexed_count = indexed_count;
+        self.indexed_deleted = indexed_deleted;
+        self.indexed_offset = indexed_offset;
         self.table_uuid = uuid;
 
         Ok(())
-    }
-}
-
-impl FromByteSlice for Header {
-    fn from_byte_slice(buf: &[u8]) -> Result<Self> {
-        let mut header = Self::new(None);
-        let mut reader = buf;
-        header.load_from(&mut reader)?;
-        Ok(header)
     }
 }
 
@@ -156,7 +137,38 @@ impl TryFrom<&[u8]> for Header {
 
 impl WriteTo for Header {
     fn write_to(&self, writer: &mut impl Write) -> Result<()> {
-        writer.write_all(&self.as_bytes())?;
+        // save magic number
+        writer.write(&MAGIC_NUMBER_BYTES);
+
+        // save version
+        VERSION.write_to(writer)?;
+
+        // save indexed
+        self.indexed.write_to(writer)?;
+
+        // save indexed record count
+        self.indexed_count.write_to(writer)?;
+
+        // save indexed record previously deleted
+        self.indexed_deleted.write_to(writer)?;
+
+        // save indexed record offset count
+        self.indexed_offset.write_to(writer)?;
+
+        // save table uuid
+        match self.table_uuid {
+            Some(v) => {
+                true.write_to(writer)?;
+                v.write_to(writer)?;
+            },
+            None => {
+                false.write_to(writer)?;
+                writer.write_all(&[0u8; Uuid::BYTES]);
+            }
+        }
+
+        // save field headers
+        self.fields.write_to(writer)?;
         Ok(())
     }
 }
@@ -198,6 +210,8 @@ pub mod test_helper {
         Header{
             indexed,
             indexed_count,
+            indexed_deleted,
+            indexed_offset,
             hash,
             input_type
         }.as_bytes()
@@ -285,7 +299,7 @@ mod tests {
             // first test
             let mut expected = [
                 // magic number
-                100, 97, 116, 97, 104, 101, 110, 95, 105, 100, 120,
+                100, 97, 116, 97, 104, 101, 110, 95, 98, 116, 105,
                 // version
                 0, 0, 0, 2,
                 // indexed
@@ -318,7 +332,7 @@ mod tests {
             // second test
             let expected = [
                 // magic number
-                100, 97, 116, 97, 104, 101, 110, 95, 105, 100, 120,
+                100, 97, 116, 97, 104, 101, 110, 95, 98, 116, 105,
                 // version
                 0, 0, 0, 2,
                 // indexed

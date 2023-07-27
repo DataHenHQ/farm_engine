@@ -1,11 +1,17 @@
 pub mod field_type;
 pub mod value;
+pub mod header;
+pub mod record;
+
+pub use field_type::*;
+pub use value::*;
+pub use header::*;
+pub use record::*;
 
 use serde::{Serialize, Deserialize};
 use std::io::{Read, Write};
 use anyhow::{bail, Result};
 use crate::traits::{ByteSized, ReadFrom, WriteTo};
-use self::field_type::FieldType;
 
 /// Represents a field.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]

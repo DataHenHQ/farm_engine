@@ -1,13 +1,10 @@
-pub mod header;
-
 use indexmap::IndexMap;
 use serde::ser::{Serialize, Serializer, SerializeMap};
 use anyhow::{bail, Result};
 use crate::db::field::value::Value;
-pub use header::Header;
 
 /// Represents a data record.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Record {
     _values: IndexMap<String, Value>
 }

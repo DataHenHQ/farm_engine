@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use anyhow::{bail, Result};
 use crate::error::ParseError;
 use crate::traits::{ByteSized, FromByteSlice, WriteAsBytes, ReadFrom, WriteTo};
-use super::value::Value;
+use super::Value;
 
 /// Represents a field type.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Copy, Clone)]

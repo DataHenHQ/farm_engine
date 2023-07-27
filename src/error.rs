@@ -40,7 +40,9 @@ impl From<&str> for ParseError {
 #[derive(Error, Debug)]
 pub enum IndexError<T> where T: Display {
     #[error("the input doesn't have any fields")]
-    NoInputFields,
+    NoFields,
+    #[error("invalid field \"{}\"", .0)]
+    InvalidField(T),
     #[error("unavailable due status \"{}\"", .0)]
     Unavailable(T)
 }

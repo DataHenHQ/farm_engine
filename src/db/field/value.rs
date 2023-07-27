@@ -1,9 +1,10 @@
 use serde::ser::{Serialize, Serializer};
 use serde_json::{Value as JSValue, Number as JSNumber};
 use anyhow::{bail, Result};
+use std::cmp::Ordering;
 
 /// Represents a value.
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, Clone)]
 pub enum Value {
     Default,
     Bool(bool),
@@ -40,6 +41,7 @@ impl Value {
             _ => bail!("can't convert from a JS value other than number")
         }
     }
+
 }
 
 impl std::fmt::Display for Value{
@@ -62,75 +64,227 @@ impl std::fmt::Display for Value{
     }
 }
 
-impl From<bool> for Value {
-    fn from(v: bool) -> Self {
-        Value::Bool(v)
+macro_rules! impl_partial_eq_number_to_value {
+    ($from:ty, $to:ident) => {
+        impl PartialEq<$from> for Value {
+            fn eq(&self, other: &$from) -> bool {
+                if let Value::$to(v) = self {
+                    return v.eq(other);
+                }
+                let other = (*other as i64);
+                match self {
+                    Self::I8(v) => (*v as i64)== other,
+                    Self::I16(v) => (*v as i64)== other,
+                    Self::I32(v) => (*v as i64)== other,
+                    Self::I64(v) => *v== other,
+                    Self::U8(v) => (*v as i64)== other,
+                    Self::U16(v) => (*v as i64)== other,
+                    Self::U32(v) => (*v as i64)== other,
+                    Self::U64(v) => (*v as i128)== (other as i128),
+                    Self::F32(v) => (*v as f64)== (other as f64),
+                    Self::F64(v) => (*v as f64)== (other as f64),                    
+                    _ => false
+                }
+            }
+        }
+    };
+}
+
+impl_partial_eq_number_to_value!(i8, I8);
+impl_partial_eq_number_to_value!(i16, I16);
+impl_partial_eq_number_to_value!(i32, I32);
+impl_partial_eq_number_to_value!(i64, I64);
+impl_partial_eq_number_to_value!(u8, U8);
+impl_partial_eq_number_to_value!(u16, U16);
+impl_partial_eq_number_to_value!(u32, U32);
+impl_partial_eq_number_to_value!(u64, U64);
+impl_partial_eq_number_to_value!(f32, F32);
+impl_partial_eq_number_to_value!(f64, F64);
+
+impl PartialEq<String> for Value {
+    fn eq(&self, other: &String) -> bool {
+        if let Value::Str(v) = self {
+            return v.eq(other);
+        }
+        false
     }
 }
 
-impl From<i8> for Value {
-    fn from(v: i8) -> Self {
-        Value::I8(v)
+impl PartialEq<str> for Value {
+    fn eq(&self, other: &str) -> bool {
+        if let Value::Str(v) = self {
+            return v.eq(other);
+        }
+        false
     }
 }
 
-impl From<i16> for Value {
-    fn from(v: i16) -> Self {
-        Value::I16(v)
+
+impl PartialEq<bool> for Value {
+    fn eq(&self, other: &bool) -> bool {
+        if let Value::Bool(v) = self {
+            return v.eq(other);
+        }
+        false
     }
 }
 
-impl From<i32> for Value {
-    fn from(v: i32) -> Self {
-        Value::I32(v)
+
+impl PartialEq<Value> for Value{
+    fn eq(&self, other: &Value) -> bool {
+        match self {
+            Self::I8(v) => other.eq(v),
+            Self::I16(v) => other.eq(v),
+            Self::I32(v) => other.eq(v),
+            Self::I64(v) => other.eq(v),
+            Self::U8(v) => other.eq(v),
+            Self::U16(v) => other.eq(v),
+            Self::U32(v) => other.eq(v),
+            Self::U64(v) => other.eq(v),
+            Self::F32(v) => other.eq(v),
+            Self::F64(v) => other.eq(v),
+            Self::Str(v) => other.eq(v),
+            Self::Bool(v) => other.eq(v),
+            Self::Default => {
+                if let Self::Default = other {
+                    return true;
+                }
+                false
+            },
+
+        }
     }
 }
 
-impl From<i64> for Value {
-    fn from(v: i64) -> Self {
-        Value::I64(v)
+macro_rules! impl_partial_cmp_number_to_value {
+    ($from:ty, $to:ident) => {
+        impl PartialOrd<$from> for Value {
+            fn partial_cmp(&self, other: &$from) -> Option<Ordering>{
+                if let Value::$to(v) = self {
+                    return v.partial_cmp(other);
+                }
+                let other = (*other as i64);
+                match self {                    
+                    Self::I8(v) => (*v as i64).partial_cmp(&other),
+                    Self::I16(v) => (*v as i64).partial_cmp(&other),
+                    Self::I32(v) => (*v as i64).partial_cmp(&other),
+                    Self::I64(v) => (*v).partial_cmp(&other),
+                    Self::U8(v) => (*v as i64).partial_cmp(&other),
+                    Self::U16(v) => (*v as i64).partial_cmp(&other),
+                    Self::U32(v) => (*v as i64).partial_cmp(&other),
+                    Self::U64(v) => (*v as i128).partial_cmp(&(other as i128)),
+                    Self::F32(v) => (*v as f64).partial_cmp(&(other as f64)),
+                    Self::F64(v) => (*v as f64).partial_cmp(&(other as f64)),                      
+                    _ => None
+                }
+            }
+        }
+    };
+}
+
+impl_partial_cmp_number_to_value!(i8, I8);
+impl_partial_cmp_number_to_value!(i16, I16);
+impl_partial_cmp_number_to_value!(i32, I32);
+impl_partial_cmp_number_to_value!(i64, I64);
+impl_partial_cmp_number_to_value!(u8, U8);
+impl_partial_cmp_number_to_value!(u16, U16);
+impl_partial_cmp_number_to_value!(u32, U32);
+impl_partial_cmp_number_to_value!(u64, U64);
+impl_partial_cmp_number_to_value!(f32, F32);
+impl_partial_cmp_number_to_value!(f64, F64);
+
+impl PartialOrd<String> for Value {
+    fn partial_cmp(&self, other: &String) -> Option<Ordering> {
+        if let Value::Str(v) = self {
+            return v.partial_cmp(other);
+        }
+        None
     }
 }
 
-impl From<u8> for Value {
-    fn from(v: u8) -> Self {
-        Value::U8(v)
+impl PartialOrd<str> for Value {
+    fn partial_cmp(&self, other: &str) -> Option<Ordering> {
+        if let Value::Str(v) = self {
+            return (v as &str).partial_cmp(other);
+        }
+        None
     }
 }
 
-impl From<u16> for Value {
-    fn from(v: u16) -> Self {
-        Value::U16(v)
+
+impl PartialOrd<bool> for Value {
+    fn partial_cmp(&self, other: &bool) -> Option<Ordering> {
+        if let Value::Bool(v) = self {
+            return v.partial_cmp(other);
+        }
+        None
     }
 }
 
-impl From<u32> for Value {
-    fn from(v: u32) -> Self {
-        Value::U32(v)
+impl PartialOrd<Value> for Value{
+    fn partial_cmp(&self, other: &Value) -> Option<Ordering> {
+        match self {
+            Self::I8(v) => other.partial_cmp(v),
+            Self::I16(v) => other.partial_cmp(v),
+            Self::I32(v) => other.partial_cmp(v),
+            Self::I64(v) => other.partial_cmp(v),
+            Self::U8(v) => other.partial_cmp(v),
+            Self::U16(v) => other.partial_cmp(v),
+            Self::U32(v) => other.partial_cmp(v),
+            Self::U64(v) => other.partial_cmp(v),
+            Self::F32(v) => other.partial_cmp(v),
+            Self::F64(v) => other.partial_cmp(v),
+            Self::Str(v) => other.partial_cmp(v),
+            Self::Bool(v) => other.partial_cmp(v),
+            Self::Default => {
+                if let Self::Default = other {
+                    return Some(Ordering::Equal);
+                }
+                None
+            },
+
+        }
     }
 }
 
-impl From<u64> for Value {
-    fn from(v: u64) -> Self {
-        Value::U64(v)
+macro_rules! impl_convert_to_native {
+    ($from:ty, $to:ident) => {
+        impl From<$from> for Value {
+            fn from(v: $from) -> Self {
+                Value::$to(v)
+            }
+        }
+        
+        impl From<$from> for &Value {
+            fn from(v: $from) -> Self {
+                &v.into()
+            }
+        }
     }
 }
 
-impl From<f32> for Value {
-    fn from(v: f32) -> Self {
-        Value::F32(v)
-    }
-}
-
-impl From<f64> for Value {
-    fn from(v: f64) -> Self {
-        Value::F64(v)
-    }
-}
+// implement conversions for all types to native value
+impl_convert_to_native!(bool, Bool);
+impl_convert_to_native!(i8, I8);
+impl_convert_to_native!(i16, I16);
+impl_convert_to_native!(i32, I32);
+impl_convert_to_native!(i64, I64);
+impl_convert_to_native!(u8, U8);
+impl_convert_to_native!(u16, U16);
+impl_convert_to_native!(u32, U32);
+impl_convert_to_native!(u64, U64);
+impl_convert_to_native!(f32, F32);
+impl_convert_to_native!(f64, F64);
 
 impl From<&str> for Value {
     fn from(v: &str) -> Self {
         Value::Str(v.to_string())
+    }
+}
+
+impl From<&str> for &Value {
+    fn from(v: &str) -> Self {
+        &v.into()
     }
 }
 
@@ -236,6 +390,8 @@ impl Serialize for Value {
         }
     }
 }
+
+
 
 #[cfg(test)]
 mod tests {

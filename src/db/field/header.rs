@@ -2,9 +2,9 @@ use anyhow::{bail, Result};
 use indexmap::IndexMap;
 use std::io::{Read, Write};
 use crate::traits::{ByteSized, ReadFrom, WriteTo, LoadFrom};
-use crate::db::field::field_type::FieldType;
-use crate::db::field::value::Value;
-use crate::db::field::Field;
+use super::FieldType;
+use super::Value;
+use super::Field;
 use super::Record;
 
 /// Represent the record header. Byte format: `<field_count:1><fields:?>`
