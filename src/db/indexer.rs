@@ -3,7 +3,7 @@ pub mod value;
 
 use anyhow::{bail, Result};
 use regex::Regex;
-use serde_json::{Map as JSMap, Value as JSValue};
+use serde::de::DeserializeOwned;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
@@ -337,7 +337,7 @@ impl Indexer {
     /// # Arguments
     /// 
     /// * `value` - Index value
-    fn parse_csv_input(&self, value: &Value) -> Result<JSMap<String, JSValue>> {
+    fn parse_csv_input<T: DeserializeOwned>(&self, value: &Value) -> Result<T> {
         // create CSV headers
         let mut buf = Vec::new();
         let limit = self.input_fields.len();
@@ -383,7 +383,7 @@ impl Indexer {
     /// # Arguments
     /// 
     /// * `value` - Index value
-    fn parse_json_input(&self, value: &Value) -> Result<JSMap<String, JSValue>> {
+    fn parse_json_input<T: DeserializeOwned>(&self, value: &Value) -> Result<T> {
         let mut reader = self.new_input_reader()?;
         let buf = value.read_input_from(&mut reader)?;
         Ok(serde_json::from_reader(buf.as_slice())?)
@@ -394,7 +394,7 @@ impl Indexer {
     /// # Arguments
     /// 
     /// * `value` - Index value
-    pub fn parse_input(&self, value: &Value) -> Result<JSMap<String, JSValue>> {
+    pub fn parse_input<T: DeserializeOwned>(&self, value: &Value) -> Result<T> {
         if !self.header.indexed {
             bail!("input file must be indexed before parsing and input value")
         }
@@ -759,7 +759,7 @@ impl Indexer {
 pub mod test_helper {
     use super::*;
     use crate::test_helper::*;
-    use crate::db::indexer::header::{HASH_SIZE};
+    use crate::db::indexer::header::HASH_SIZE;
     use crate::db::indexer::header::test_helper::{random_hash, build_header_bytes};
     use tempfile::TempDir;
 
@@ -1006,10 +1006,11 @@ mod tests {
     use super::*;
     use test_helper::*;
     use serde_json::Number as JSNumber;
+    use serde_json::{Map as JSMap, Value as JSValue};
     use std::io::Cursor;
     use std::sync::Mutex;
     use crate::test_helper::*;
-    use crate::db::indexer::header::{HASH_SIZE};
+    use crate::db::indexer::header::HASH_SIZE;
     use crate::db::indexer::header::test_helper::{random_hash, build_header_bytes};
 
     #[test]
@@ -1895,7 +1896,7 @@ mod tests {
             
             // test
             let expected = "the input doesn't have any fields";
-            match indexer.parse_csv_input(&value) {
+            match indexer.parse_csv_input::<JSMap<String, JSValue>>(&value) {
                 Ok(v) => assert!(false, "expected error but got {:?}", v),
                 Err(e) => assert_eq!(expected, e.to_string())
             }

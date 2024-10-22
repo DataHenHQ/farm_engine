@@ -1,4 +1,6 @@
 use anyhow::{Result, bail};
+use csv::StringRecord;
+use serde::de::Visitor;
 use serde::{Serialize, Deserialize};
 use serde_json::{Map as JSMap, Value as JSValue, Number as JSNumber};
 use std::collections::HashMap;
@@ -481,14 +483,25 @@ impl<'s> Exporter<'s> {
             self.add_csv_headers(field, &mut headers, &input_headers);
         }
         writer.write_headers(&headers)?;
+        let headers: StringRecord = headers.into();
         
         // iterate input as CSV
+        let data_types = HashMap::new();
         let mut is_first = true;
-        for result in csv_reader.deserialize() {
+        for result in csv_reader.records() {
+            // deserialize record
+            let raw_data: CustomRawRecord = match result {
+                Ok(v) => match v.deserialize(Some(&headers)) {
+                    Ok(v) => v,
+                    Err(err) => bail!(err)
+                },
+                Err(err) => bail!(err)
+            };
+
             // read input and source data
             let export_data = ExportData{
                 input_headers: input_headers.clone(),
-                input: result?,
+                input: raw_data.parse(&data_types)?,
                 index: IndexValue::read_from(&mut index_rdr)?,
                 record: self.source.table.record_header.read_record(&mut table_rdr)?
             };
@@ -573,6 +586,82 @@ impl<'s> Exporter<'s> {
             .open(&output_path)?;
         let mut writer = BufWriter::new(file);
         self.export_to(&mut writer, fields, match_filter)
+    }
+}
+
+pub enum DataType {
+    Default,
+    Bool,
+    I8,
+    I16,
+    I32,
+    I64,
+    U8,
+    U16,
+    U32,
+    U64,
+    F32,
+    F64,
+    Str
+}
+
+struct CustomRecordVisitor {}
+
+impl<'de> Visitor<'de> for CustomRecordVisitor {
+    type Value = CustomRawRecord;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("couldn't deserialize custom map")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+        where
+            A: serde::de::MapAccess<'de>, {
+        let mut data = CustomRawRecord{ data: Default::default()};
+        while let Some(key) = map.next_key::<String>()? {
+            data.data.insert(key, map.next_value()?);
+        }
+        Ok(data)
+    }
+}
+
+pub struct CustomRawRecord {
+    data: HashMap<String, String>
+}
+
+impl CustomRawRecord {
+    pub fn parse(mut self, key_type: &HashMap<String, DataType>) -> Result<serde_json::Map<String, serde_json::Value>> {
+        let mut data: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
+        for (key, raw_value) in self.data.drain() {
+            let value: serde_json::Value = match key_type.get_key_value(&key) {
+                Some((_, data_type)) => match *data_type {
+                    DataType::Default => raw_value.into(),
+                    DataType::Bool => raw_value.parse::<bool>()?.into(),
+                    DataType::I8 => raw_value.parse::<i8>()?.into(),
+                    DataType::I16 => raw_value.parse::<i16>()?.into(),
+                    DataType::I32 => raw_value.parse::<i32>()?.into(),
+                    DataType::I64 => raw_value.parse::<i64>()?.into(),
+                    DataType::U8 => raw_value.parse::<u8>()?.into(),
+                    DataType::U16 => raw_value.parse::<u16>()?.into(),
+                    DataType::U32 => raw_value.parse::<u32>()?.into(),
+                    DataType::U64 => raw_value.parse::<u64>()?.into(),
+                    DataType::F32 => raw_value.parse::<f32>()?.into(),
+                    DataType::F64 => raw_value.parse::<f64>()?.into(),
+                    DataType::Str => raw_value.into(),
+                },
+                None => raw_value.into()
+            };
+            data.insert(key, value);
+        }
+        Ok(data)
+    }
+}
+
+impl<'de> Deserialize<'de> for CustomRawRecord {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::de::Deserializer<'de> {
+        deserializer.deserialize_map(CustomRecordVisitor{})
     }
 }
 

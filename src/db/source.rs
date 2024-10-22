@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
-use serde::{Serialize};
-use serde_json::{Map as JSMap, Value as JSValue};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
@@ -14,8 +14,8 @@ use super::table::record::Record;
 
 /// Represents a data source single record.
 #[derive(Debug, Serialize, PartialEq)]
-pub struct Data {
-    pub input: JSMap<String, JSValue>,
+pub struct Data<T: DeserializeOwned> {
+    pub input: T,
     pub index: IndexData,
     pub record: Record
 }
@@ -111,7 +111,7 @@ impl Source {
     /// $ Arguments
     /// 
     /// * `index` - Record index.
-    pub fn data(&self, index: u64) -> Result<Option<Data>> {
+    pub fn data<T: DeserializeOwned>(&self, index: u64) -> Result<Option<Data<T>>> {
         let index_value = match self.index.value(index)? {
             Some(v) => v,
             None => return Ok(None)
