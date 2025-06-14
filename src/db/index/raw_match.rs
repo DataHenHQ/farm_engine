@@ -15,7 +15,7 @@ use crate::traits::{ByteSized, LoadFrom, ReadFrom, WriteTo};
 use header::{Header, InputType};
 use value::{MatchFlag, Data, Value};
 
-/// Indexer version.
+/// RawMatch version.
 pub const VERSION: u32 = 2;
 
 /// Index file extension.
@@ -48,9 +48,9 @@ impl Display for Status{
     }
 }
 
-/// Indexer engine.
+/// RawMatch engine.
 #[derive(Debug, PartialEq, Clone)]
-pub struct Indexer {
+pub struct RawMatch {
     /// Input file path.
     pub input_path: PathBuf,
 
@@ -67,7 +67,7 @@ pub struct Indexer {
     pub input_fields: Vec<String>,
 }
 
-impl Indexer {
+impl RawMatch {
     /// Generates a regex expression to validate the index file extension.
     pub fn file_extension_regex() -> Regex {
         let expression = format!(r"(?i)\.{}$", FILE_EXTENSION);
@@ -342,7 +342,8 @@ impl Indexer {
         let mut buf = Vec::new();
         let limit = self.input_fields.len();
         if limit < 1 {
-            bail!(IndexError::NoInputFields)
+            let err: IndexError<Status> = IndexError::NoFields;
+            bail!(err)
         }
         buf.extend_from_slice(self.input_fields[0].as_bytes());
         if limit > 1 {
@@ -759,8 +760,8 @@ impl Indexer {
 pub mod test_helper {
     use super::*;
     use crate::test_helper::*;
-    use crate::db::indexer::header::{HASH_SIZE};
-    use crate::db::indexer::header::test_helper::{random_hash, build_header_bytes};
+    use crate::db::index::raw_match::header::{HASH_SIZE};
+    use crate::db::index::raw_match::header::test_helper::{random_hash, build_header_bytes};
     use tempfile::TempDir;
 
     /// Fake records without fields bytes.
@@ -973,19 +974,19 @@ pub mod test_helper {
         Ok(values)
     }
 
-    /// Execute a function with both a temp directory and a new Indexer.
+    /// Execute a function with both a temp directory and a new RawMatch.
     /// 
     /// # Arguments
     /// 
     /// * `f` - Function to execute.
-    pub fn with_tmpdir_and_indexer(f: &impl Fn(&TempDir, &mut Indexer) -> Result<()>) {
+    pub fn with_tmpdir_and_indexer(f: &impl Fn(&TempDir, &mut RawMatch) -> Result<()>) {
         let sub = |dir: &TempDir| -> Result<()> {
             // generate default file names for files
             let input_path = dir.path().join("i.csv");
             let index_path = dir.path().join("i.fmindex");
 
-            // create Indexer and execute
-            let mut indexer = Indexer::new(
+            // create RawMatch and execute
+            let mut indexer = RawMatch::new(
                 input_path,
                 index_path,
                 InputType::Unknown
@@ -1009,12 +1010,12 @@ mod tests {
     use std::io::Cursor;
     use std::sync::Mutex;
     use crate::test_helper::*;
-    use crate::db::indexer::header::{HASH_SIZE};
-    use crate::db::indexer::header::test_helper::{random_hash, build_header_bytes};
+    use crate::db::index::raw_match::header::{HASH_SIZE};
+    use crate::db::index::raw_match::header::test_helper::{random_hash, build_header_bytes};
 
     #[test]
     fn file_extension_regex() {
-        let rx = Indexer::file_extension_regex();
+        let rx = RawMatch::file_extension_regex();
         assert!(rx.is_match("hello.fmindex"), "expected to match \"hello.fmindex\" but got false");
         assert!(rx.is_match("/path/to/hello.fmindex"), "expected to match \"/path/to/hello.fmindex\" but got false");
         assert!(!rx.is_match("hello.index"), "expected to not match \"hello.index\" but got true");
@@ -1024,20 +1025,20 @@ mod tests {
     fn new() {
         let mut header = Header::new();
         header.input_type = InputType::JSON;
-        let expected = Indexer{
+        let expected = RawMatch{
             input_path: "my_input.csv".into(),
             index_path: "my_index.fmidx".into(),
             header,
             batch_size: DEFAULT_BATCH_SIZE,
             input_fields: Vec::new()
         };
-        let indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::JSON);
+        let indexer = RawMatch::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::JSON);
         assert_eq!(expected, indexer);
     }
 
     #[test]
     fn calc_record_pos() {
-        assert_eq!(108, Indexer::calc_value_pos(2));
+        assert_eq!(108, RawMatch::calc_value_pos(2));
     }
 
     #[test]
@@ -1052,7 +1053,7 @@ mod tests {
         let mut reader = Cursor::new(buf.to_vec());
 
         // test load_headers
-        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        let mut indexer = RawMatch::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
         if let Err(e) = indexer.load_header_from(&mut reader) {
             assert!(false, "expected success but got error: {:?}", e);
         }
@@ -1079,7 +1080,7 @@ mod tests {
         let mut reader = Cursor::new(buf.to_vec());
 
         // init indexer and expected records
-        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        let mut indexer = RawMatch::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
         indexer.header.indexed = true;
         indexer.header.indexed_count = record_count;
         let expected = match fake_values() {
@@ -1226,12 +1227,12 @@ mod tests {
             }
         };
         let mut reader = Cursor::new(buf.to_vec());
-        if let Err(e) = reader.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+        if let Err(e) = reader.seek(SeekFrom::Start(RawMatch::calc_value_pos(0))) {
             assert!(false, "{:?}", e);
         };
 
         // init indexer and expected records
-        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        let mut indexer = RawMatch::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
         indexer.header.indexed = true;
         indexer.header.indexed_count = record_count;
         let all_values = match fake_values() {
@@ -1280,12 +1281,12 @@ mod tests {
             }
         };
         let mut reader = Cursor::new(buf.to_vec());
-        if let Err(e) = reader.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+        if let Err(e) = reader.seek(SeekFrom::Start(RawMatch::calc_value_pos(0))) {
             assert!(false, "{:?}", e);
         };
 
         // init indexer and expected records
-        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        let mut indexer = RawMatch::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
         indexer.header.indexed = true;
         indexer.header.indexed_count = record_count;
         let all_values = match fake_values() {
@@ -1327,12 +1328,12 @@ mod tests {
             }
         };
         let mut reader = Cursor::new(buf.to_vec());
-        if let Err(e) = reader.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+        if let Err(e) = reader.seek(SeekFrom::Start(RawMatch::calc_value_pos(0))) {
             assert!(false, "{:?}", e);
         };
 
         // init indexer and expected records
-        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        let mut indexer = RawMatch::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
         indexer.header.indexed = true;
         indexer.header.indexed_count = record_count;
         let all_values = match fake_values() {
@@ -1436,12 +1437,12 @@ mod tests {
         };
         let mut reader = Cursor::new(buf.to_vec());
         let mut writer = Cursor::new(buf.to_vec());
-        if let Err(e) = reader.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+        if let Err(e) = reader.seek(SeekFrom::Start(RawMatch::calc_value_pos(0))) {
             assert!(false, "{:?}", e);
         };
 
         // init indexer and expected records
-        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        let mut indexer = RawMatch::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
         indexer.header.indexed = true;
         indexer.header.indexed_count = record_count;
         let all_values = match fake_values() {
@@ -1486,7 +1487,7 @@ mod tests {
         };
 
         // read updated values
-        if let Err(e) = writer.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+        if let Err(e) = writer.seek(SeekFrom::Start(RawMatch::calc_value_pos(0))) {
             assert!(false, "{:?}", e);
         };
         let mut list = Vec::new();
@@ -1524,12 +1525,12 @@ mod tests {
         };
         let mut reader = Cursor::new(buf.to_vec());
         let mut writer = Cursor::new(buf.to_vec());
-        if let Err(e) = reader.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+        if let Err(e) = reader.seek(SeekFrom::Start(RawMatch::calc_value_pos(0))) {
             assert!(false, "{:?}", e);
         };
 
         // init indexer and expected records
-        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        let mut indexer = RawMatch::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
         indexer.header.indexed = true;
         indexer.header.indexed_count = record_count;
         let all_values = match fake_values() {
@@ -1569,7 +1570,7 @@ mod tests {
         };
 
         // read updated values
-        if let Err(e) = writer.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+        if let Err(e) = writer.seek(SeekFrom::Start(RawMatch::calc_value_pos(0))) {
             assert!(false, "{:?}", e);
         };
         let mut list = Vec::new();
@@ -1608,12 +1609,12 @@ mod tests {
         };
         let mut reader = Cursor::new(buf.to_vec());
         let mut writer = Cursor::new(buf.to_vec());
-        if let Err(e) = reader.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+        if let Err(e) = reader.seek(SeekFrom::Start(RawMatch::calc_value_pos(0))) {
             assert!(false, "{:?}", e);
         };
 
         // init indexer and expected records
-        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        let mut indexer = RawMatch::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
         indexer.header.indexed = true;
         indexer.header.indexed_count = record_count;
         let all_values = match fake_values() {
@@ -1654,7 +1655,7 @@ mod tests {
         };
 
         // read updated values
-        if let Err(e) = writer.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+        if let Err(e) = writer.seek(SeekFrom::Start(RawMatch::calc_value_pos(0))) {
             assert!(false, "{:?}", e);
         };
         let mut list = Vec::new();
@@ -1693,12 +1694,12 @@ mod tests {
         };
         let mut reader = Cursor::new(buf.to_vec());
         let mut writer = Cursor::new(buf.to_vec());
-        if let Err(e) = reader.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+        if let Err(e) = reader.seek(SeekFrom::Start(RawMatch::calc_value_pos(0))) {
             assert!(false, "{:?}", e);
         };
 
         // init indexer and expected records
-        let mut indexer = Indexer::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
+        let mut indexer = RawMatch::new("my_input.csv".into(), "my_index.fmidx".into(), InputType::Unknown);
         indexer.header.indexed = true;
         indexer.header.indexed_count = record_count;
         let all_values = match fake_values() {
@@ -1736,7 +1737,7 @@ mod tests {
         };
 
         // read updated values
-        if let Err(e) = writer.seek(SeekFrom::Start(Indexer::calc_value_pos(0))) {
+        if let Err(e) = writer.seek(SeekFrom::Start(RawMatch::calc_value_pos(0))) {
             assert!(false, "{:?}", e);
         };
         let mut list = Vec::new();
@@ -1909,7 +1910,7 @@ mod tests {
         with_tmpdir_and_indexer(&|_, indexer| {
             // create index and check original value
             let mut values = create_fake_index(&indexer.index_path, true)?;
-            let pos = Indexer::calc_value_pos(2);
+            let pos = RawMatch::calc_value_pos(2);
             let mut buf = [0u8; Value::BYTES];
             let file = File::open(&indexer.index_path)?;
             let mut reader = BufReader::new(file);
@@ -1967,7 +1968,7 @@ mod tests {
         with_tmpdir_and_indexer(&|_, indexer| {
             // create index and check original value
             let mut values = create_fake_index(&indexer.index_path, true)?;
-            let pos = Indexer::calc_value_pos(2);
+            let pos = RawMatch::calc_value_pos(2);
             let mut buf = [0u8; Value::BYTES];
             let file = File::open(&indexer.index_path)?;
             let mut reader = BufReader::new(file);
@@ -2090,7 +2091,7 @@ mod tests {
             // find existing unmatched with offset
             match indexer.find_pending(1) {
                 Ok(opt) => assert!(false, "expected error but got {:?}", opt),
-                Err(e) => match e.downcast::<IndexError>(){
+                Err(e) => match e.downcast::<IndexError<Status>>(){
                     Ok(ex) => match ex {
                         IndexError::Unavailable(status) => match status {
                             Status::Incomplete => {},
@@ -2415,7 +2416,7 @@ mod tests {
             }
 
             // create expected index
-            let mut expected = Indexer::new(
+            let mut expected = RawMatch::new(
                 indexer.input_path.clone(),
                 indexer.index_path.clone(),
                 InputType::CSV

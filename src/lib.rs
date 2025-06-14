@@ -8,7 +8,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
 use std::path::PathBuf;
 use sha3::{Digest, Sha3_256};
-use db::indexer::header::HASH_SIZE;
+use db::index::raw_match::header::HASH_SIZE;
 use anyhow::{bail, Result};
 
 const BUF_SIZE: u64 = 4096;

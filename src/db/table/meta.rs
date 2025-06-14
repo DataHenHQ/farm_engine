@@ -1,0 +1,552 @@
+use std::io::{Read, Write};
+use std::convert::TryFrom;
+use anyhow::{bail, Result};
+use uuid::Uuid;
+use crate::traits::{ByteSized, FromByteSlice, ReadFrom, WriteTo, WriteAsBytes, LoadFrom};
+use crate::db::field::{FieldType, Value};
+use super::VERSION;
+
+/// File's magic numbervalue size bytes.
+pub const MAGIC_NUMBER_SIZE: usize = 11;
+
+/// File's magic number value `datahen_tbl` as bytes.
+pub const MAGIC_NUMBER_BYTES: [u8; MAGIC_NUMBER_SIZE] = [100, 97, 116, 97, 104, 101, 110, 95, 116, 98, 108];
+
+/// Table name max length in bytes.
+pub const TABLE_NAME_MAX_SIZE: u32 = 50;
+
+/// Table name field.
+pub const TABLE_NAME_FIELD: FieldType = FieldType::Str(TABLE_NAME_MAX_SIZE);
+
+/// Describes a table metadata.
+#[derive(Debug, PartialEq, Clone)]
+pub struct Meta {
+    /// Records count.
+    pub record_count: u64,
+
+    /// Table name.
+    _name: String,
+
+    /// Table UUID.
+    _uuid: Uuid,
+}
+
+impl Meta {
+    /// Creates a new meta.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `name` - Table name.
+    pub fn new(name: &str, uuid: Option<Uuid>) -> Result<Self> {
+        if !TABLE_NAME_FIELD.is_valid(&Value::Str(name.to_string())) {
+            bail!("table name must be shorter than {} bytes", TABLE_NAME_MAX_SIZE);
+        }
+        let uuid = match uuid {
+            Some(v) => v,
+            None => Uuid::new_v4()
+        };
+        Ok(Self{
+            record_count: 0,
+            _name: name.to_string(),
+            _uuid: uuid
+        })
+    }
+
+    /// Gets the table name.
+    pub fn get_name(&self) -> &str {
+        &self._name
+    }
+
+    /// Gets the table uuid.
+    pub fn get_uuid(&self) -> &Uuid {
+        &self._uuid
+    }
+
+    /// Serialize the metadata to a fixed byte slice.
+    pub fn as_bytes(&self) -> [u8; Self::BYTES] {
+        let mut buf = [0u8; Self::BYTES];
+        let mut carry = 0;
+
+        // save magic number
+        let magic_buf = &mut buf[carry..carry+MAGIC_NUMBER_SIZE];
+        magic_buf.copy_from_slice(&MAGIC_NUMBER_BYTES);
+        carry += MAGIC_NUMBER_SIZE;
+
+        // save version
+        VERSION.write_as_bytes(&mut buf[carry..carry+u32::BYTES]).unwrap();
+        carry += u32::BYTES;
+
+        // save record count
+        self.record_count.write_as_bytes(&mut buf[carry..carry+u64::BYTES]).unwrap();
+        carry += u64::BYTES;
+
+        // save table name
+        let name_size = TABLE_NAME_FIELD.value_byte_size();
+        let name_value = Value::Str(self._name.clone());
+        let mut name_writer = &mut buf[carry..carry+name_size] as &mut [u8];
+        TABLE_NAME_FIELD.write_value(&mut name_writer, &name_value).unwrap();
+        carry += name_size;
+
+        // save uuid
+        self._uuid.write_as_bytes(&mut buf[carry..carry+Uuid::BYTES]).unwrap();
+
+        buf
+    }
+}
+
+impl ByteSized for Meta {
+    /// Table meta size in bytes.
+    /// 
+    /// Byte Format
+    /// `<magic_number:11><version:4><record_count:8><name_size:4><name_value:50><uuid:16>`.
+    const BYTES: usize = MAGIC_NUMBER_SIZE + 82;
+}
+
+impl LoadFrom for Meta {
+    fn load_from(&mut self, reader: &mut impl Read) -> Result<()> {
+        // read data
+        let mut carry = 0;
+        let mut buf = [0u8; Self::BYTES];
+        reader.read_exact(&mut buf)?;
+
+        // read and validate magic number
+        if buf[carry..carry+MAGIC_NUMBER_SIZE] != MAGIC_NUMBER_BYTES {
+            bail!("invalid file magic number");
+        }
+        carry += MAGIC_NUMBER_SIZE;
+
+        // read and validate table version
+        let version = u32::from_byte_slice(&buf[carry..carry+u32::BYTES])?;
+        if version != VERSION {
+            bail!("table version mismatch, expected {} buf found {}", VERSION, version);
+        }
+        carry += u32::BYTES;
+
+        // read record count
+        let record_count = u64::from_byte_slice(&buf[carry..carry+u64::BYTES])?;
+        carry += u64::BYTES;
+
+        // read table name
+        let name_byte_size = TABLE_NAME_FIELD.value_byte_size();
+        let mut name_reader = &buf[carry..carry+name_byte_size] as &[u8];
+        let name_value = TABLE_NAME_FIELD.read_value(&mut name_reader)?;
+        carry += name_byte_size;
+
+        // read uuid
+        let uuid = Uuid::from_byte_slice(&buf[carry..carry+Uuid::BYTES])?;
+
+        // save values
+        self.record_count = record_count;
+        self._name = match name_value {
+            Value::Str(s) => s,
+            _ => bail!("name value should be a string")
+        };
+        self._uuid = uuid;
+
+        Ok(())
+    }
+}
+
+impl FromByteSlice for Meta {
+    fn from_byte_slice(buf: &[u8]) -> Result<Self> {
+        let mut meta = Self::new("", Some(Uuid::from_bytes([0u8; Uuid::BYTES])))?;
+        let mut reader = buf;
+        meta.load_from(&mut reader)?;
+        Ok(meta)
+    }
+}
+
+impl ReadFrom for Meta {
+    fn read_from(reader: &mut impl Read) -> Result<Self> {
+        let mut meta = Self::new("", Some(Uuid::from_bytes([0u8; Uuid::BYTES])))?;
+        meta.load_from(reader)?;
+        Ok(meta)
+    }
+}
+
+impl TryFrom<&[u8]> for Meta {
+    type Error = anyhow::Error;
+
+    fn try_from(buf: &[u8]) -> Result<Self, Self::Error> {
+        let mut meta = Self::new("", Some(Uuid::from_bytes([0u8; Uuid::BYTES])))?;
+        let mut reader = buf;
+        meta.load_from(&mut reader)?;
+        Ok(meta)
+    }
+}
+
+impl WriteTo for Meta {
+    fn write_to(&self, writer: &mut impl Write) -> Result<()> {
+        writer.write_all(&self.as_bytes())?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+pub mod test_helper {
+    use super::*;
+
+    /// Builds a table random uuid.
+    pub fn table_uuid() -> Uuid {
+        Uuid::new_v4()
+    }
+
+    /// Builds an table header as byte slice from the values provided.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `name` - Table name.
+    /// * `record_count` - Total record count.
+    pub fn build_meta_bytes(name: &str, record_count: u64, uuid: Option<Uuid>) -> [u8; Meta::BYTES] {
+        let uuid = match uuid {
+            Some(v) => v,
+            None => table_uuid()
+        };
+        Meta{
+            record_count,
+            _name: name.to_string(),
+            _uuid: uuid,
+        }.as_bytes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use test_helper::*;
+
+    #[test]
+    fn get_name() {
+        let expected = "aaa";
+        let meta = match Meta::new("aaa", None) {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "Expected meta isntance but got error: {:?}", e);
+                return;
+            }
+        };
+        assert_eq!(expected, meta.get_name());
+    }
+
+    #[test]
+    fn get_uuid() {
+        let expected = Uuid::from_bytes([
+            2u8, 3u8, 12u8, 0u8, 5u8, 12u8, 87u8, 14u8,
+            65u8, 1u8, 5u8, 9u8, 0u8, 53u8, 10u8, 23u8
+        ]);
+        let meta = match Meta::new("aaa", Some(Uuid::from_bytes([
+            2u8, 3u8, 12u8, 0u8, 5u8, 12u8, 87u8, 14u8,
+            65u8, 1u8, 5u8, 9u8, 0u8, 53u8, 10u8, 23u8
+        ]))) {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "Expected meta isntance but got error: {:?}", e);
+                return;
+            }
+        };
+        assert_eq!(expected, *meta.get_uuid());
+    }
+
+    #[test]
+    fn table_name_max_size() {
+        assert_eq!(50, TABLE_NAME_MAX_SIZE);
+    }
+
+    #[test]
+    fn table_name_field() {
+        let expected = 50;
+        let field_type = TABLE_NAME_FIELD;
+        match field_type {
+            FieldType::Str(size) => assert_eq!(expected, size),
+            t => assert!(false, "expected FieldType::Str({}) but got FieldType::{:?}", expected, t)
+        }
+    }
+
+    #[test]
+    fn new() {
+        let uuid = table_uuid();
+        let expected = Meta{
+            record_count: 0,
+            _name: "hello".to_string(),
+            _uuid: uuid
+        };
+        match Meta::new("hello", Some(uuid)) {
+            Ok(v) => assert_eq!(expected, v),
+            Err(e) => assert!(false, "expected {:?} but got error: {:?}", expected, e)
+        }
+    }
+
+    #[test]
+    fn new_with_invalid_name() {
+        let expected = "table name must be shorter than 50 bytes";
+        let buf = vec![b'a'; 51];
+        let invalid_name = String::from_utf8_lossy(buf.as_slice());
+        match Meta::new(&invalid_name, Some(table_uuid())) {
+            Ok(v) => assert!(false, "expected error but got {:?}", v),
+            Err(e) => assert_eq!(expected, e.to_string())
+        }
+    }
+
+    #[test]
+    fn new_random_uuid() {
+        let res = Meta::new("hello", None);
+        if res.is_err() {
+            assert!(false, "expected new header but got error: {:?}", res.err().unwrap())
+        }
+        let meta = res.unwrap();
+        assert_eq!("hello".to_string(), meta._name);
+        assert_eq!(0, meta.record_count);
+        assert_ne!([0u8; Uuid::BYTES], meta._uuid.into_bytes());
+    }
+
+    #[test]
+    fn as_bytes() {
+        // first test
+        let expected: [u8; Meta::BYTES] = [
+            // magic number
+            100, 97, 116, 97, 104, 101, 110, 95, 116, 98, 108,
+            // version
+            0, 0, 0, 2,
+            // record count = 2311457452320998632
+            32, 19, 242, 78, 103, 5, 196, 232,
+            // name size
+            0, 0, 0, 8,
+            // name value: "my_table"
+            109, 121, 95, 116, 97, 98, 108, 101, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0,
+            // uuid: "a1a2a3a4-b1b2-c1c2-d1d2-d3d4d5d6d7d8"
+            161, 162, 163, 164, 177, 178, 193, 194, 209, 210, 211, 212, 213, 214, 215, 216
+        ];
+
+        // test header as_bytes function
+        let meta = Meta{
+            record_count: 2311457452320998632,
+            _name: "my_table".to_string(),
+            _uuid: Uuid::parse_str("a1a2a3a4-b1b2-c1c2-d1d2-d3d4d5d6d7d8").unwrap()
+        };
+        assert_eq!(expected, meta.as_bytes());
+
+        // second test
+        let expected: [u8; Meta::BYTES] = [
+            // magic number
+            100, 97, 116, 97, 104, 101, 110, 95, 116, 98, 108,
+            // version
+            0, 0, 0, 2,
+            // record count = 4525325654675485867
+            62, 205, 47, 180, 235, 228, 244, 171,
+            // name size
+            0, 0, 0, 9,
+            // name value: "hellotbl"
+            104, 101, 108, 108, 111, 95, 116, 98, 108, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0,
+            // uuid: "b1a2a3a4-b1b2-c1c2-d1d2-d3d4d5d6d7d8"
+            177, 162, 163, 164, 177, 178, 193, 194, 209, 210, 211, 212, 213, 214, 215, 216
+        ];
+
+        // test header as_bytes function
+        let meta = Meta{
+            record_count: 4525325654675485867,
+            _name: "hello_tbl".to_string(),
+            _uuid: Uuid::parse_str("b1a2a3a4-b1b2-c1c2-d1d2-d3d4d5d6d7d8").unwrap()
+        };
+        assert_eq!(expected, meta.as_bytes());
+    }
+
+    #[test]
+    fn meta_byte_sized() {
+        assert_eq!(93, Meta::BYTES);
+    }
+
+    #[test]
+    fn load_from_u8_slice() {
+        // first random try
+        let uuid = table_uuid();
+        let mut meta = Meta{
+            record_count: 0,
+            _name: "".to_string(),
+            _uuid: uuid
+        };
+        let expected = Meta{
+            record_count: 4535435,
+            _name: "my_table".to_string(),
+            _uuid: uuid
+        };
+        let buf = build_meta_bytes("my_table", 4535435, Some(uuid));
+        let mut reader = &buf as &[u8];
+        if let Err(e) = meta.load_from(&mut reader) {
+            assert!(false, "expected success but got error: {:?}", e);
+            return;
+        };
+        assert_eq!(expected, meta);
+
+        // second random try
+        let uuid = table_uuid();
+        let mut meta = Meta{
+            record_count: 0,
+            _name: "".to_string(),
+            _uuid: uuid
+        };
+        let expected = Meta{
+            record_count: 6572646535124,
+            _name: "hello_tbl".to_string(),
+            _uuid: uuid
+        };
+        let buf = build_meta_bytes("hello_tbl", 6572646535124, Some(uuid));
+        let mut reader = &buf as &[u8];
+        if let Err(e) = meta.load_from(&mut reader) {
+            assert!(false, "expected success but got error: {:?}", e);
+            return;
+        };
+        assert_eq!(expected, meta);
+    }
+
+    #[test]
+    fn from_byte_slice() {
+        // first random try
+        let uuid = table_uuid();
+        let expected = Meta{
+            record_count: 2341234,
+            _name: "my_table".to_string(),
+            _uuid: uuid
+        };
+        let buf = build_meta_bytes("my_table", 2341234, Some(uuid));
+        let value = match Meta::from_byte_slice(&buf) {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "expected success but got error: {:?}", e);
+                return;
+            }
+        };
+        assert_eq!(expected, value);
+
+        // second random try
+        let uuid = table_uuid();
+        let expected = Meta{
+            record_count: 9879873495743,
+            _name: "hello_tbl".to_string(),
+            _uuid: uuid
+        };
+        let buf = build_meta_bytes("hello_tbl", 9879873495743, Some(uuid));
+        let value = match Meta::from_byte_slice(&buf) {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "expected success but got error: {:?}", e);
+                return;
+            }
+        };
+        assert_eq!(expected, value);
+    }
+
+    #[test]
+    fn read_from_reader() {
+        // first random try
+        let uuid = table_uuid();
+        let expected = Meta{
+            record_count: 974734838473874,
+            _name: "my_table".to_string(),
+            _uuid: uuid
+        };
+        let buf = build_meta_bytes("my_table", 974734838473874, Some(uuid));
+        let mut reader = &buf as &[u8];
+        let value = match Meta::read_from(&mut reader) {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "expected success but got error: {:?}", e);
+                return;
+            }
+        };
+        assert_eq!(expected, value);
+
+        // second random try
+        let uuid = table_uuid();
+        let expected = Meta{
+            record_count: 3434232315645344,
+            _name: "hello_tbl".to_string(),
+            _uuid: uuid
+        };
+        let buf = build_meta_bytes("hello_tbl", 3434232315645344, Some(uuid));
+        let mut reader = &buf as &[u8];
+        let value = match Meta::read_from(&mut reader) {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "expected success but got error: {:?}", e);
+                return;
+            }
+        };
+        assert_eq!(expected, value);
+    }
+
+    #[test]
+    fn try_from_u8_slice() {
+        // first random try
+        let uuid = table_uuid();
+        let expected = Meta{
+            record_count: 32412342134234,
+            _name: "my_table".to_string(),
+            _uuid: uuid
+        };
+        let buf = build_meta_bytes("my_table", 32412342134234, Some(uuid));
+        let value = match Meta::try_from(&buf[..]) {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "expected success but got error: {:?}", e);
+                return;
+            }
+        };
+        assert_eq!(expected, value);
+
+        // second random try
+        let uuid = table_uuid();
+        let expected = Meta{
+            record_count: 56535423143214,
+            _name: "hello_tbl".to_string(),
+            _uuid: uuid
+        };
+        let buf = build_meta_bytes("hello_tbl", 56535423143214, Some(uuid));
+        let value = match Meta::try_from(&buf[..]) {
+            Ok(v) => v,
+            Err(e) => {
+                assert!(false, "expected success but got error: {:?}", e);
+                return;
+            }
+        };
+        assert_eq!(expected, value);
+    }
+
+    #[test]
+    fn write_to_writer() {
+        // first random try
+        let uuid = table_uuid();
+        let expected = build_meta_bytes("my_table", 788477630402843, Some(uuid));
+        let meta = Meta{
+            record_count: 788477630402843,
+            _name: "my_table".to_string(),
+            _uuid: uuid
+        };
+        let mut buf = [0u8; Meta::BYTES];
+        let mut writer = &mut buf as &mut [u8];
+        if let Err(e) = meta.write_to(&mut writer) {
+            assert!(false, "{:?}", e);
+            return;
+        };
+        assert_eq!(expected, buf);
+
+        // second random try
+        let uuid = table_uuid();
+        let expected = build_meta_bytes("hello_tbl", 63439320337562938, Some(uuid));
+        let meta = Meta{
+            record_count: 63439320337562938,
+            _name: "hello_tbl".to_string(),
+            _uuid: uuid
+        };
+        let mut buf = [0u8; Meta::BYTES];
+        let mut writer = &mut buf as &mut [u8];
+        if let Err(e) = meta.write_to(&mut writer) {
+            assert!(false, "{:?}", e);
+            return;
+        };
+        assert_eq!(expected, buf);
+    }
+}

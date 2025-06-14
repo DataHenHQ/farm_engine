@@ -29,14 +29,14 @@ impl TryFrom<u8> for InputType {
     type Error = ParseError;
 
     fn try_from(v: u8) -> std::result::Result<Self, Self::Error> {
-        let match_flag = match v {
+        let status_flag = match v {
             0 => Self::Unknown,
             1 => Self::CSV,
             2 => Self::JSON,
             _ => return Err(ParseError::InvalidFormat)
         };
 
-        Ok(match_flag)
+        Ok(status_flag)
     }
 }
 
@@ -253,11 +253,11 @@ pub mod test_helper {
 
     /// Generate a random hash value.
     pub fn random_hash() -> [u8; HASH_SIZE] {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let mut buf = [0u8; HASH_SIZE];
 
         for i in 0..HASH_SIZE {
-            buf[i] = rng.gen_range(0..255);
+            buf[i] = rng.random_range(0..255);
         }
         buf
     }

@@ -6,10 +6,10 @@ use std::fs::OpenOptions;
 use std::io::{Seek, SeekFrom, Write, BufWriter};
 use std::path::PathBuf;
 use crate::traits::ReadFrom;
-use super::indexer::Indexer;
-use super::indexer::header::InputType;
-use super::indexer::value::{Value as IndexValue, MatchFlag};
-use super::table::record::Record;
+use crate::db::field::Record;
+use super::index::raw_match::RawMatch;
+use super::index::raw_match::header::InputType;
+use super::index::raw_match::value::{Value as IndexValue, MatchFlag};
 use super::source::Source;
 
 /// MatchFlag masked value.
@@ -72,7 +72,7 @@ pub trait ExporterWriter {
     /// 
     /// * `fields` - Fields to export.
     /// * `input_data` - Input data to filter.
-    /// * `value` - Indexer data to filter.
+    /// * `value` - RawMatch data to filter.
     fn write_data(&mut self, fields: &[ExportField], source: ExportData, is_first: bool) -> Result<()>;
 
     /// Write end.
@@ -426,8 +426,8 @@ impl<'s> Exporter<'s> {
                 return
             },
             ExportField::AllRecord{overrides} => {
-                for v in self.source.table.record_header.iter() {
-                    let name = v.get_name();
+                for (k, _) in self.source.table.header.record.iter() {
+                    let name = k;
 
                     // apply field override
                     if let Some(map) = overrides {
@@ -456,7 +456,7 @@ impl<'s> Exporter<'s> {
     fn export_from_csv(&self, writer: &mut impl ExporterWriter, fields: &[ExportField], match_filter: Option<&[MatchFlag]>) -> Result<()> {
         // create the index reader and move to first value
         let mut index_rdr = self.source.index.new_index_reader()?;
-        let pos = Indexer::calc_value_pos(0);
+        let pos = RawMatch::calc_value_pos(0);
         index_rdr.seek(SeekFrom::Start(pos))?;
 
         // create the table reader and move to first record
@@ -490,7 +490,7 @@ impl<'s> Exporter<'s> {
                 input_headers: input_headers.clone(),
                 input: result?,
                 index: IndexValue::read_from(&mut index_rdr)?,
-                record: self.source.table.record_header.read_record(&mut table_rdr)?
+                record: self.source.table.header.record.read_record(&mut table_rdr)?
             };
 
             // filter by match flag when required
@@ -576,9 +576,9 @@ impl<'s> Exporter<'s> {
     }
 }
 
-#[cfg(tests)]
-mod tests {
-    use super::*;
+// #[cfg(tests)]
+// mod tests {
+//     use super::*;
 //     /// Return the fake output content as bytes.
 //     pub fn fake_output_bytes() -> Vec<u8> {
 //         let buf = build_empty_extra_fields().to_vec();
@@ -609,4 +609,4 @@ mod tests {
 
 //         Ok(())
 //     }
-}
+// }

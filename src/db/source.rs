@@ -1,5 +1,5 @@
 use anyhow::{bail, Result};
-use serde::{Serialize};
+use serde::Serialize;
 use serde_json::{Map as JSMap, Value as JSValue};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
@@ -7,10 +7,10 @@ use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
 use std::path::PathBuf;
 use crate::error::{ParseError, IndexError};
 use crate::traits::{ReadFrom, WriteTo};
-use super::indexer::{Indexer, Status as IndexStatus};
-use super::indexer::value::{MatchFlag, Data as IndexData, Value as IndexValue};
+use crate::db::field::Record;
+use super::index::raw_match::{RawMatch, Status as IndexStatus};
+use super::index::raw_match::value::{MatchFlag, Data as IndexData, Value as IndexValue};
 use super::table::Table;
-use super::table::record::Record;
 
 /// Represents a data source single record.
 #[derive(Debug, Serialize, PartialEq)]
@@ -57,8 +57,8 @@ impl SourceJoinItem<BufWriter<File>, BufWriter<File>> {
 /// Represents a data source.
 #[derive(Debug, Clone)]
 pub struct Source {
-    /// Indexer.
-    pub index: Indexer,
+    /// RawMatch.
+    pub index: RawMatch,
     /// Table.
     pub table: Table
 }
@@ -72,7 +72,7 @@ impl Source {
     /// * `force_override` - Always creates a new table file with the current headers.
     pub fn init(&mut self, override_on_error: bool, force_override: bool) -> Result<()> {
         if let Err(e) = self.index.index() {
-            match e.downcast::<IndexError>() {
+            match e.downcast::<IndexError<IndexStatus>>() {
                 Ok(ex) => match ex {
                     IndexError::Unavailable(status) => match status {
                         IndexStatus::Indexing => bail!(IndexError::Unavailable(IndexStatus::Indexing)),
@@ -90,8 +90,8 @@ impl Source {
                 Err(ex) => bail!(ex)
             }
         }
-        if self.table.header.record_count < 1 {
-            self.table.header.record_count = self.index.header.indexed_count;
+        if self.table.header.meta.record_count < 1 {
+            self.table.header.meta.record_count = self.index.header.indexed_count;
         }
         self.table.load_or_create(override_on_error, force_override)?;
         Ok(())
@@ -136,7 +136,7 @@ impl Source {
         }
 
         // check that the indexed count match the record count
-        if self.index.header.indexed_count != self.table.header.record_count {
+        if self.index.header.indexed_count != self.table.header.meta.record_count {
             return false;
         }
         true
@@ -164,15 +164,15 @@ impl Source {
         }
 
         // ensure tables has the same fields count
-        if self.table.record_header.len() != source.table.record_header.len() {
+        if self.table.header.record.len() != source.table.header.record.len() {
             return (false, "table field count doesn't match")
         }
 
         // ensure tables has the same fields
-        let limit = self.table.record_header.len();
+        let limit = self.table.header.record.len();
         if limit > 0 {
             for i in 0..limit {
-                if self.table.record_header.get_by_index(i) != source.table.record_header.get_by_index(i) {
+                if self.table.header.record.get_by_index(i) != source.table.header.record.get_by_index(i) {
                     return (false, "table fields doesn't match")
                 }
             }
@@ -233,7 +233,7 @@ impl Source {
         target.table.save_headers_into(&mut target_wrt.table)?;
 
         // move target writers to the first record position
-        let index_pos = Indexer::calc_value_pos(0);
+        let index_pos = RawMatch::calc_value_pos(0);
         let table_pos = target.table.calc_record_pos(0);
         target_wrt.index.seek(SeekFrom::Start(index_pos))?;
         target_wrt.table.seek(SeekFrom::Start(table_pos))?;
@@ -253,7 +253,7 @@ impl Source {
         // iterate and join sources
         let total_sources = sources.len() as f64;
         let match_values = MatchFlag::as_array();
-        let record_size = target.table.record_header.record_byte_size() as usize;
+        let record_size = target.table.header.record.record_byte_size() as usize;
         let mut base_record_buf = vec![0u8; record_size as usize];
         let mut record_buf = vec![0u8; record_size as usize];
         for index in 0..target.index.header.indexed_count {
@@ -333,7 +333,7 @@ mod test_helper {
     use super::*;
     use tempfile::TempDir;
     use crate::test_helper::*;
-    use crate::db::indexer::header::InputType;
+    use crate::db::index::raw_match::header::InputType;
 
     /// Execute a function with both a temp directory and a new Source.
     /// 
@@ -349,14 +349,15 @@ mod test_helper {
 
             // create source
             let mut source = Source{
-                index: Indexer::new(
+                index: RawMatch::new(
                     input_path,
                     index_path,
                     InputType::Unknown
                 ),
                 table: Table::new(
                     table_path,
-                    "my_table"
+                    "my_table",
+                    None
                 )?
             };
 
@@ -375,11 +376,10 @@ mod tests {
     use super::*;
     use super::test_helper::*;
     // use crate::test_helper::*;
-    use crate::db::indexer::test_helper::{create_fake_index};
+    use crate::db::index::raw_match::test_helper::create_fake_index;
     use crate::db::table::test_helper::create_fake_table;
-    use crate::db::indexer::header::{Header as IndexHeader};
-    use crate::db::table::header::{Header as TableHeader};
-    use crate::db::table::record::header::{Header as RecordHeader};
+    use crate::db::index::raw_match::header::Header as IndexHeader;
+    use crate::db::table::Header as TableHeader;
 
     mod source_join_item {
         use super::*;
@@ -404,8 +404,6 @@ mod tests {
                 let expected = TableHeader::read_from(&mut table_rdr)?;
                 source.table.load_headers_from(&mut readers.table)?;
                 assert_eq!(expected, source.table.header);
-                let expected = RecordHeader::read_from(&mut table_rdr)?;
-                assert_eq!(expected, source.table.record_header);
 
                 Ok(())
             });

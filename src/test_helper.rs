@@ -1,5 +1,5 @@
 use tempfile::{TempDir, tempdir};
-use std::fs::{OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{Write, BufWriter, Error, ErrorKind};
 use std::path::PathBuf;
 use anyhow::{Result, bail};
