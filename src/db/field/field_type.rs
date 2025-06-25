@@ -863,7 +863,7 @@ mod tests {
             // extra bytes, this shouldn't be read
             99u8, 100u8, 101u8, 102u8, 103u8, 0u8, 0u8, 0u8
         ] as &[u8];
-        let expected = "string value size can't be bigger than the field size";
+        let expected = "string value size can't be bigger than the field size (2)";
         match FieldType::Str(2).read_value(&mut reader) {
             Ok(v) => assert!(false, "expected error but got {:?}", v),
             Err(e) => assert_eq!(expected, e.to_string())
