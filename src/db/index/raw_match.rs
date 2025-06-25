@@ -776,11 +776,10 @@ impl RawMatch {
         }
 
         // truncate the file then index again
-        let file = OpenOptions::new()
+        OpenOptions::new()
             .truncate(true)
             .create(true)
             .open(&self.index_path)?;
-        file.set_len(0)?;
         self.index()?;
         Ok(())
     }
