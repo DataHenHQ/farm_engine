@@ -1,10 +1,10 @@
 use std::io::{Read, Write};
 use std::convert::TryFrom;
-use anyhow::Result;
+use anyhow::{Result, Error};
 use uuid::Uuid;
 use crate::traits::{ByteSized, ReadFrom, WriteTo, LoadFrom};
 use crate::db::field::Header as RecordHeader;
-use super::Meta;
+use crate::db::table::meta::Meta;
 
 //// Describes a table file header.
 #[derive(Debug, PartialEq, Clone)]
@@ -35,14 +35,15 @@ impl Header {
     }
 }
 
-impl LoadFrom for Header {
+impl LoadFrom<Error> for Header {
     fn load_from(&mut self, reader: &mut impl Read) -> Result<()> {
         self.meta.load_from(reader)?;
-        self.record.load_from(reader)
+        self.record.load_from(reader)?;
+        Ok(())
     }
 }
 
-impl ReadFrom for Header {
+impl ReadFrom<Error> for Header {
     fn read_from(reader: &mut impl Read) -> Result<Self> {
         let mut header = Self::new("", Some(Uuid::from_bytes([0u8; Uuid::BYTES])))?;
         header.load_from(reader)?;
@@ -61,10 +62,11 @@ impl TryFrom<&[u8]> for Header {
     }
 }
 
-impl WriteTo for Header {
+impl WriteTo<Error> for Header {
     fn write_to(&self, writer: &mut impl Write) -> Result<()> {
         self.meta.write_to(writer)?;
-        self.record.write_to(writer)
+        self.record.write_to(writer)?;
+        Ok(())
     }
 }
 

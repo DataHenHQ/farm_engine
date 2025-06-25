@@ -1,6 +1,6 @@
 use std::io::{Read, Write};
 use std::convert::TryFrom;
-use anyhow::{bail, Result};
+use anyhow::{bail, Result, Error};
 use uuid::Uuid;
 use crate::traits::{ByteSized, FromByteSlice, ReadFrom, WriteTo, WriteAsBytes, LoadFrom};
 use crate::db::field::{FieldType, Value};
@@ -102,7 +102,7 @@ impl ByteSized for Meta {
     const BYTES: usize = MAGIC_NUMBER_SIZE + 82;
 }
 
-impl LoadFrom for Meta {
+impl LoadFrom<Error> for Meta {
     fn load_from(&mut self, reader: &mut impl Read) -> Result<()> {
         // read data
         let mut carry = 0;
@@ -147,7 +147,7 @@ impl LoadFrom for Meta {
     }
 }
 
-impl FromByteSlice for Meta {
+impl FromByteSlice<Error> for Meta {
     fn from_byte_slice(buf: &[u8]) -> Result<Self> {
         let mut meta = Self::new("", Some(Uuid::from_bytes([0u8; Uuid::BYTES])))?;
         let mut reader = buf;
@@ -156,7 +156,7 @@ impl FromByteSlice for Meta {
     }
 }
 
-impl ReadFrom for Meta {
+impl ReadFrom<Error> for Meta {
     fn read_from(reader: &mut impl Read) -> Result<Self> {
         let mut meta = Self::new("", Some(Uuid::from_bytes([0u8; Uuid::BYTES])))?;
         meta.load_from(reader)?;
@@ -175,7 +175,7 @@ impl TryFrom<&[u8]> for Meta {
     }
 }
 
-impl WriteTo for Meta {
+impl WriteTo<Error> for Meta {
     fn write_to(&self, writer: &mut impl Write) -> Result<()> {
         writer.write_all(&self.as_bytes())?;
         Ok(())
@@ -197,16 +197,17 @@ pub mod test_helper {
     /// 
     /// * `name` - Table name.
     /// * `record_count` - Total record count.
-    pub fn build_meta_bytes(name: &str, record_count: u64, uuid: Option<Uuid>) -> [u8; Meta::BYTES] {
+    pub fn build_meta_bytes(name: &str, record_count: u64, uuid: Option<Uuid>) -> ([u8; Meta::BYTES], Meta) {
         let uuid = match uuid {
             Some(v) => v,
             None => table_uuid()
         };
-        Meta{
+        let meta = Meta{
             record_count,
             _name: name.to_string(),
             _uuid: uuid,
-        }.as_bytes()
+        };
+        (meta.as_bytes(), meta)
     }
 }
 
@@ -373,7 +374,7 @@ mod tests {
             _name: "my_table".to_string(),
             _uuid: uuid
         };
-        let buf = build_meta_bytes("my_table", 4535435, Some(uuid));
+        let (buf, _) = build_meta_bytes("my_table", 4535435, Some(uuid));
         let mut reader = &buf as &[u8];
         if let Err(e) = meta.load_from(&mut reader) {
             assert!(false, "expected success but got error: {:?}", e);
@@ -393,7 +394,7 @@ mod tests {
             _name: "hello_tbl".to_string(),
             _uuid: uuid
         };
-        let buf = build_meta_bytes("hello_tbl", 6572646535124, Some(uuid));
+        let (buf, _) = build_meta_bytes("hello_tbl", 6572646535124, Some(uuid));
         let mut reader = &buf as &[u8];
         if let Err(e) = meta.load_from(&mut reader) {
             assert!(false, "expected success but got error: {:?}", e);
@@ -406,12 +407,7 @@ mod tests {
     fn from_byte_slice() {
         // first random try
         let uuid = table_uuid();
-        let expected = Meta{
-            record_count: 2341234,
-            _name: "my_table".to_string(),
-            _uuid: uuid
-        };
-        let buf = build_meta_bytes("my_table", 2341234, Some(uuid));
+        let (buf, expected) = build_meta_bytes("my_table", 2341234, Some(uuid));
         let value = match Meta::from_byte_slice(&buf) {
             Ok(v) => v,
             Err(e) => {
@@ -423,12 +419,7 @@ mod tests {
 
         // second random try
         let uuid = table_uuid();
-        let expected = Meta{
-            record_count: 9879873495743,
-            _name: "hello_tbl".to_string(),
-            _uuid: uuid
-        };
-        let buf = build_meta_bytes("hello_tbl", 9879873495743, Some(uuid));
+        let (buf, expected) = build_meta_bytes("hello_tbl", 9879873495743, Some(uuid));
         let value = match Meta::from_byte_slice(&buf) {
             Ok(v) => v,
             Err(e) => {
@@ -443,12 +434,7 @@ mod tests {
     fn read_from_reader() {
         // first random try
         let uuid = table_uuid();
-        let expected = Meta{
-            record_count: 974734838473874,
-            _name: "my_table".to_string(),
-            _uuid: uuid
-        };
-        let buf = build_meta_bytes("my_table", 974734838473874, Some(uuid));
+        let (buf, expected) = build_meta_bytes("my_table", 974734838473874, Some(uuid));
         let mut reader = &buf as &[u8];
         let value = match Meta::read_from(&mut reader) {
             Ok(v) => v,
@@ -461,12 +447,7 @@ mod tests {
 
         // second random try
         let uuid = table_uuid();
-        let expected = Meta{
-            record_count: 3434232315645344,
-            _name: "hello_tbl".to_string(),
-            _uuid: uuid
-        };
-        let buf = build_meta_bytes("hello_tbl", 3434232315645344, Some(uuid));
+        let (buf, expected) = build_meta_bytes("hello_tbl", 3434232315645344, Some(uuid));
         let mut reader = &buf as &[u8];
         let value = match Meta::read_from(&mut reader) {
             Ok(v) => v,
@@ -482,12 +463,7 @@ mod tests {
     fn try_from_u8_slice() {
         // first random try
         let uuid = table_uuid();
-        let expected = Meta{
-            record_count: 32412342134234,
-            _name: "my_table".to_string(),
-            _uuid: uuid
-        };
-        let buf = build_meta_bytes("my_table", 32412342134234, Some(uuid));
+        let (buf, expected) = build_meta_bytes("my_table", 32412342134234, Some(uuid));
         let value = match Meta::try_from(&buf[..]) {
             Ok(v) => v,
             Err(e) => {
@@ -499,12 +475,7 @@ mod tests {
 
         // second random try
         let uuid = table_uuid();
-        let expected = Meta{
-            record_count: 56535423143214,
-            _name: "hello_tbl".to_string(),
-            _uuid: uuid
-        };
-        let buf = build_meta_bytes("hello_tbl", 56535423143214, Some(uuid));
+        let (buf, expected) = build_meta_bytes("hello_tbl", 56535423143214, Some(uuid));
         let value = match Meta::try_from(&buf[..]) {
             Ok(v) => v,
             Err(e) => {
@@ -519,12 +490,7 @@ mod tests {
     fn write_to_writer() {
         // first random try
         let uuid = table_uuid();
-        let expected = build_meta_bytes("my_table", 788477630402843, Some(uuid));
-        let meta = Meta{
-            record_count: 788477630402843,
-            _name: "my_table".to_string(),
-            _uuid: uuid
-        };
+        let (expected, meta) = build_meta_bytes("my_table", 788477630402843, Some(uuid));
         let mut buf = [0u8; Meta::BYTES];
         let mut writer = &mut buf as &mut [u8];
         if let Err(e) = meta.write_to(&mut writer) {
@@ -535,12 +501,7 @@ mod tests {
 
         // second random try
         let uuid = table_uuid();
-        let expected = build_meta_bytes("hello_tbl", 63439320337562938, Some(uuid));
-        let meta = Meta{
-            record_count: 63439320337562938,
-            _name: "hello_tbl".to_string(),
-            _uuid: uuid
-        };
+        let (expected, meta) = build_meta_bytes("hello_tbl", 63439320337562938, Some(uuid));
         let mut buf = [0u8; Meta::BYTES];
         let mut writer = &mut buf as &mut [u8];
         if let Err(e) = meta.write_to(&mut writer) {

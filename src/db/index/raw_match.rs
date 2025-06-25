@@ -1,17 +1,19 @@
+pub mod error;
 pub mod header;
 pub mod value;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Result as AnyResult};
 use regex::Regex;
 use serde_json::{Map as JSMap, Value as JSValue};
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
+use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter, Result as IoResult};
 use std::path::PathBuf;
-use crate::error::ParseError;
+use crate::error::{ParseError, ParseResult};
 use crate::{file_size, generate_hash};
-use crate::error::IndexError;
+use crate::db::index::raw_match::error::IndexError;
 use crate::traits::{ByteSized, LoadFrom, ReadFrom, WriteTo};
+use error::{IndexResult, InputError, InputResult};
 use header::{Header, InputType};
 use value::{MatchFlag, Data, Value};
 
@@ -102,13 +104,13 @@ impl RawMatch {
     }
 
     /// Returns an input file buffered reader.
-    pub fn new_input_reader(&self) -> Result<BufReader<File>> {
+    pub fn new_input_reader(&self) -> IoResult<BufReader<File>> {
         let file = File::open(&self.input_path)?;
         Ok(BufReader::new(file))
     }
 
     /// Returns an index file buffered reader.
-    pub fn new_index_reader(&self) -> Result<BufReader<File>> {
+    pub fn new_index_reader(&self) -> IoResult<BufReader<File>> {
         let file = File::open(&self.index_path)?;
         Ok(BufReader::new(file))
     }
@@ -118,7 +120,7 @@ impl RawMatch {
     /// # Arguments
     /// 
     /// * `create` - Set to `true` when the file should be created.
-    pub fn new_index_writer(&self, create: bool) -> Result<BufWriter<File>> {
+    pub fn new_index_writer(&self, create: bool) -> IoResult<BufWriter<File>> {
         let mut options = OpenOptions::new();
         options.write(true);
         if create {
@@ -133,7 +135,7 @@ impl RawMatch {
     /// # Arguments
     /// 
     /// * `reader` - Byte reader.
-    pub fn load_header_from(&mut self, reader: &mut (impl Read + Seek)) -> Result<()> {
+    pub fn load_header_from(&mut self, reader: &mut (impl Read + Seek)) -> IndexResult<()> {
         reader.seek(SeekFrom::Start(0))?;
         self.header.load_from(reader)?;
         Ok(())
@@ -147,9 +149,9 @@ impl RawMatch {
     /// * `reader` - Byte reader.
     /// * `index` - Record index.
     /// * `force` - Skips indexed file validation when true.
-    pub fn seek_value_pos_from(&self, reader: &mut (impl Read + Seek), index: u64, force: bool) -> Result<bool> {
+    pub fn seek_value_pos_from(&self, reader: &mut (impl Read + Seek), index: u64, force: bool) -> IndexResult<bool> {
         if !force && !self.header.indexed {
-            bail!("input file must be indexed before reading values")
+            return Err(IndexError::NonIndexed("input file must be indexed before reading values".to_string()))
         }
         if self.header.indexed_count > index {
             let pos = Self::calc_value_pos(index);
@@ -166,7 +168,7 @@ impl RawMatch {
     /// * `reader` - Byte reader.
     /// * `index` - Record index.
     /// * `force` - Skips indexed file validation when true.
-    pub fn seek_value_from(&self, reader: &mut (impl Read + Seek), index: u64, force: bool) -> Result<Option<Value>> {
+    pub fn seek_value_from(&self, reader: &mut (impl Read + Seek), index: u64, force: bool) -> IndexResult<Option<Value>> {
         if self.seek_value_pos_from(reader, index, force)? {
             return Ok(Some(Value::read_from(reader)?));
         }
@@ -178,7 +180,7 @@ impl RawMatch {
     /// # Arguments
     /// 
     /// * `index` - Record index.
-    pub fn value(&self, index: u64) -> Result<Option<Value>> {
+    pub fn value(&self, index: u64) -> IndexResult<Option<Value>> {
         let mut reader = self.new_index_reader()?;
         self.seek_value_from(&mut reader, index, false)
     }
@@ -195,8 +197,8 @@ impl RawMatch {
         &self,
         reader: &mut (impl Read + Seek),
         size: u64, f: F
-    ) -> Result<Vec<Value>>
-    where F: Fn(Value) -> Result<(Option<Value>, bool)> {
+    ) -> AnyResult<Vec<Value>>
+    where F: Fn(Value) -> AnyResult<(Option<Value>, bool)> {
         let mut list = Vec::new();
         let mut counter = 0;
         while size < 1 || counter < size {
@@ -205,12 +207,12 @@ impl RawMatch {
             // read and process value
             let value = match Value::read_from(reader) {
                 Ok(v) => v,
-                Err(e) => match e.downcast::<std::io::Error>() {
-                    Ok(err) => match err.kind() {
+                Err(e) => match e {
+                    ParseError::IO(err) => match err.kind() {
                         std::io::ErrorKind::UnexpectedEof => return Ok(list),
-                        _ => bail!(err)
+                        _ => bail!(ParseError::IO(err))
                     }
-                    Err(err) => bail!(err)
+                    err => bail!(err)
                 }
             };
             let (value, break_loop) = f(value)?;
@@ -241,8 +243,8 @@ impl RawMatch {
         index: u64,
         size: u64,
         f: F
-    ) -> Result<Vec<Value>>
-    where F: Fn(Value) -> Result<(Option<Value>, bool)> {
+    ) -> AnyResult<Vec<Value>>
+    where F: Fn(Value) -> AnyResult<(Option<Value>, bool)> {
         let mut reader = self.new_index_reader()?;
         if !self.seek_value_pos_from(&mut reader, index, false)? {
             return Ok(Vec::new())
@@ -264,8 +266,8 @@ impl RawMatch {
         writer: &mut (impl Write + Seek),
         size: u64,
         f: F
-    ) -> Result<()>
-    where F: Fn(Value) -> Result<(Option<Value>, bool)> {
+    ) -> AnyResult<()>
+    where F: Fn(Value) -> AnyResult<(Option<Value>, bool)> {
         let mut pos = reader.stream_position()?;
         let mut last_write_pos = 0;
         let value_size = Value::BYTES as u64;
@@ -276,12 +278,12 @@ impl RawMatch {
             // read and process value
             let value = match Value::read_from(reader) {
                 Ok(v) => v,
-                Err(e) => match e.downcast::<std::io::Error>() {
-                    Ok(err) => match err.kind() {
+                Err(e) => match e {
+                    ParseError::IO(err) => match err.kind() {
                         std::io::ErrorKind::UnexpectedEof => return Ok(()),
                         _ => bail!(err)
                     }
-                    Err(err) => bail!(err)
+                    err => bail!(err)
                 }
             };
             let (value, break_loop) = f(value)?;
@@ -320,8 +322,8 @@ impl RawMatch {
         index: u64,
         size: u64,
         f: F
-    ) -> Result<()>
-    where F: Fn(Value) -> Result<(Option<Value>, bool)> {
+    ) -> AnyResult<()>
+    where F: Fn(Value) -> AnyResult<(Option<Value>, bool)> {
         let mut reader = self.new_index_reader()?;
         let mut writer = self.new_index_writer(false)?;
         if self.seek_value_pos_from(&mut reader, index, false)? {
@@ -337,13 +339,12 @@ impl RawMatch {
     /// # Arguments
     /// 
     /// * `value` - Index value
-    fn parse_csv_input(&self, value: &Value) -> Result<JSMap<String, JSValue>> {
+    fn parse_csv_input(&self, value: &Value) -> IndexResult<JSMap<String, JSValue>> {
         // create CSV headers
         let mut buf = Vec::new();
         let limit = self.input_fields.len();
         if limit < 1 {
-            let err: IndexError<Status> = IndexError::NoFields;
-            bail!(err)
+            return Err(IndexError::NoFields)
         }
         buf.extend_from_slice(self.input_fields[0].as_bytes());
         if limit > 1 {
@@ -372,10 +373,10 @@ impl RawMatch {
                         value.input_start_pos,
                         e
                     );
-                    bail!(ParseError::InvalidFormat)
+                    Err(ParseError::InvalidFormat.into())
                 }
             },
-            None => bail!(ParseError::InvalidValue)
+            None => Err(ParseError::InvalidValue.into())
         }
     }
 
@@ -384,7 +385,7 @@ impl RawMatch {
     /// # Arguments
     /// 
     /// * `value` - Index value
-    fn parse_json_input(&self, value: &Value) -> Result<JSMap<String, JSValue>> {
+    fn parse_json_input(&self, value: &Value) -> IoResult<JSMap<String, JSValue>> {
         let mut reader = self.new_input_reader()?;
         let buf = value.read_input_from(&mut reader)?;
         Ok(serde_json::from_reader(buf.as_slice())?)
@@ -395,15 +396,15 @@ impl RawMatch {
     /// # Arguments
     /// 
     /// * `value` - Index value
-    pub fn parse_input(&self, value: &Value) -> Result<JSMap<String, JSValue>> {
+    pub fn parse_input(&self, value: &Value) -> IndexResult<JSMap<String, JSValue>> {
         if !self.header.indexed {
-            bail!("input file must be indexed before parsing and input value")
+            return Err(IndexError::NonIndexed("input file must be indexed before parsing and input value".into()));
         }
 
         match self.header.input_type {
-            InputType::CSV => self.parse_csv_input(value),
-            InputType::JSON => self.parse_json_input(value),
-            InputType::Unknown => bail!("not supported input file type")
+            InputType::CSV => Ok(self.parse_csv_input(value)?),
+            InputType::JSON => Ok(self.parse_json_input(value)?),
+            InputType::Unknown => Err(IndexError::Other("not supported input file type".into()))
         }
     }
 
@@ -413,7 +414,7 @@ impl RawMatch {
     /// 
     /// * `index` - Value index.
     /// * `value` - Index value data to save.
-    pub fn save_value(&self, index: u64, value: &Value) -> Result<()> {
+    pub fn save_value(&self, index: u64, value: &Value) -> ParseResult<()> {
         let pos = Self::calc_value_pos(index);
         let mut writer = self.new_index_writer(false)?;
         writer.seek(SeekFrom::Start(pos))?;
@@ -428,7 +429,7 @@ impl RawMatch {
     /// 
     /// * `index` - Value index.
     /// * `data` - Index value data to save.
-    pub fn save_data(&self, index: u64, data: &Data) -> Result<()> {
+    pub fn save_data(&self, index: u64, data: &Data) -> ParseResult<()> {
         let pos = Self::calc_value_pos(index) + Value::DATA_OFFSET as u64;
         let mut writer = self.new_index_writer(false)?;
         writer.seek(SeekFrom::Start(pos))?;
@@ -442,10 +443,10 @@ impl RawMatch {
     /// # Arguments
     /// 
     /// * `from_index` - Index offset as search starting point.
-    pub fn find_pending(&self, from_index: u64) -> Result<Option<u64>> {
+    pub fn find_pending(&self, from_index: u64) -> IndexResult<Option<u64>> {
         // validate indexed
         if !self.header.indexed {
-            bail!(IndexError::Unavailable(Status::Incomplete));
+            return Err(IndexError::Unavailable(Status::Incomplete));
         }
 
         // validate index size
@@ -476,7 +477,7 @@ impl RawMatch {
 
     /// Perform a healthckeck over the index file by reading
     /// the headers and checking the file size.
-    pub fn healthcheck(&mut self) -> Result<Status> {
+    pub fn healthcheck(&mut self) -> IndexResult<Status> {
         // calculate the input hash
         let mut reader = self.new_input_reader()?;
         let hash = generate_hash(&mut reader)?;
@@ -485,8 +486,8 @@ impl RawMatch {
         match self.new_index_reader() {
             // try to load the index headers
             Ok(mut reader) => if let Err(e) = self.load_header_from(&mut reader) {
-                match e.downcast::<std::io::Error>() {
-                    Ok(ex) => match ex.kind() {
+                match e {
+                    IndexError::IO(ex) => match ex.kind() {
                         std::io::ErrorKind::NotFound => {
                             // File not found so the index is new
                             return Ok(Status::New);
@@ -503,21 +504,18 @@ impl RawMatch {
                             // EOF eror means the index is corrupted
                             return Ok(Status::Corrupted);
                         },
-                        _ => bail!(ex)
+                        _ => return Err(ex.into())
                     },
-                    Err(ex) => return Err(ex)
+                    ex => return Err(ex)
                 }
             },
-            Err(e) => match e.downcast::<std::io::Error>() {
-                Ok(ex) => match ex.kind() {
-                    std::io::ErrorKind::NotFound => {
-                        // store hash and return as new index
-                        self.header.hash = Some(hash);
-                        return Ok(Status::New)
-                    },
-                    _ => bail!(ex)
+            Err(e) => match e.kind() {
+                std::io::ErrorKind::NotFound => {
+                    // store hash and return as new index
+                    self.header.hash = Some(hash);
+                    return Ok(Status::New)
                 },
-                Err(ex) => bail!(ex)
+                _ => return Err(e.into())
             }
         };
         
@@ -562,7 +560,7 @@ impl RawMatch {
     /// # Arguments
     /// 
     /// * `writer` - Byte writer.
-    pub fn save_header_into(&self, writer: &mut (impl Write + Seek)) -> Result<()> {
+    pub fn save_header_into(&self, writer: &mut (impl Write + Seek)) -> IoResult<()> {
         writer.flush()?;
         let old_pos = writer.stream_position()?;
         writer.rewind()?;
@@ -573,13 +571,13 @@ impl RawMatch {
     }
 
     /// Saves the index header and then jump back to the last writer stream position.
-    pub fn save_header(&self) -> Result<()> {
+    pub fn save_header(&self) -> IoResult<()> {
         let mut writer = self.new_index_writer(false)?;
         self.save_header_into(&mut writer)
     }
 
     /// Loads fields names from a CSV input file.
-    fn load_input_csv_fields(&mut self) -> Result<()> {
+    fn load_input_csv_fields(&mut self) -> InputResult<()> {
         let reader = self.new_input_reader()?;
         let mut csv_reader = csv::ReaderBuilder::new()
             .has_headers(true)
@@ -593,16 +591,16 @@ impl RawMatch {
     }
 
     /// Loads fields names from a CSV input file.
-    fn load_input_json_fields(&mut self) -> Result<()> {
+    fn load_input_json_fields(&mut self) -> InputResult<()> {
         unimplemented!()
     }
 
     /// Loads the input fields.
-    pub fn load_input_fields(&mut self) -> Result<()> {
+    pub fn load_input_fields(&mut self) -> InputResult<()> {
         match self.header.input_type {
             InputType::CSV => self.load_input_csv_fields(),
             InputType::JSON => self.load_input_json_fields(),
-            InputType::Unknown => bail!("not supported input file type")
+            InputType::Unknown => Err(InputError::Unsupported)
         }
     }
 
@@ -613,7 +611,7 @@ impl RawMatch {
     /// * `iter` - CSV iterator.
     /// * `item` - Last CSV item read from the iterator.
     /// * `input_reader` - Input navigation reader used to adjust positions.
-    fn index_csv_record(&self, iter: &csv::StringRecordsIter<impl Read>, item: csv::StringRecord, input_reader: &mut (impl Read + Seek)) -> Result<Value> {
+    fn index_csv_record(&self, iter: &csv::StringRecordsIter<impl Read>, item: csv::StringRecord, input_reader: &mut (impl Read + Seek)) -> InputResult<Value> {
         // calculate input positions
         let mut start_pos = item.position().unwrap().byte();
         let mut end_pos = iter.reader().position().byte() - 1;
@@ -663,7 +661,7 @@ impl RawMatch {
     /// * `input_rdr` - Input byte reader.
     /// * `index_wrt` - Index byte writer.
     /// * `is_first` - `true` when the input reader is set at position 0.
-    fn index_csv(&mut self, input_rdr: impl Read, index_wrt: &mut (impl Seek + Write), is_first: bool) -> Result<()> {
+    fn index_csv(&mut self, input_rdr: impl Read, index_wrt: &mut (impl Seek + Write), is_first: bool) -> InputResult<()> {
         // index records
         let mut is_first = is_first;
         let mut input_rdr_nav = self.new_input_reader()?;
@@ -685,7 +683,7 @@ impl RawMatch {
                     // create index value
                     let value = match item {
                         Ok(v) => self.index_csv_record(&iter, v, &mut input_rdr_nav)?,
-                        Err(e) => bail!(e)
+                        Err(e) => return Err(e.into())
                     };
 
                     // write index value for this record
@@ -709,7 +707,7 @@ impl RawMatch {
 
     /// Index a new or incomplete index by tracking each item position
     /// from the input file.
-    pub fn index(&mut self) -> Result<()> {
+    pub fn index(&mut self) -> IndexResult<()> {
         // create reader and writer buffers
         let mut input_rdr = self.new_input_reader()?;
         let mut index_wrt = self.new_index_writer(true)?;
@@ -741,7 +739,7 @@ impl RawMatch {
                     self.header.write_to(&mut index_wrt)?;
                     index_wrt.flush()?;
                 }
-                vu => bail!(IndexError::Unavailable(vu))
+                vu => return Err(IndexError::Unavailable(vu))
             },
             Err(e) => return Err(e)
         }
@@ -749,10 +747,42 @@ impl RawMatch {
         // index input file
         self.load_input_fields()?;
         match self.header.input_type {
-            InputType::CSV => self.index_csv(&mut input_rdr, &mut index_wrt, is_first),
+            InputType::CSV => Ok(self.index_csv(&mut input_rdr, &mut index_wrt, is_first)?),
             InputType::JSON => unimplemented!(),
-            InputType::Unknown => bail!("not supported input file type")
+            InputType::Unknown => Err(InputError::Unsupported.into())
         }
+    }
+
+    /// Load or create the index file.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `override_on_error` - Overrides the index or table file if corrupted instead of error.
+    /// * `force_override` - Always creates a new table file with the current headers.
+    pub fn load_or_create(&mut self, override_on_error: bool, force_override: bool) -> AnyResult<()> {
+        if !force_override {
+            match self.index() {
+                Ok(_) => return Ok(()),
+                Err(e) => match e {
+                    IndexError::Unavailable(status) => match status {
+                        Status::Indexing => bail!(IndexError::Unavailable(Status::Indexing)),
+                        _ => if !override_on_error {
+                            return Ok(());
+                        }
+                    },
+                    err => bail!(err)
+                }
+            }
+        }
+
+        // truncate the file then index again
+        let file = OpenOptions::new()
+            .truncate(true)
+            .create(true)
+            .open(&self.index_path)?;
+        file.set_len(0)?;
+        self.index()?;
+        Ok(())
     }
 }
 
@@ -762,6 +792,7 @@ pub mod test_helper {
     use crate::test_helper::*;
     use crate::db::index::raw_match::header::{HASH_SIZE};
     use crate::db::index::raw_match::header::test_helper::{random_hash, build_header_bytes};
+    use anyhow::{Result as AnyResult};
     use tempfile::TempDir;
 
     /// Fake records without fields bytes.
@@ -808,7 +839,7 @@ pub mod test_helper {
     /// # Arguments
     /// 
     /// * `records` - Record vector to add records into.
-    pub fn fake_values() -> Result<Vec<Value>> {
+    pub fn fake_values() -> AnyResult<Vec<Value>> {
         let mut values = Vec::new();
 
         // add first value
@@ -845,7 +876,7 @@ pub mod test_helper {
     }
 
     /// Return a fake index file without fields as byte slice.
-    pub fn fake_index() -> Result<([u8; FAKE_INDEX_BYTES], u64)> {
+    pub fn fake_index() -> AnyResult<([u8; FAKE_INDEX_BYTES], u64)> {
         // init buffer
         let mut buf = [0u8; FAKE_INDEX_BYTES];
         let hash_buf = random_hash();
@@ -878,7 +909,7 @@ pub mod test_helper {
     /// # Arguments
     /// 
     /// * `path` - Input file path.
-    pub fn create_fake_input(path: &PathBuf) -> Result<()> {
+    pub fn create_fake_input(path: &PathBuf) -> AnyResult<()> {
         let file = OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -897,7 +928,7 @@ pub mod test_helper {
     /// 
     /// * `writer` - Byte writer.
     /// * `unprocessed` - If `true` then build all values with MatchFlag::None.
-    pub fn write_fake_index(writer: &mut (impl Seek + Write), unprocessed: bool) -> Result<Vec<Value>> {
+    pub fn write_fake_index(writer: &mut (impl Seek + Write), unprocessed: bool) -> AnyResult<Vec<Value>> {
         let mut values = Vec::new();
 
         // write index header
@@ -961,7 +992,7 @@ pub mod test_helper {
     /// 
     /// * `path` - Index file path.
     /// * `empty` - If `true` then build all values with MatchFlag::None.
-    pub fn create_fake_index(path: &PathBuf, unprocessed: bool) -> Result<Vec<Value>> {
+    pub fn create_fake_index(path: &PathBuf, unprocessed: bool) -> AnyResult<Vec<Value>> {
         let file = OpenOptions::new()
             .create(true)
             .truncate(true)
@@ -979,8 +1010,8 @@ pub mod test_helper {
     /// # Arguments
     /// 
     /// * `f` - Function to execute.
-    pub fn with_tmpdir_and_indexer(f: &impl Fn(&TempDir, &mut RawMatch) -> Result<()>) {
-        let sub = |dir: &TempDir| -> Result<()> {
+    pub fn with_tmpdir_and_indexer(f: &impl Fn(&TempDir, &mut RawMatch) -> anyhow::Result<()>) {
+        let sub = |dir: &TempDir| -> anyhow::Result<()> {
             // generate default file names for files
             let input_path = dir.path().join("i.csv");
             let index_path = dir.path().join("i.fmindex");
@@ -995,7 +1026,7 @@ pub mod test_helper {
             // execute function
             match f(&dir, &mut indexer) {
                 Ok(_) => Ok(()),
-                Err(e) => bail!(e)
+                Err(e) => Err(e)
             }
         };
         with_tmpdir(&sub)
@@ -1009,6 +1040,7 @@ mod tests {
     use serde_json::Number as JSNumber;
     use std::io::Cursor;
     use std::sync::Mutex;
+    use anyhow::Result as AnyResult;
     use crate::test_helper::*;
     use crate::db::index::raw_match::header::{HASH_SIZE};
     use crate::db::index::raw_match::header::test_helper::{random_hash, build_header_bytes};
@@ -1148,7 +1180,7 @@ mod tests {
                 Ok(v) => v,
                 Err(e) => {
                     assert!(false, "{:?}", e);
-                    bail!(e)
+                    return Ok(());
                 }
             };
             create_file_with_bytes(&indexer.index_path, &buf)?;
@@ -1160,7 +1192,7 @@ mod tests {
                 Ok(v) => v,
                 Err(e) => {
                     assert!(false, "{:?}", e);
-                    bail!(e)
+                    return Ok(());
                 }
             };
 
@@ -1170,12 +1202,12 @@ mod tests {
                     Some(v) => v,
                     None => {
                         assert!(false, "expected {:?} but got None", expected[0]);
-                        bail!("")
+                        return Ok(());
                     }
                 },
                 Err(e) => {
                     assert!(false, "{:?}", e);
-                    bail!(e)
+                    return Ok(());
                 }
             };
             assert_eq!(expected[0], value);
@@ -1186,12 +1218,12 @@ mod tests {
                     Some(v) => v,
                     None => {
                         assert!(false, "expected {:?} but got None", expected[0]);
-                        bail!("")
+                        return Ok(());
                     }
                 },
                 Err(e) => {
                     assert!(false, "{:?}", e);
-                    bail!(e)
+                    return Ok(());
                 }
             };
             assert_eq!(expected[1], value);
@@ -1202,12 +1234,12 @@ mod tests {
                     Some(v) => v,
                     None => {
                         assert!(false, "expected {:?} but got None", expected[0]);
-                        bail!("")
+                        return Ok(());
                     }
                 },
                 Err(e) => {
                     assert!(false, "{:?}", e);
-                    bail!(e)
+                    return Ok(());
                 }
             };
             assert_eq!(expected[2], value);
@@ -1371,13 +1403,13 @@ mod tests {
 
     #[test]
     fn scan_by_index() {
-        with_tmpdir_and_indexer(&|_, indexer| {
+        with_tmpdir_and_indexer(&|_, indexer| -> AnyResult<()> {
             // init buffer
             let (buf, value_count) = match fake_index() {
                 Ok(v) => v,
                 Err(e) => {
                     assert!(false, "{:?}", e);
-                    bail!(e)
+                    return Err(e)
                 }
             };
             create_file_with_bytes(&indexer.index_path, &buf)?;
@@ -1389,7 +1421,7 @@ mod tests {
                 Ok(v) => v,
                 Err(e) => {
                     assert!(false, "{:?}", e);
-                    bail!(e)
+                    return Err(e)
                 }
             };
             let expected_filtered = vec![
@@ -1413,7 +1445,7 @@ mod tests {
                 Ok(list) => list,
                 Err(e) => {
                     assert!(false, "{:?}", e);
-                    bail!(e);
+                    return Ok(())
                 }
             };
 
@@ -1772,7 +1804,7 @@ mod tests {
                 Ok(v) => v,
                 Err(e) => {
                     assert!(false, "{:?}", e);
-                    bail!(e)
+                    return Err(e)
                 }
             };
             create_file_with_bytes(&indexer.index_path, &buf)?;
@@ -1784,7 +1816,7 @@ mod tests {
                 Ok(v) => v,
                 Err(e) => {
                     assert!(false, "{:?}", e);
-                    bail!(e)
+                    return Ok(())
                 }
             };
             let mut expected_updated = vec![
@@ -1813,7 +1845,7 @@ mod tests {
                 Ok(list) => list,
                 Err(e) => {
                     assert!(false, "{:?}", e);
-                    bail!(e);
+                    return Ok(())
                 }
             };
 
@@ -1826,12 +1858,12 @@ mod tests {
                         Some(w) => w,
                         None => {
                             assert!(false, "expected a value");
-                            bail!("expected value");
+                            return Ok(());
                         }
                     },
                     Err(e) => {
                         assert!(false, "{:?}", e);
-                        bail!(e);
+                        return Ok(());
                     }
                 };
                 list.push(value);
@@ -2091,15 +2123,12 @@ mod tests {
             // find existing unmatched with offset
             match indexer.find_pending(1) {
                 Ok(opt) => assert!(false, "expected error but got {:?}", opt),
-                Err(e) => match e.downcast::<IndexError<Status>>(){
-                    Ok(ex) => match ex {
-                        IndexError::Unavailable(status) => match status {
-                            Status::Incomplete => {},
-                            s => assert!(false, "expected ParseError::Unavailable(Incomplete) but got: {:?}", s)
-                        },
-                        err => assert!(false, "{:?}", err)
+                Err(e) => match e {
+                    IndexError::Unavailable(status) => match status {
+                        Status::Incomplete => {},
+                        s => assert!(false, "expected ParseError::Unavailable(Incomplete) but got: {:?}", s)
                     },
-                    Err(ex) => assert!(false, "{:?}", ex)
+                    err => assert!(false, "{:?}", err)
                 }
             }
 
@@ -2130,7 +2159,7 @@ mod tests {
 
     #[test]
     fn healthcheck_new_index() {
-        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+        with_tmpdir_and_indexer(&|_, indexer| -> AnyResult<()> {
             create_fake_input(&indexer.input_path)?;
 
             // test index status
@@ -2153,7 +2182,7 @@ mod tests {
 
     #[test]
     fn healthcheck_new_index_with_empty_file() {
-        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+        with_tmpdir_and_indexer(&|_, indexer| -> AnyResult<()> {
             create_fake_input(&indexer.input_path)?;
 
             // test index status
@@ -2177,7 +2206,7 @@ mod tests {
 
     #[test]
     fn healthcheck_corrupted_headers() {
-        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+        with_tmpdir_and_indexer(&|_, indexer| -> AnyResult<()> {
             let buf = [0u8; 5];
             create_file_with_bytes(&indexer.index_path, &buf)?;
             create_fake_input(&indexer.input_path)?;
@@ -2192,7 +2221,7 @@ mod tests {
 
     #[test]
     fn healthcheck_hash_mismatch() {
-        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+        with_tmpdir_and_indexer(&|_, indexer| -> AnyResult<()> {
             let mut buf = [0u8; Header::BYTES];
             let mut writer = &mut buf as &mut [u8];
             let mut header = Header::new();
@@ -2208,7 +2237,7 @@ mod tests {
     
     #[test]
     fn healthcheck_incomplete_corrupted() {
-        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+        with_tmpdir_and_indexer(&|_, indexer| -> AnyResult<()> {
             let mut buf = [0u8; Header::BYTES+Header::BYTES+5];
             let mut writer = &mut buf as &mut [u8];
             let mut header = Header::new();
@@ -2225,7 +2254,7 @@ mod tests {
     
     #[test]
     fn healthcheck_incomplete_valid() {
-        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+        with_tmpdir_and_indexer(&|_, indexer| -> AnyResult<()> {
             let mut buf = [0u8; Header::BYTES+Header::BYTES+FAKE_VALUES_BYTES];
             let mut writer = &mut buf as &mut [u8];
             let mut header = Header::new();
@@ -2242,7 +2271,7 @@ mod tests {
     
     #[test]
     fn healthcheck_indexed_corrupted() {
-        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+        with_tmpdir_and_indexer(&|_, indexer| -> AnyResult<()> {
             let mut buf = [0u8; Header::BYTES+Header::BYTES+5];
             let mut writer = &mut buf as &mut [u8];
             let mut header = Header::new();
@@ -2260,7 +2289,7 @@ mod tests {
     
     #[test]
     fn healthcheck_indexed_valid() {
-        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+        with_tmpdir_and_indexer(&|_, indexer| -> AnyResult<()> {
             create_fake_index(&indexer.index_path, false)?;
             create_fake_input(&indexer.input_path)?;
             assert_eq!(Status::Indexed, indexer.healthcheck()?);
@@ -2270,7 +2299,7 @@ mod tests {
 
     #[test]
     fn save_header_into() {
-        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+        with_tmpdir_and_indexer(&|_, indexer| -> AnyResult<()> {
             // create index file and read index header data
             create_fake_index(&indexer.index_path, false)?;
             let mut reader = indexer.new_index_reader()?;
@@ -2294,7 +2323,7 @@ mod tests {
 
     #[test]
     fn save_header() {
-        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+        with_tmpdir_and_indexer(&|_, indexer| -> AnyResult<()> {
             // create index file and read index header data
             create_fake_index(&indexer.index_path, false)?;
             let mut reader = indexer.new_index_reader()?;
@@ -2321,7 +2350,7 @@ mod tests {
 
     #[test]
     fn load_input_csv_fields() {
-        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+        with_tmpdir_and_indexer(&|_, indexer| -> AnyResult<()> {
             let expected = vec![
                 "name".to_string(),
                 "size".to_string(),
@@ -2340,7 +2369,7 @@ mod tests {
 
     #[test]
     fn load_input_fields_as_csv() {
-        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+        with_tmpdir_and_indexer(&|_, indexer| -> AnyResult<()> {
             let expected = vec![
                 "name".to_string(),
                 "size".to_string(),
@@ -2358,7 +2387,7 @@ mod tests {
 
     #[test]
     fn index_new() {
-        with_tmpdir_and_indexer(&|dir, indexer| -> Result<()> {
+        with_tmpdir_and_indexer(&|dir, indexer| -> AnyResult<()> {
             create_fake_input(&indexer.input_path)?;
             indexer.header.input_type = InputType::CSV;
 
@@ -2406,7 +2435,7 @@ mod tests {
 
     #[test]
     fn index_existing() {
-        with_tmpdir_and_indexer(&|_, indexer| -> Result<()> {
+        with_tmpdir_and_indexer(&|_, indexer| -> AnyResult<()> {
             create_fake_input(&indexer.input_path)?;
             create_fake_index(&indexer.index_path, true)?;
 

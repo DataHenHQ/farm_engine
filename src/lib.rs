@@ -1,15 +1,17 @@
 pub mod error;
 pub mod traits;
+mod data;
 pub mod db;
+
+pub use data::Data;
 
 use path_absolutize::Absolutize;
 use regex::Regex;
 use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
+use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter, Result as IoResult, Error as IoError};
 use std::path::PathBuf;
 use sha3::{Digest, Sha3_256};
 use db::index::raw_match::header::HASH_SIZE;
-use anyhow::{bail, Result};
 
 const BUF_SIZE: u64 = 4096;
 
@@ -28,11 +30,10 @@ pub enum FillAction {
 /// # Arguments
 /// 
 /// * `path` - File path.
-/// * `create` - If `true` then file will be created if not exists.
-pub fn file_size(path: &PathBuf) -> Result<u64> {
+pub fn file_size(path: &PathBuf) -> IoResult<u64> {
     let path = path.as_path();
     if !path.is_file() {
-        bail!("\"{}\" is not a file", path.to_string_lossy());
+        return Err(std::io::Error::new(std::io::ErrorKind::Other, format!("\"{}\" is not a file", path.to_string_lossy())));
     }
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
@@ -45,11 +46,56 @@ pub fn file_size(path: &PathBuf) -> Result<u64> {
 /// 
 /// # Arguments
 /// 
+/// * `writer` - File writer to fill.
+/// * `target_size` - Target file size in bytes.
+pub fn fill_writer(writer: &mut (impl Write + Seek), target_size: u64) -> IoResult<FillAction> {
+    let mut action = FillAction::Fill;
+
+    // get file size
+    writer.flush()?;
+    writer.seek(SeekFrom::End(0))?;
+    let mut size = writer.stream_position()?;
+
+    // change default action to created when new file
+    if size < 1 {
+        action = FillAction::Created;
+    }
+
+    // validate file current size vs target size
+    if target_size < size {
+        // file is bigger, return true
+        return Ok(FillAction::Bigger);
+    }
+    if target_size == size {
+        return Ok(FillAction::Skip);
+    }
+
+    // fill file with zeros until target size is match
+    let buf_size = 4096u64;
+    let buf = [0u8; 4096];
+    while size + buf_size < target_size {
+        writer.write_all(&buf)?;
+        size += buf_size;
+        writer.flush()?;
+    }
+    let remaining = (target_size - size) as usize;
+    if remaining > 0 {
+        writer.write_all(&buf[..remaining])?;
+    }
+    writer.flush()?;
+
+    Ok(action)
+}
+
+/// Fill a file with zero byte until the target size or ignore if
+/// bigger. Return true if file is bigger.
+/// 
+/// # Arguments
+/// 
 /// * `path` - File path to fill.
 /// * `target_size` - Target file size in bytes.
 /// * `truncate` - If `true` then it truncates de file and fill it.
-pub fn fill_file(path: &PathBuf, target_size: u64, truncate: bool) -> std::io::Result<FillAction> {
-    let mut action = FillAction::Fill;
+pub fn fill_file(path: &PathBuf, target_size: u64, truncate: bool) -> IoResult<FillAction> {
     let file = if truncate {
         OpenOptions::new()
             .create(true)
@@ -63,53 +109,24 @@ pub fn fill_file(path: &PathBuf, target_size: u64, truncate: bool) -> std::io::R
             .write(true)
             .open(path)?
     };
-
-    // get file size
     file.sync_all()?;
-    let mut size = file.metadata()?.len();
-
-    // change default action to created when new file
-    if size < 1 {
-        action = FillAction::Created;
+    let mut writer = BufWriter::new(file);
+    match fill_writer(&mut writer, target_size)? {
+        FillAction::Created => if truncate {
+            Ok(FillAction::Truncated)
+        } else {
+            Ok(FillAction::Created)
+        },
+        v => Ok(v)
     }
-
-    // validate file current size vs target size
-    if truncate {
-        action = FillAction::Truncated;
-    } else {
-        if target_size < size {
-            // file is bigger, return true
-            return Ok(FillAction::Bigger);
-        }
-        if target_size == size {
-            return Ok(FillAction::Skip);
-        }
-    }
-
-    // fill file with zeros until target size is match
-    let buf_size = 4096u64;
-    let buf = [0u8; 4096];
-    let mut wrt = BufWriter::new(file);
-    while size + buf_size < target_size {
-        wrt.write_all(&buf)?;
-        size += buf_size;
-        wrt.flush()?;
-    }
-    let remaining = (target_size - size) as usize;
-    if remaining > 0 {
-        wrt.write_all(&buf[..remaining])?;
-    }
-    wrt.flush()?;
-
-    Ok(action)
 }
 
 /// Generates a hash value from a file contents.
 /// 
 /// # Arguments
 /// 
-/// * `path` - File path.
-pub fn generate_hash(reader: &mut impl Read) -> std::io::Result<[u8; HASH_SIZE]> {
+/// * `reader` - File reader to generate hash from.
+pub fn generate_hash(reader: &mut impl Read) -> IoResult<[u8; HASH_SIZE]> {
     let mut hasher = Sha3_256::new();
 
     loop {
@@ -132,6 +149,7 @@ pub fn generate_hash(reader: &mut impl Read) -> std::io::Result<[u8; HASH_SIZE]>
 /// # Arguments
 /// 
 /// * `path` - Path to validate.
+/// * `extension_regex` - Extension regex to validate.
 pub fn validate_file_extension(path: &PathBuf, extension_regex: &Regex) -> bool {
     let file_name = match path.file_name() {
         Some(v) => match v.to_str() {
@@ -149,7 +167,9 @@ pub fn validate_file_extension(path: &PathBuf, extension_regex: &Regex) -> bool 
 /// 
 /// * `source_path` - Source path to expand.
 /// * `path_list` - Path list to add the found paths into.
-pub fn scan_path(source_path: &PathBuf, path_list: &mut Vec<PathBuf>, raw_excludes: &Vec<PathBuf>, regex: &Regex) -> Result<()> {
+/// * `raw_excludes` - Excluded paths to skip.
+/// * `regex` - Regex to validate the file extension.
+pub fn scan_path(source_path: &PathBuf, path_list: &mut Vec<PathBuf>, raw_excludes: &Vec<PathBuf>, regex: &Regex) -> Result<(), IoError> {
     // canonalize the excluded paths
     let mut excludes: Vec<PathBuf> = vec!();
     for raw_exclude in raw_excludes {
@@ -208,12 +228,15 @@ pub mod test_helper;
 
 #[cfg(test)]
 mod tests {
+    use anyhow::Result as AnyResult;
+    use tempfile::TempDir;
+
     use super::*;
     use crate::test_helper::*;
 
     #[test]
     fn file_size_with_file() {
-        with_tmpdir(&|dir| -> Result<()> {
+        with_tmpdir(&|dir: &TempDir| -> AnyResult<()> {
             // test one
             let path = dir.path().join("my_file_a");
             create_file_with_bytes(&path, &[0u8; 34])?;
@@ -232,7 +255,7 @@ mod tests {
 
     #[test]
     fn file_size_without_file() {
-        with_tmpdir(&|dir| -> Result<()> {
+        with_tmpdir(&|dir: &TempDir| -> AnyResult<()> {
             let path = dir.path().join("my_file_non_exists");
             let expected = format!("\"{}\" is not a file", path.to_string_lossy());
             assert_eq!(false, path.exists());
@@ -246,7 +269,7 @@ mod tests {
 
     #[test]
     fn fill_file_non_exists() {
-        with_tmpdir(&|dir| -> Result<()> {
+        with_tmpdir(&|dir: &TempDir| -> AnyResult<()> {
             let path = dir.path().join("my_file");
             
             // fill file
@@ -273,7 +296,7 @@ mod tests {
 
     #[test]
     fn fill_file_smaller() {
-        with_tmpdir(&|dir| -> Result<()> {
+        with_tmpdir(&|dir: &TempDir| -> AnyResult<()> {
             // create test file
             let path = dir.path().join("my_file");
             let buf: [u8; 10] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
@@ -303,7 +326,7 @@ mod tests {
 
     #[test]
     fn fill_file_bigger() {
-        with_tmpdir(&|dir| -> Result<()> {
+        with_tmpdir(&|dir: &TempDir| -> AnyResult<()> {
             // create test file
             let path = dir.path().join("my_file");
             let buf: [u8; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
@@ -333,7 +356,7 @@ mod tests {
 
     #[test]
     fn fill_file_equal() {
-        with_tmpdir(&|dir| -> Result<()> {
+        with_tmpdir(&|dir: &TempDir| -> AnyResult<()> {
             // create test file
             let path = dir.path().join("my_file");
             let buf: [u8; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
@@ -363,7 +386,7 @@ mod tests {
 
     #[test]
     fn fill_file_truncate() {
-        with_tmpdir(&|dir| -> Result<()> {
+        with_tmpdir(&|dir: &TempDir| -> AnyResult<()> {
             // create test file
             let path = dir.path().join("my_file");
             let buf: [u8; 15] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
@@ -393,7 +416,7 @@ mod tests {
 
     #[test]
     fn gen_hash() {
-        with_tmpdir(&|dir| -> Result<()> {
+        with_tmpdir(&|dir: &TempDir| -> AnyResult<()> {
             let path = dir.path().join("my_file");
             let buf: &[u8] = &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
             create_file_with_bytes(&path, buf)?;

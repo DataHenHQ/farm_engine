@@ -1,8 +1,7 @@
 use serde::{Serialize, Deserialize};
-use std::io::{Seek, SeekFrom, Read, Write};
+use std::io::{Seek, SeekFrom, Read, Write, Error as IoError, Result as IoResult};
 use std::convert::TryFrom;
-use anyhow::{bail, Result};
-use crate::error::ParseError;
+use crate::error::{ParseError, ParseResult};
 use crate::traits::{ByteSized, FromByteSlice, WriteAsBytes, ReadFrom, WriteTo, LoadFrom};
 
 /// Match flag enumerator.
@@ -103,11 +102,11 @@ impl ByteSized for MatchFlag {
     const BYTES: usize = 1;
 }
 
-impl WriteAsBytes for MatchFlag {
-    fn write_as_bytes(&self, buf: &mut [u8]) -> Result<()> {
+impl WriteAsBytes<ParseError> for MatchFlag {
+    fn write_as_bytes(&self, buf: &mut [u8]) -> ParseResult<()> {
         // validate value size
         if buf.len() != Self::BYTES {
-            bail!(ParseError::InvalidSize);
+            return Err(ParseError::InvalidSize);
         }
 
         // save value as bytes
@@ -117,8 +116,8 @@ impl WriteAsBytes for MatchFlag {
     }
 }
 
-impl WriteTo for MatchFlag {
-    fn write_to(&self, writer: &mut impl Write) -> Result<()> {
+impl WriteTo<IoError> for MatchFlag {
+    fn write_to(&self, writer: &mut impl Write) -> IoResult<()> {
         writer.write_all(&[self.into()])?;
         Ok(())
     }
@@ -151,11 +150,11 @@ impl ByteSized for Data {
     const BYTES: usize = 9;
 }
 
-impl WriteAsBytes for Data {
-    fn write_as_bytes(&self, buf: &mut [u8]) -> Result<()> {
+impl WriteAsBytes<ParseError> for Data {
+    fn write_as_bytes(&self, buf: &mut [u8]) -> ParseResult<()> {
         // validate value size
         if buf.len() != Self::BYTES {
-            bail!(ParseError::InvalidSize);
+            return Err(ParseError::InvalidSize);
         }
 
         // save spent_time
@@ -168,8 +167,8 @@ impl WriteAsBytes for Data {
     }
 }
 
-impl WriteTo for Data {
-    fn write_to(&self, writer: &mut impl Write) -> Result<()> {
+impl WriteTo<ParseError> for Data {
+    fn write_to(&self, writer: &mut impl Write) -> ParseResult<()> {
         // write spent time
         self.spent_time.write_to(writer)?;
 
@@ -234,7 +233,7 @@ impl Value {
     /// # Arguments
     /// 
     /// * `index` - Record index.
-    pub fn read_input_from(&self, reader: &mut (impl Seek + Read)) -> Result<Vec<u8>> {
+    pub fn read_input_from(&self, reader: &mut (impl Seek + Read)) -> IoResult<Vec<u8>> {
         let size = self.input_end_pos - self.input_start_pos + 1;
         let mut buf = vec![0u8; size as usize];
         reader.seek(SeekFrom::Start(self.input_start_pos))?;
@@ -251,8 +250,8 @@ impl ByteSized for Value {
     const BYTES: usize = 16 + Data::BYTES;
 }
 
-impl LoadFrom for Value {
-    fn load_from(&mut self, reader: &mut impl Read) -> Result<()> {
+impl LoadFrom<ParseError> for Value {
+    fn load_from(&mut self, reader: &mut impl Read) -> ParseResult<()> {
         // read data
         let mut carry = 0;
         let mut buf = [0u8; Self::BYTES];
@@ -283,8 +282,8 @@ impl LoadFrom for Value {
     }
 }
 
-impl FromByteSlice for Value {
-    fn from_byte_slice(buf: &[u8]) -> Result<Self> {
+impl FromByteSlice<ParseError> for Value {
+    fn from_byte_slice(buf: &[u8]) -> ParseResult<Self> {
         let mut value = Self::new();
         let mut reader = buf;
         value.load_from(&mut reader)?;
@@ -292,8 +291,8 @@ impl FromByteSlice for Value {
     }
 }
 
-impl ReadFrom for Value {
-    fn read_from(reader: &mut impl Read) -> Result<Self> {
+impl ReadFrom<ParseError> for Value {
+    fn read_from(reader: &mut impl Read) -> ParseResult<Self> {
         let mut value = Self::new();
         value.load_from(reader)?;
         Ok(value)
@@ -311,8 +310,8 @@ impl TryFrom<&[u8]> for Value {
     }
 }
 
-impl WriteTo for Value {
-    fn write_to(&self, writer: &mut impl Write) -> Result<()> {
+impl WriteTo<ParseError> for Value {
+    fn write_to(&self, writer: &mut impl Write) -> ParseResult<()> {
         writer.write_all(&self.as_bytes())?;
         Ok(())
     }
@@ -730,9 +729,9 @@ mod tests {
             let mut reader = &buf as &[u8];
             match value.load_from(&mut reader) {
                 Ok(v) => assert!(false, "expected IO error with ErrorKind::UnexpectedEof but got {:x?}", v),
-                Err(e) => match e.downcast::<std::io::Error>() {
-                    Ok(ex) => assert_eq!(expected, ex.kind()),
-                    Err(ex) => assert!(false, "expected IO error with ErrorKind::UnexpectedEof but got error: {:?}", ex)
+                Err(e) => match e {
+                    ParseError::IO(ex) => assert_eq!(expected, ex.kind()),
+                    ex => assert!(false, "expected IO error with ErrorKind::UnexpectedEof but got error: {:?}", ex)
                 }
             }
         }

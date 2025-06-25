@@ -1,8 +1,8 @@
+use anyhow::Result as AnyResult;
 use tempfile::{TempDir, tempdir};
 use std::fs::OpenOptions;
-use std::io::{Write, BufWriter, Error, ErrorKind};
+use std::io::{Write, BufWriter, Result as IoResult, Error as IoError, ErrorKind};
 use std::path::PathBuf;
-use anyhow::{Result, bail};
 
 /// Create a file with the buffer as content.
 /// 
@@ -10,7 +10,7 @@ use anyhow::{Result, bail};
 /// 
 /// * `path` - File path.
 /// * `buf` - File content.
-pub fn create_file_with_bytes(path: &PathBuf, buf: &[u8]) -> Result<()> {
+pub fn create_file_with_bytes(path: &PathBuf, buf: &[u8]) -> IoResult<()> {
     let file = OpenOptions::new()
         .write(true)
         .create(true)
@@ -27,7 +27,7 @@ pub fn create_file_with_bytes(path: &PathBuf, buf: &[u8]) -> Result<()> {
 /// # Arguments
 /// 
 /// * `f` - Function to execute.
-pub fn with_tmpdir(f: &dyn Fn(&TempDir) -> Result<()>) {
+pub fn with_tmpdir(f: &dyn Fn(&TempDir) -> AnyResult<()>) {
     let dir = tempdir().unwrap();
     let dir_path = dir.path().to_str().unwrap().to_string();
 
@@ -60,10 +60,10 @@ pub fn append_bytes(buf: &mut Vec<u8>, data: &[u8]) {
 /// * `target` - Byte slice to copy bytes into.
 /// * `source` - Byte slice to copy bytes from.
 /// * `offset` - Target offset to start copy bytes.
-pub fn copy_bytes(target: &mut [u8], source: &[u8], offset: usize) -> Result<()> {
+pub fn copy_bytes(target: &mut [u8], source: &[u8], offset: usize) -> IoResult<()> {
     // validate source into target
     if source.len() + offset > target.len() {
-        bail!(Error::new(ErrorKind::UnexpectedEof, "source + offset is bigger than the target slice size"))
+        return Err(IoError::new(ErrorKind::UnexpectedEof, "source + offset is bigger than the target slice size"))
     }
 
     // copy source into target

@@ -82,7 +82,8 @@ macro_rules! impl_partial_eq_number_to_value {
                     Self::U32(v) => (*v as i64)== other,
                     Self::U64(v) => (*v as i128)== (other as i128),
                     Self::F32(v) => (*v as f64)== (other as f64),
-                    Self::F64(v) => (*v as f64)== (other as f64),                    
+                    Self::F64(v) => (*v as f64)== (other as f64),
+                    Self::Default => other == 0,
                     _ => false
                 }
             }
@@ -103,29 +104,32 @@ impl_partial_eq_number_to_value!(f64, F64);
 
 impl PartialEq<String> for Value {
     fn eq(&self, other: &String) -> bool {
-        if let Value::Str(v) = self {
-            return v.eq(other);
+        match self {
+            Self::Str(v) => v.eq(other),
+            Self::Default => other.eq(""),
+            _ => false
         }
-        false
     }
 }
 
 impl PartialEq<str> for Value {
     fn eq(&self, other: &str) -> bool {
-        if let Value::Str(v) = self {
-            return v.eq(other);
+        match self {
+            Self::Str(v) => v.eq(other),
+            Self::Default => other.eq(""),
+            _ => false
         }
-        false
     }
 }
 
 
 impl PartialEq<bool> for Value {
     fn eq(&self, other: &bool) -> bool {
-        if let Value::Bool(v) = self {
-            return v.eq(other);
+        match self {
+            Value::Bool(v) => v.eq(other),
+            Value::Default => !other,
+            _ => false
         }
-        false
     }
 }
 
@@ -146,12 +150,22 @@ impl PartialEq<Value> for Value{
             Self::Str(v) => other.eq(v),
             Self::Bool(v) => other.eq(v),
             Self::Default => {
-                if let Self::Default = other {
-                    return true;
+                match other {
+                    Self::I8(v) => *v == 0i8,
+                    Self::I16(v) => *v == 0i16,
+                    Self::I32(v) => *v == 0i32,
+                    Self::I64(v) => *v == 0i64,
+                    Self::U8(v) => *v == 0u8,
+                    Self::U16(v) => *v == 0u16,
+                    Self::U32(v) => *v == 0u32,
+                    Self::U64(v) => *v == 0u64,
+                    Self::F32(v) => *v == 0.0f32,
+                    Self::F64(v) => *v == 0.0f64,
+                    Self::Str(v) => (v as &str).eq(""),
+                    Self::Bool(v) => !v,
+                    Self::Default => true
                 }
-                false
-            },
-
+            }
         }
     }
 }
@@ -237,10 +251,21 @@ impl PartialOrd<Value> for Value{
             Self::Str(v) => other.partial_cmp(v),
             Self::Bool(v) => other.partial_cmp(v),
             Self::Default => {
-                if let Self::Default = other {
-                    return Some(Ordering::Equal);
+                match other {
+                    Self::I8(v) => v.partial_cmp(&0i8),
+                    Self::I16(v) => v.partial_cmp(&0i16),
+                    Self::I32(v) => v.partial_cmp(&0i32),
+                    Self::I64(v) => v.partial_cmp(&0i64),
+                    Self::U8(v) => v.partial_cmp(&0u8),
+                    Self::U16(v) => v.partial_cmp(&0u16),
+                    Self::U32(v) => v.partial_cmp(&0u32),
+                    Self::U64(v) => v.partial_cmp(&0u64),
+                    Self::F32(v) => v.partial_cmp(&0.0f32),
+                    Self::F64(v) => v.partial_cmp(&0.0f64),
+                    Self::Str(v) => (v as &str).partial_cmp(""),
+                    Self::Bool(v) => v.partial_cmp(&false),
+                    Self::Default => return Some(Ordering::Equal),
                 }
-                None
             },
 
         }
@@ -859,5 +884,82 @@ mod tests {
     #[test]
     fn js_from_ref_str() {
         assert_eq!(JSValue::String("foo".to_string()), JSValue::from(&Value::Str("foo".to_string())));
+    }
+
+    #[test]
+    fn eq_default_i8() {
+        assert!(Value::Default.eq(&Value::I8(0i8)));
+        assert!(Value::I8(0i8).eq(&Value::Default));
+    }
+
+    #[test]
+    fn eq_default_i16() {
+        assert!(Value::Default.eq(&Value::I16(0i16)));
+        assert!(Value::I16(0i16).eq(&Value::Default));
+    }
+
+    #[test]
+    fn eq_default_i32() {
+        assert!(Value::Default.eq(&Value::I32(0i32)));
+        assert!(Value::I32(0i32).eq(&Value::Default));
+    }
+
+    #[test]
+    fn eq_default_i64() {
+        assert!(Value::Default.eq(&Value::I64(0i64)));
+        assert!(Value::I64(0i64).eq(&Value::Default));
+    }
+
+    #[test]
+    fn eq_default_u8() {
+        assert!(Value::Default.eq(&Value::U8(0u8)));
+        assert!(Value::U8(0u8).eq(&Value::Default));
+    }
+
+    #[test]
+    fn eq_default_u16() {
+        assert!(Value::Default.eq(&Value::U16(0u16)));
+        assert!(Value::U16(0u16).eq(&Value::Default));
+    }
+
+    #[test]
+    fn eq_default_u32() {
+        assert!(Value::Default.eq(&Value::U32(0u32)));
+        assert!(Value::U32(0u32).eq(&Value::Default));
+    }
+
+    #[test]
+    fn eq_default_u64() {
+        assert!(Value::Default.eq(&Value::U64(0u64)));
+        assert!(Value::U64(0u64).eq(&Value::Default));
+    }
+
+    #[test]
+    fn eq_default_f32() {
+        assert!(Value::Default.eq(&Value::F32(0f32)));
+        assert!(Value::F32(0f32).eq(&Value::Default));
+    }
+
+    #[test]
+    fn eq_default_f64() {
+        assert!(Value::Default.eq(&Value::F64(0f64)));
+        assert!(Value::F64(0f64).eq(&Value::Default));
+    }
+
+    #[test]
+    fn eq_default_str() {
+        assert!(Value::Default.eq(&Value::Str("".to_string())));
+        assert!(Value::Str("".to_string()).eq(&Value::Default));
+    }
+
+    #[test]
+    fn eq_default_bool() {
+        assert!(Value::Default.eq(&Value::Bool(false)));
+        assert!(Value::Bool(false).eq(&Value::Default));
+    }
+
+    #[test]
+    fn eq_default_default() {
+        assert!(Value::Default.eq(&Value::Default));
     }
 }

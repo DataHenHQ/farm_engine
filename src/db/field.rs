@@ -1,3 +1,4 @@
+pub mod error;
 pub mod field_type;
 pub mod value;
 pub mod header;
@@ -10,8 +11,8 @@ pub use record::*;
 
 use serde::{Serialize, Deserialize};
 use std::io::{Read, Write};
-use anyhow::{bail, Result};
 use crate::traits::{ByteSized, ReadFrom, WriteTo};
+use error::{FieldKeyError, FieldKeyResult};
 
 /// Represents a field.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
@@ -30,9 +31,9 @@ impl Field {
     /// 
     /// * `name` - Field name. The name string must be <= [MAX_NAME_SIZE] bytes length.
     /// * `value_type` - Value field type.
-    pub fn new(name: &str, value_type: FieldType) -> Result<Self> {
+    pub fn new(name: &str, value_type: FieldType) -> FieldKeyResult<Self> {
         if name.as_bytes().len() > Self::MAX_NAME_SIZE {
-            bail!("field name size must be <= {} bytes length", Self::MAX_NAME_SIZE);
+            return Err(FieldKeyError::InvalidNameSize(Self::MAX_NAME_SIZE));
         }
         Ok(Self{
             _name: name.to_string(),
@@ -56,12 +57,12 @@ impl ByteSized for Field {
     const BYTES: usize = 59;
 }
 
-impl ReadFrom for Field {
-    fn read_from(reader: &mut impl Read) -> Result<Self> {
+impl ReadFrom<FieldKeyError> for Field {
+    fn read_from(reader: &mut impl Read) -> FieldKeyResult<Self> {
         // read field name value size
         let size = u32::read_from(reader)? as usize;
         if size > Self::MAX_NAME_SIZE {
-            bail!("field name size must be <= {} bytes length", Self::MAX_NAME_SIZE);
+            return Err(FieldKeyError::InvalidNameSize(Self::MAX_NAME_SIZE));
         }
 
         // read field name
@@ -79,15 +80,15 @@ impl ReadFrom for Field {
     }
 }
 
-impl WriteTo for Field {
-    fn write_to(&self, writer: &mut impl Write) -> Result<()> {
+impl WriteTo<FieldKeyError> for Field {
+    fn write_to(&self, writer: &mut impl Write) -> FieldKeyResult<()> {
         // convert name into bytes
         let name_bytes = self._name.as_bytes();
 
         // write name size
         let size = name_bytes.len();
         if size > Self::MAX_NAME_SIZE {
-            bail!("field name size must be <= {} bytes length", Self::MAX_NAME_SIZE);
+            return Err(FieldKeyError::InvalidNameSize(Self::MAX_NAME_SIZE));
         }
         let size = size as u32;
         size.write_to(writer)?;

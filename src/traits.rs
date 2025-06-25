@@ -1,7 +1,33 @@
-use std::io::{Read, Write};
-use anyhow::{bail, Result};
+use std::io::{Read, Write, Seek};
 use uuid::Uuid;
-use crate::error::ParseError;
+use crate::error::{ParseError, ParseResult};
+
+/// Represents a data trait.
+pub trait DataTrait<T: Read + Write + Seek, E>: Read + Write + Seek {
+    /// Creates a new data instance from the provided data structure.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `data` - Data to create the instance from.
+    /// * `need_flush` - If `true` then the data will be flushed to the file.
+    /// 
+    /// # Returns
+    /// 
+    /// * `Self` - New data instance.
+    fn new(data: T, need_flush: bool) -> Self;
+
+    /// Consumes the data trait and returns the internal data structure.
+    fn into_data(self) -> T;
+
+    /// Returns a reference to the internal data structure.
+    fn data_ref(&self) -> &T;
+
+    /// Resturns a mutable reference to the internal data structure.
+    fn data_mut(&mut self) -> &mut T;
+
+    /// Validates the data file.
+    fn healthcheck_binary(&mut self) -> Result<(), E>;
+}
 
 pub trait ByteSized: Sized {
     /// The size of this class instance in bytes.
@@ -30,59 +56,59 @@ impl_byte_sized!(f64, 64);
 impl_byte_sized!(f32, 32);
 impl_byte_sized!(Uuid, 128);
 
-pub trait FromByteSlice: ByteSized {
+pub trait FromByteSlice<E>: ByteSized {
     /// Creates a value from its representation as bytes from a byte buffer.
     /// 
     /// # Arguments
     /// 
     /// * `buf` - Byte buffer.
-    fn from_byte_slice(buf: &[u8]) -> Result<Self>;
+    fn from_byte_slice(buf: &[u8]) -> Result<Self, E>;
 }
 
-pub trait ReadFrom: Sized {
+pub trait ReadFrom<E>: Sized {
     /// Create an instance from a reader contents.
     /// 
     /// # Arguments
     /// 
     /// * `reader` - Byte reader. 
-    fn read_from(reader: &mut impl Read) -> Result<Self>;
+    fn read_from(reader: &mut impl Read) -> Result<Self, E>;
 }
 
-impl FromByteSlice for bool {
-    fn from_byte_slice(buf: &[u8]) -> Result<Self> {
+impl FromByteSlice<ParseError> for bool {
+    fn from_byte_slice(buf: &[u8]) -> ParseResult<Self> {
         // validate value size
         if buf.len() != Self::BYTES {
-            bail!(ParseError::InvalidSize);
+            return Err(ParseError::InvalidSize);
         }
 
         Ok(match buf[0] {
             0 => false,
             1 => true,
-            _ => bail!(ParseError::InvalidValue)
+            _ => return Err(ParseError::InvalidValue)
         })
     }
 }
 
-impl ReadFrom for bool {
-    fn read_from(reader: &mut impl Read) -> Result<Self> {
+impl ReadFrom<ParseError> for bool {
+    fn read_from(reader: &mut impl Read) -> ParseResult<Self> {
         // read and convert bytes into the type value
         let mut buf = [0u8; Self::BYTES];
         reader.read_exact(&mut buf)?;
         return match buf[0] {
             0 => Ok(false),
             1 => Ok(true),
-            _ => bail!(ParseError::InvalidValue)
+            _ => return Err(ParseError::InvalidValue)
         }
     }
 }
 
 macro_rules! impl_from_byte_reader {
     ($type:ty, $fn:ident) => {
-        impl FromByteSlice for $type {
-            fn from_byte_slice(buf: &[u8]) -> Result<Self> {
+        impl FromByteSlice<ParseError> for $type {
+            fn from_byte_slice(buf: &[u8]) -> ParseResult<Self> {
                 // validate buf size
                 if buf.len() != Self::BYTES {
-                    bail!(ParseError::InvalidSize);
+                    return Err(ParseError::InvalidSize);
                 }
 
                 // convert bytes into the type value
@@ -92,8 +118,8 @@ macro_rules! impl_from_byte_reader {
             }
         }
 
-        impl ReadFrom for $type {
-            fn read_from(reader: &mut impl Read) -> Result<Self> {
+        impl ReadFrom<ParseError> for $type {
+            fn read_from(reader: &mut impl Read) -> ParseResult<Self> {
                 // read and convert bytes into the type value
                 let mut buf = [0u8; Self::BYTES];
                 reader.read_exact(&mut buf)?;
@@ -116,29 +142,29 @@ impl_from_byte_reader!(f64, from_be_bytes);
 impl_from_byte_reader!(f32, from_be_bytes);
 impl_from_byte_reader!(Uuid, from_bytes);
 
-pub trait WriteAsBytes: ByteSized {
+pub trait WriteAsBytes<E>: ByteSized {
     /// Write the value representation as bytes into a buffer.
     /// 
     /// # Arguments
     /// 
     /// * `buf` - Byte buffer.
-    fn write_as_bytes(&self, buf: &mut [u8]) -> Result<()>;
+    fn write_as_bytes(&self, buf: &mut [u8]) -> Result<(), E>;
 }
 
-pub trait WriteTo {
+pub trait WriteTo<E> {
     /// Write instance value as bytes into a writer.
     /// 
     /// # Arguments
     /// 
     /// * `writer` - Byte writer.
-    fn write_to(&self, writer: &mut impl Write) -> Result<()>;
+    fn write_to(&self, writer: &mut impl Write) -> Result<(), E>;
 }
 
-impl WriteAsBytes for bool {
-    fn write_as_bytes(&self, buf: &mut [u8]) -> Result<()> {
+impl WriteAsBytes<ParseError> for bool {
+    fn write_as_bytes(&self, buf: &mut [u8]) -> ParseResult<()> {
         // validate value size
         if buf.len() != Self::BYTES {
-            bail!(ParseError::InvalidSize);
+            return Err(ParseError::InvalidSize);
         }
 
         // save value as bytes
@@ -148,19 +174,19 @@ impl WriteAsBytes for bool {
 }
 
  
-impl WriteTo for bool {
-    fn write_to(&self, writer: &mut impl Write) -> Result<()> {
+impl WriteTo<ParseError> for bool {
+    fn write_to(&self, writer: &mut impl Write) -> ParseResult<()> {
         let buf: [u8; 1] = [(*self).into()];
         writer.write_all(&buf)?;
         Ok(())
     }
 }
 
-impl WriteAsBytes for Uuid {
-    fn write_as_bytes(&self, buf: &mut [u8]) -> Result<()> {
+impl WriteAsBytes<ParseError> for Uuid {
+    fn write_as_bytes(&self, buf: &mut [u8]) -> ParseResult<()> {
         // validate value size
         if buf.len() != Self::BYTES {
-            bail!(ParseError::InvalidSize);
+            return Err(ParseError::InvalidSize);
         }
 
         // save value as bytes
@@ -170,8 +196,8 @@ impl WriteAsBytes for Uuid {
     }
 }
 
-impl WriteTo for Uuid {
-    fn write_to(&self, writer: &mut impl Write) -> Result<()> {
+impl WriteTo<ParseError> for Uuid {
+    fn write_to(&self, writer: &mut impl Write) -> ParseResult<()> {
         writer.write_all(self.as_bytes())?;
         Ok(())
     }
@@ -179,11 +205,11 @@ impl WriteTo for Uuid {
 
 macro_rules! impl_write_as_bytes {
     ($t:ty, $fn:ident) => {
-        impl WriteAsBytes for $t {
-            fn write_as_bytes(&self, buf: &mut [u8]) -> Result<()> {
+        impl WriteAsBytes<ParseError> for $t {
+            fn write_as_bytes(&self, buf: &mut [u8]) -> ParseResult<()> {
                 // validate value size
                 if buf.len() != Self::BYTES {
-                    bail!(ParseError::InvalidSize);
+                    return Err(ParseError::InvalidSize);
                 }
 
                 // save value as bytes
@@ -193,8 +219,8 @@ macro_rules! impl_write_as_bytes {
             }
         }
 
-        impl WriteTo for $t {
-            fn write_to(&self, writer: &mut impl Write) -> Result<()> {
+        impl WriteTo<ParseError> for $t {
+            fn write_to(&self, writer: &mut impl Write) -> ParseResult<()> {
                 writer.write_all(&self.$fn())?;
                 Ok(())
             }
@@ -214,13 +240,13 @@ impl_write_as_bytes!(i8, to_be_bytes);
 impl_write_as_bytes!(f64, to_be_bytes);
 impl_write_as_bytes!(f32, to_be_bytes);
 
-pub trait LoadFrom {
+pub trait LoadFrom<E> {
     /// Loads data into the instance from a reader.
     /// 
     /// # Arguments
     /// 
     /// * `reader` - Byte reader.
-    fn load_from(&mut self, reader: &mut impl Read) -> Result<()>;
+    fn load_from(&mut self, reader: &mut impl Read) -> Result<(), E>;
 }
 
 #[cfg(test)]
@@ -287,22 +313,16 @@ mod tests {
         };
         match bool::from_byte_slice(&[3u8]) {
             Ok(v) => assert!(false, "expected ParseError::InvalidValue but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidValue => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidValue but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidValue but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidValue => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidValue but got error: {:?}", err)
             }
         };
         match bool::from_byte_slice(&[0u8, 0u8]) {
             Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidSize => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
             }
         };
     }
@@ -321,12 +341,9 @@ mod tests {
         };
         match bool::read_from(&mut (&[4u8] as &[u8])) {
             Ok(v) => assert!(false, "expected ParseError::InvalidValue but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidValue => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidValue but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidValue but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidValue => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidValue but got error: {:?}", err)
             }
         };
         let expected = false;
@@ -366,12 +383,9 @@ mod tests {
         let mut buf = [0u8, 0u8];
         match false.write_as_bytes(&mut buf) {
             Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidSize => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
             }
         };
     }
@@ -426,12 +440,9 @@ mod tests {
         };
         match i8::from_byte_slice(&[0u8, 0u8]) {
             Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidSize => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
             }
         };
     }
@@ -465,12 +476,9 @@ mod tests {
         let mut buf = [0u8, 0u8];
         match 76i8.write_as_bytes(&mut buf) {
             Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidSize => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
             }
         };
     }
@@ -503,12 +511,9 @@ mod tests {
         };
         match i16::from_byte_slice(&[0u8, 0u8, 0u8]) {
             Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidSize => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
             }
         };
     }
@@ -542,12 +547,9 @@ mod tests {
         let mut buf = [0u8, 0u8, 0u8];
         match 7634i16.write_as_bytes(&mut buf) {
             Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidSize => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
             }
         };
     }
@@ -580,12 +582,9 @@ mod tests {
         };
         match i32::from_byte_slice(&[0u8, 0u8, 0u8, 0u8, 0u8]) {
             Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidSize => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
             }
         };
     }
@@ -619,12 +618,9 @@ mod tests {
         let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8];
         match 763123434i32.write_as_bytes(&mut buf) {
             Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidSize => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
             }
         };
     }
@@ -657,12 +653,9 @@ mod tests {
         };
         match i64::from_byte_slice(&[0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8]) {
             Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidSize => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
             }
         };
     }
@@ -696,12 +689,9 @@ mod tests {
         let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
         match 7634642314545343i64.write_as_bytes(&mut buf) {
             Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidSize => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
             }
         };
     }
@@ -734,12 +724,9 @@ mod tests {
         };
         match u8::from_byte_slice(&[0u8, 0u8]) {
             Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidSize => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
             }
         };
     }
@@ -773,12 +760,9 @@ mod tests {
         let mut buf = [0u8, 0u8];
         match 76u8.write_as_bytes(&mut buf) {
             Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidSize => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
             }
         };
     }
@@ -811,12 +795,9 @@ mod tests {
         };
         match u16::from_byte_slice(&[0u8, 0u8, 0u8]) {
             Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidSize => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
             }
         };
     }
@@ -850,12 +831,9 @@ mod tests {
         let mut buf = [0u8, 0u8, 0u8];
         match 7634u16.write_as_bytes(&mut buf) {
             Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidSize => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
             }
         };
     }
@@ -888,12 +866,9 @@ mod tests {
         };
         match u32::from_byte_slice(&[0u8, 0u8, 0u8, 0u8, 0u8]) {
             Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidSize => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
             }
         };
     }
@@ -927,12 +902,9 @@ mod tests {
         let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8];
         match 763123434u32.write_as_bytes(&mut buf) {
             Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidSize => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
             }
         };
     }
@@ -965,12 +937,9 @@ mod tests {
         };
         match u64::from_byte_slice(&[0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8]) {
             Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidSize => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
             }
         };
     }
@@ -1004,12 +973,9 @@ mod tests {
         let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
         match 7634642314545343u64.write_as_bytes(&mut buf) {
             Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidSize => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
             }
         };
     }
@@ -1042,12 +1008,9 @@ mod tests {
         };
         match f32::from_byte_slice(&[0u8, 0u8, 0u8, 0u8, 0u8]) {
             Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidSize => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
             }
         };
     }
@@ -1081,12 +1044,9 @@ mod tests {
         let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8];
         match 763123.434f32.write_as_bytes(&mut buf) {
             Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidSize => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
             }
         };
     }
@@ -1119,12 +1079,9 @@ mod tests {
         };
         match f64::from_byte_slice(&[0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8]) {
             Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidSize => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
             }
         };
     }
@@ -1158,12 +1115,9 @@ mod tests {
         let mut buf = [0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8, 0u8];
         match 76346423145.45343f64.write_as_bytes(&mut buf) {
             Ok(v) => assert!(false, "expected ParseError::InvalidSize but got {:?}", v),
-            Err(e) => match e.downcast() {
-                Ok(ex) => match ex {
-                    ParseError::InvalidSize => assert!(true),
-                    err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
-                },
-                Err(ex) => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", ex)
+            Err(e) => match e {
+                ParseError::InvalidSize => assert!(true),
+                err => assert!(false, "expected ParseError::InvalidSize but got error: {:?}", err)
             }
         };
     }

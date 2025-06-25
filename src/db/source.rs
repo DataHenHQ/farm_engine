@@ -3,14 +3,16 @@ use serde::Serialize;
 use serde_json::{Map as JSMap, Value as JSValue};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom, Read, Write, BufReader, BufWriter};
+use std::io::{Seek, SeekFrom, Read, Write};
 use std::path::PathBuf;
-use crate::error::{ParseError, IndexError};
+use crate::db::table::TableWithPath;
+use crate::db::index::raw_match::error::IndexError;
+use crate::error::ParseError;
 use crate::traits::{ReadFrom, WriteTo};
 use crate::db::field::Record;
 use super::index::raw_match::{RawMatch, Status as IndexStatus};
 use super::index::raw_match::value::{MatchFlag, Data as IndexData, Value as IndexValue};
-use super::table::Table;
+use super::index::raw_match::error::IndexResult;
 
 /// Represents a data source single record.
 #[derive(Debug, Serialize, PartialEq)]
@@ -20,50 +22,29 @@ pub struct Data {
     pub record: Record
 }
 
-/// Represents a source readers involved in a join operation.
-pub struct SourceJoinItem<R, T> {
-    pub index: R,
-    pub table: T
-}
-
-impl SourceJoinItem<BufReader<File>, BufReader<File>> {
-    /// Creates a new instance as reader from a source.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `source` - Source to create the readers from.
-    pub fn as_reader_from(source: &Source) -> Result<Self> {
-        Ok(Self{
-            index: source.index.new_index_reader()?,
-            table: source.table.new_reader()?
-        })
-    }
-}
-
-impl SourceJoinItem<BufWriter<File>, BufWriter<File>> {
-    /// Creates a new instance as writer from a source.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `source` - Source to create the writers from.
-    pub fn as_writer_from(source: &Source, create: bool) -> Result<Self> {
-        Ok(Self{
-            index: source.index.new_index_writer(create)?,
-            table: source.table.new_writer(create)?
-        })
-    }
-}
-
 /// Represents a data source.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Source {
     /// RawMatch.
     pub index: RawMatch,
     /// Table.
-    pub table: Table
+    pub table: TableWithPath
 }
 
 impl Source {
+    /// Creates a new source instance.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `index` - RawMatch instance.
+    /// * `table` - TableWithPath instance.
+    pub fn new(index: RawMatch, table: TableWithPath) -> Self {
+        Self{
+            index,
+            table
+        }
+    }
+
     /// Regenerates the index file based on the input file.
     /// 
     /// # Arguments
@@ -72,26 +53,23 @@ impl Source {
     /// * `force_override` - Always creates a new table file with the current headers.
     pub fn init(&mut self, override_on_error: bool, force_override: bool) -> Result<()> {
         if let Err(e) = self.index.index() {
-            match e.downcast::<IndexError<IndexStatus>>() {
-                Ok(ex) => match ex {
-                    IndexError::Unavailable(status) => match status {
-                        IndexStatus::Indexing => bail!(IndexError::Unavailable(IndexStatus::Indexing)),
-                        _ => if override_on_error {
-                            // truncate the file then index again
-                            let file = OpenOptions::new()
-                                .create(true)
-                                .open(&self.index.index_path)?;
-                            file.set_len(0)?;
-                            self.index.index()?;
-                        }
-                    },
-                    err => bail!(err)
+            match e {
+                IndexError::Unavailable(status) => match status {
+                    IndexStatus::Indexing => bail!(IndexError::Unavailable(IndexStatus::Indexing)),
+                    _ => if override_on_error {
+                        // truncate the file then index again
+                        let file = OpenOptions::new()
+                            .create(true)
+                            .open(&self.index.index_path)?;
+                        file.set_len(0)?;
+                        self.index.index()?;
+                    }
                 },
-                Err(ex) => bail!(ex)
+                err => bail!(err)
             }
         }
-        if self.table.header.meta.record_count < 1 {
-            self.table.header.meta.record_count = self.index.header.indexed_count;
+        if self.table.header_ref().meta.record_count < 1 {
+            self.table.header_mut().meta.record_count = self.index.header.indexed_count;
         }
         self.table.load_or_create(override_on_error, force_override)?;
         Ok(())
@@ -102,7 +80,7 @@ impl Source {
     /// # Arguments
     /// 
     /// * `from_index` - Index offset from which start searching.
-    pub fn find_pending(&self, from_index: u64) -> Result<Option<u64>> {
+    pub fn find_pending(&self, from_index: u64) -> IndexResult<Option<u64>> {
         self.index.find_pending(from_index)
     }
 
@@ -111,7 +89,7 @@ impl Source {
     /// $ Arguments
     /// 
     /// * `index` - Record index.
-    pub fn data(&self, index: u64) -> Result<Option<Data>> {
+    pub fn data(&mut self, index: u64) -> Result<Option<Data>> {
         let index_value = match self.index.value(index)? {
             Some(v) => v,
             None => return Ok(None)
@@ -136,7 +114,7 @@ impl Source {
         }
 
         // check that the indexed count match the record count
-        if self.index.header.indexed_count != self.table.header.meta.record_count {
+        if self.index.header.indexed_count != self.table.header_ref().meta.record_count {
             return false;
         }
         true
@@ -164,15 +142,15 @@ impl Source {
         }
 
         // ensure tables has the same fields count
-        if self.table.header.record.len() != source.table.header.record.len() {
+        if self.table.header_ref().record.len() != source.table.header_ref().record.len() {
             return (false, "table field count doesn't match")
         }
 
         // ensure tables has the same fields
-        let limit = self.table.header.record.len();
+        let limit = self.table.header_ref().record.len();
         if limit > 0 {
             for i in 0..limit {
-                if self.table.header.record.get_by_index(i) != source.table.header.record.get_by_index(i) {
+                if self.table.header_ref().record.get_by_index(i) != source.table.header_ref().record.get_by_index(i) {
                     return (false, "table fields doesn't match")
                 }
             }
@@ -354,7 +332,7 @@ mod test_helper {
                     index_path,
                     InputType::Unknown
                 ),
-                table: Table::new(
+                table: TableWithPath::new(
                     table_path,
                     "my_table",
                     None
@@ -377,7 +355,7 @@ mod tests {
     use super::test_helper::*;
     // use crate::test_helper::*;
     use crate::db::index::raw_match::test_helper::create_fake_index;
-    use crate::db::table::test_helper::create_fake_table;
+    use crate::db::table::with_path_test_helper::create_fake_table;
     use crate::db::index::raw_match::header::Header as IndexHeader;
     use crate::db::table::Header as TableHeader;
 
@@ -390,9 +368,6 @@ mod tests {
                 create_fake_index(&source.index.index_path, true)?;
                 create_fake_table(&source.table.path, true)?;
 
-                // test method
-                let mut readers = SourceJoinItem::as_reader_from(&source)?;
-
                 // test index reader
                 let mut index_rdr = source.index.new_index_reader()?;
                 let expected = IndexHeader::read_from(&mut index_rdr)?;
@@ -400,9 +375,9 @@ mod tests {
                 assert_eq!(expected, source.index.header);
                 
                 // test table reader
-                let mut table_rdr = source.table.new_reader()?;
-                let expected = TableHeader::read_from(&mut table_rdr)?;
-                source.table.load_headers_from(&mut readers.table)?;
+                source.table.inner.data.rewind();
+                let expected = TableHeader::read_from(&mut source.table.inner.data)?;
+                source.table.load_headers(&mut source.table.inner.data)?;
                 assert_eq!(expected, source.table.header);
 
                 Ok(())

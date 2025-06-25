@@ -1,9 +1,6 @@
-//use thiserror::Error;
-//use crate::db::indexer::Status as IndexStatus;
-//use crate::db::table::Status as TableStatus;
-
-use std::fmt::Display;
-
+use std::io::Error as IoError;
+use std::str::Utf8Error;
+use std::string::FromUtf8Error;
 use thiserror::Error;
 use crate::db::table::Status as TableStatus;
 
@@ -18,8 +15,10 @@ pub enum ParseError {
     InvalidValue,
     #[error("retry limit reached")]
     RetryLimit,
-    #[error("can't convert bytes to string")]
-    ParseString,
+    #[error("{}", .0)]
+    ParseString(String),
+    #[error("IO error: {}", .0)]
+    IO(IoError),
     #[error("{}", .0)]
     Other(String)
 }
@@ -36,16 +35,26 @@ impl From<&str> for ParseError {
     }
 }
 
-/// Index error.
-#[derive(Error, Debug)]
-pub enum IndexError<T> where T: Display {
-    #[error("the input doesn't have any fields")]
-    NoFields,
-    #[error("invalid field \"{}\"", .0)]
-    InvalidField(T),
-    #[error("unavailable due status \"{}\"", .0)]
-    Unavailable(T)
+impl From<Utf8Error> for ParseError {
+    fn from(err: Utf8Error) -> Self {
+        Self::ParseString(err.to_string())
+    }
 }
+
+impl From<FromUtf8Error> for ParseError {
+    fn from(err: FromUtf8Error) -> Self {
+        Self::ParseString(err.to_string())
+    }
+}
+
+impl From<IoError> for ParseError {
+    fn from(err: IoError) -> Self {
+        Self::IO(err)
+    }
+}
+
+pub type ParseResult<T> = std::result::Result<T, ParseError>;
+
 
 /// Table error.
 #[derive(Error, Debug)]
@@ -53,20 +62,15 @@ pub enum TableError {
     #[error("the table doesn't have any fields")]
     NoFields,
     #[error("unavailable due status \"{}\"", .0)]
-    Unavailable(TableStatus)
+    Unavailable(TableStatus),
+    #[error("IO error: {}", .0)]
+    IO(IoError)
 }
 
-
-/// Index error.
-#[derive(Error, Debug)]
-pub enum DbIndexError {
-    #[error("the node doesn't exist")]
-    NoInputFields,
-    #[error("the left node doesn't exist")]
-    NoLeftNode,
-    #[error("the right node doesn't exist")]
-    NoRightNode,
-    #[error("the node doesn't have data")]
-    NoData
+impl From<IoError> for TableError {
+    fn from(err: IoError) -> Self {
+        Self::IO(err)
+    }
 }
 
+pub type TableResult<T> = std::result::Result<T, TableError>;

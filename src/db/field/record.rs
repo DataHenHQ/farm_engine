@@ -1,7 +1,7 @@
 use indexmap::IndexMap;
 use serde::ser::{Serialize, Serializer, SerializeMap};
-use anyhow::{bail, Result};
 use crate::db::field::value::Value;
+use super::error::{FieldKeyError, FieldKeyResult};
 
 /// Represents a data record.
 #[derive(Debug, PartialEq, Clone)]
@@ -22,10 +22,10 @@ impl Record {
     /// # Arguments
     /// 
     /// * `name` - Field name.
-    pub fn add(&mut self, name: &str, value: Value) -> Result<&Self> {
+    pub fn add(&mut self, name: &str, value: Value) -> FieldKeyResult<&Self> {
         // avoid duplicated fields
         if let Some(_) = self._values.get(name) {
-            bail!("field \"{}\" already exists within the record", name);
+            return Err(FieldKeyError::AlreadyExists(format!("field \"{}\" already exists within the record", name)));
         }
 
         // add field

@@ -1,8 +1,8 @@
-use std::io::{Read, Write};
+use std::io::{Read, Write, Result as IoResult, Error as IoError};
 use std::convert::TryFrom;
-use anyhow::{bail, Result};
 use super::VERSION;
-use crate::error::ParseError;
+use super::error::{IndexError, IndexResult};
+use crate::error::{ParseError, ParseResult};
 use crate::traits::{ByteSized, FromByteSlice, WriteAsBytes, ReadFrom, WriteTo, LoadFrom};
 
 /// File's magic numbervalue size bytes.
@@ -60,11 +60,11 @@ impl ByteSized for InputType {
     const BYTES: usize = 1;
 }
 
-impl WriteAsBytes for InputType {
-    fn write_as_bytes(&self, buf: &mut [u8]) -> Result<()> {
+impl WriteAsBytes<ParseError> for InputType {
+    fn write_as_bytes(&self, buf: &mut [u8]) -> ParseResult<()> {
         // validate value size
         if buf.len() != Self::BYTES {
-            bail!(ParseError::InvalidSize);
+            return Err(ParseError::InvalidSize);
         }
 
         // save value as bytes
@@ -161,8 +161,8 @@ impl ByteSized for Header {
     const BYTES: usize = 47 + MAGIC_NUMBER_SIZE;
 }
 
-impl LoadFrom for Header {
-    fn load_from(&mut self, reader: &mut impl Read) -> Result<()> {
+impl LoadFrom<IndexError> for Header {
+    fn load_from(&mut self, reader: &mut impl Read) -> IndexResult<()> {
         // read data
         let mut carry = 0;
         let mut buf = [0u8; Self::BYTES];
@@ -170,14 +170,14 @@ impl LoadFrom for Header {
 
         // read and validate magic number
         if buf[carry..carry+MAGIC_NUMBER_SIZE] != MAGIC_NUMBER_BYTES {
-            bail!("invalid file magic number");
+            return Err(IndexError::BadMagicBytes);
         }
         carry += MAGIC_NUMBER_SIZE;
 
         // read and validate indexer version
         let version = u32::from_byte_slice(&buf[carry..carry+u32::BYTES])?;
         if version != VERSION {
-            bail!("indexer version mismatch, expected {} buf found {}", VERSION, version);
+            return Err(IndexError::BadVersion(version));
         }
         carry += u32::BYTES;
 
@@ -211,8 +211,8 @@ impl LoadFrom for Header {
     }
 }
 
-impl FromByteSlice for Header {
-    fn from_byte_slice(buf: &[u8]) -> Result<Self> {
+impl FromByteSlice<IndexError> for Header {
+    fn from_byte_slice(buf: &[u8]) -> IndexResult<Self> {
         let mut header = Self::new();
         let mut reader = buf;
         header.load_from(&mut reader)?;
@@ -220,8 +220,8 @@ impl FromByteSlice for Header {
     }
 }
 
-impl ReadFrom for Header {
-    fn read_from(reader: &mut impl Read) -> Result<Self> {
+impl ReadFrom<IndexError> for Header {
+    fn read_from(reader: &mut impl Read) -> IndexResult<Self> {
         let mut header = Self::new();
         header.load_from(reader)?;
         Ok(header)
@@ -239,8 +239,8 @@ impl TryFrom<&[u8]> for Header {
     }
 }
 
-impl WriteTo for Header {
-    fn write_to(&self, writer: &mut impl Write) -> Result<()> {
+impl WriteTo<IoError> for Header {
+    fn write_to(&self, writer: &mut impl Write) -> IoResult<()> {
         writer.write_all(&self.as_bytes())?;
         Ok(())
     }
@@ -493,9 +493,9 @@ mod tests {
             let mut reader = &buf as &[u8];
             match header.load_from(&mut reader) {
                 Ok(v) => assert!(false, "expected IO error with ErrorKind::UnexpectedEof but got {:x?}", v),
-                Err(e) => match e.downcast::<std::io::Error>() {
-                    Ok(ex) => assert_eq!(expected, ex.kind()),
-                    Err(ex) => assert!(false, "expected IO error with ErrorKind::UnexpectedEof but got error: {:?}", ex)
+                Err(e) => match e {
+                    IndexError::IO(ex) => assert_eq!(expected, ex.kind()),
+                    _ => assert!(false, "expected IO error with ErrorKind::UnexpectedEof but got error: {:?}", e)
                 }
             }
         }

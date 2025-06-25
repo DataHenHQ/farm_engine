@@ -1,11 +1,8 @@
-use anyhow::{bail, Result};
 use indexmap::IndexMap;
 use std::io::{Read, Write};
 use crate::traits::{ByteSized, ReadFrom, WriteTo, LoadFrom};
-use super::FieldType;
-use super::Value;
-use super::Field;
-use super::Record;
+use super::error::{FieldKeyError, FieldKeyResult, RecordError, RecordResult};
+use super::{FieldType, Value, Field, Record};
 
 /// Represent the record header. Byte format: `<field_count:1><fields:?>`
 #[derive(Debug, PartialEq, Clone)]
@@ -29,12 +26,12 @@ impl Header {
     /// 
     /// * `name` - Field name.
     /// * `value_type` - Field value type.
-    pub fn add(&mut self, name: &str, value_type: FieldType) -> Result<&Self> {
+    pub fn add(&mut self, name: &str, value_type: FieldType) -> FieldKeyResult<&Self> {
         let field = Field::new(name, value_type)?;
 
         // avoid duplicated fields
         if let Some(_) = self._fields.get(field.get_name()) {
-            bail!("field \"{}\" already exists within the header", field.get_name());
+            return Err(FieldKeyError::AlreadyExists(format!("field \"{}\" already exists within the header", field.get_name())));
         }
 
         // add field
@@ -138,7 +135,7 @@ impl Header {
     }
 
     /// Creates a new record instance from the header fields.
-    pub fn new_record(&self) -> Result<Record> {
+    pub fn new_record(&self) -> FieldKeyResult<Record> {
         let mut record = Record::new();
 
         for (key, _) in self._fields.iter() {
@@ -152,7 +149,7 @@ impl Header {
     /// # Arguments
     /// 
     /// * `reader` - Byte reader.
-    pub fn read_record(&self, reader: &mut impl Read) -> Result<Record> {
+    pub fn read_record(&self, reader: &mut impl Read) -> RecordResult<Record> {
         let mut record = Record::new();
 
         for (key, field) in self._fields.iter() {
@@ -167,18 +164,18 @@ impl Header {
     /// # Arguments
     /// 
     /// * `writer` - Byte writer.
-    pub fn write_record(&self, writer: &mut impl Write, record: &Record) -> Result<()> {
+    pub fn write_record(&self, writer: &mut impl Write, record: &Record) -> RecordResult<()> {
         if self._fields.len() != record.len() {
-            bail!("header field count mismatch the record value count");
+            return Err(RecordError::CountMismatch);
         }
         for (index, (key, field)) in self._fields.iter().enumerate() {
             let value = match record.get_by_index(index) {
                 Some(v) => v,
-                None => bail!("invalid value index! this should never happen, please check \
-                    the record \"len()\" function")
+                None => return Err(RecordError::Other("invalid value index! this should never happen, please check \
+                    the record \"len()\" function".to_string()))
             };
             if let Err(e) = field.get_type().write_value(writer, value) {
-                bail!("error saving field \"{}\": {}", &key, e);
+                return Err(RecordError::SaveError(format!("error saving field \"{}\": {}", &key, e)))
             }
         }
         Ok(())
@@ -190,8 +187,8 @@ impl Header {
     }
 }
 
-impl LoadFrom for Header {
-    fn load_from(&mut self, reader: &mut impl Read) -> Result<()> {
+impl LoadFrom<FieldKeyError> for Header {
+    fn load_from(&mut self, reader: &mut impl Read) -> FieldKeyResult<()> {
         // read field count
         let field_count = u32::read_from(reader)?;
 
@@ -204,7 +201,7 @@ impl LoadFrom for Header {
             let name = field.get_name().to_string();
             record_size += field.get_type().value_byte_size() as u64;
             if let Some(_) = fields.insert(field.get_name().to_string(), field) {
-                bail!("duplicated field \"{}\"", &name);
+                return Err(FieldKeyError::AlreadyExists(format!("duplicated field \"{}\"", &name)));
             }
         }
 
@@ -215,16 +212,16 @@ impl LoadFrom for Header {
     }
 }
 
-impl ReadFrom for Header {
-    fn read_from(reader: &mut impl Read) -> Result<Self> {
+impl ReadFrom<FieldKeyError> for Header {
+    fn read_from(reader: &mut impl Read) -> FieldKeyResult<Self> {
         let mut header = Self::new();
         header.load_from(reader)?;
         Ok(header)
     }
 }
 
-impl WriteTo for Header {
-    fn write_to(&self, writer: &mut impl Write) -> Result<()> {
+impl WriteTo<FieldKeyError> for Header {
+    fn write_to(&self, writer: &mut impl Write) -> FieldKeyResult<()> {
         // write field count
         let field_count = self._fields.len() as u32;
         field_count.write_to(writer)?;

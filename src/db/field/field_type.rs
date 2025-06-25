@@ -1,9 +1,10 @@
 use serde::{Serialize, Deserialize};
+use std::fmt::Display;
 use std::io::{Read, Write};
-use anyhow::{bail, Result};
-use crate::error::ParseError;
+use crate::error::{ParseError, ParseResult};
 use crate::traits::{ByteSized, FromByteSlice, WriteAsBytes, ReadFrom, WriteTo};
 use super::Value;
+use super::error::{FieldError, FieldResult, FieldValueError, FieldValueResult};
 
 /// Represents a field type.
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Copy, Clone)]
@@ -60,10 +61,10 @@ impl FieldType {
     }
 
     /// Gets the string max size when [Self::Str].
-    pub fn str_size(&self) -> Result<u32> {
+    pub fn str_size(&self) -> FieldResult<u32> {
         match self {
             Self::Str(size) => Ok(*size),
-            _ => bail!("field type is not a string type")
+            _ => Err(FieldError::InvalidFieldType("field type is not a string type".to_string()))
         }
     }
 
@@ -128,7 +129,7 @@ impl FieldType {
     /// # Arguments
     /// 
     /// * `reader` - Byte reader.
-    pub fn read_value(&self, reader: &mut impl Read) -> Result<Value> {
+    pub fn read_value(&self, reader: &mut impl Read) -> FieldValueResult<Value> {
         let value: Value = match self {
             Self::Bool => bool::read_from(reader)?.into(),
             Self::I8 => i8::read_from(reader)?.into(),
@@ -147,7 +148,7 @@ impl FieldType {
                 // read the real string size
                 let value_size = u32::read_from(reader)? as usize;
                 if value_size > size {
-                    bail!("string value size can't be bigger than the field size");
+                    return Err(FieldValueError::InvalidSize(format!("string value size can't be bigger than the field size ({})", size)));
                 }
 
                 // read the string value
@@ -168,62 +169,62 @@ impl FieldType {
     /// # Arguments
     /// 
     /// * `writer` - Byte writer.
-    pub fn write_value(&self, writer: &mut impl Write, value: &Value) -> Result<()> {
+    pub fn write_value(&self, writer: &mut impl Write, value: &Value) -> FieldValueResult<()> {
         match self {
             Self::Bool => match value {
                 Value::Bool(v) => (*v).write_to(writer)?,
                 Value::Default => false.write_to(writer)?,
-                _ => bail!("value must be a Value::Bool")
+                _ => return Err(FieldValueError::InvalidType("value must be a Value::Bool".to_string()))
             },
             Self::I8 => match value {
                 Value::I8(v) => v.write_to(writer)?,
                 Value::Default => 0i8.write_to(writer)?,
-                _ => bail!("value must be a Value::I8")
+                _ => return Err(FieldValueError::InvalidType("value must be a Value::I8".to_string()))
             },
             Self::I16 => match value {
                 Value::I16(v) => v.write_to(writer)?,
                 Value::Default => 0i16.write_to(writer)?,
-                _ => bail!("value must be a Value::I16")
+                _ => return Err(FieldValueError::InvalidType("value must be a Value::I16".to_string()))
             },
             Self::I32 => match value {
                 Value::I32(v) => v.write_to(writer)?,
                 Value::Default => 0i32.write_to(writer)?,
-                _ => bail!("value must be a Value::I32")
+                _ => return Err(FieldValueError::InvalidType("value must be a Value::I32".to_string()))
             },
             Self::I64 => match value {
                 Value::I64(v) => v.write_to(writer)?,
                 Value::Default => 0i64.write_to(writer)?,
-                _ => bail!("value must be a Value::I64")
+                _ => return Err(FieldValueError::InvalidType("value must be a Value::I64".to_string()))
             },
             Self::U8 => match value {
                 Value::U8(v) => v.write_to(writer)?,
                 Value::Default => 0u8.write_to(writer)?,
-                _ => bail!("value must be a Value::U8")
+                _ => return Err(FieldValueError::InvalidType("value must be a Value::U8".to_string()))
             },
             Self::U16 => match value {
                 Value::U16(v) => v.write_to(writer)?,
                 Value::Default => 0u16.write_to(writer)?,
-                _ => bail!("value must be a Value::U16")
+                _ => return Err(FieldValueError::InvalidType("value must be a Value::U16".to_string()))
             },
             Self::U32 => match value {
                 Value::U32(v) => v.write_to(writer)?,
                 Value::Default => 0u32.write_to(writer)?,
-                _ => bail!("value must be a Value::U32")
+                _ => return Err(FieldValueError::InvalidType("value must be a Value::U32".to_string()))
             },
             Self::U64 => match value {
                 Value::U64(v) => v.write_to(writer)?,
                 Value::Default => 0u64.write_to(writer)?,
-                _ => bail!("value must be a Value::U64")
+                _ => return Err(FieldValueError::InvalidType("value must be a Value::U64".to_string()))
             },
             Self::F32 => match value {
                 Value::F32(v) => v.write_to(writer)?,
                 Value::Default => 0f32.write_to(writer)?,
-                _ => bail!("value must be a Value::F32")
+                _ => return Err(FieldValueError::InvalidType("value must be a Value::F32".to_string()))
             },
             Self::F64 => match value {
                 Value::F64(v) => v.write_to(writer)?,
                 Value::Default => 0f64.write_to(writer)?,
-                _ => bail!("value must be a Value::F64")
+                _ => return Err(FieldValueError::InvalidType("value must be a Value::F64".to_string()))
             },
             Self::Str(size) => match value {
                 Value::Str(v) => {
@@ -232,11 +233,11 @@ impl FieldType {
                     let value_buf = v.as_bytes();
                     let value_size = value_buf.len() as u32;
                     if value_size > size {
-                        bail!(
+                        return Err(FieldValueError::InvalidSize(format!(
                             "string value size ({} bytes) is bigger than field size ({} bytes)",
                             value_size,
                             size
-                        );
+                        )));
                     }
 
                     // write value
@@ -252,10 +253,34 @@ impl FieldType {
                     0u32.write_to(writer)?;
                     writer.write_all(&vec![0u8; (*size) as usize])?;
                 },
-                _ => bail!("value must be a Value::Str")
+                _ => return Err(FieldValueError::InvalidType("value must be a Value::Str".to_string()))
             }
         }
         Ok(())
+    }
+}
+
+impl Display for FieldType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Self::Str(size) = self {
+            // handle string special case
+            return write!(f, "Str({})", size)
+        }
+        write!(f, "{}", match self {
+            Self::Bool => "Bool",
+            Self::I8 => "I8",
+            Self::I16 => "I16",
+            Self::I32 => "I32",
+            Self::I64 => "I64",
+            Self::U8 => "U8",
+            Self::U16 => "U16",
+            Self::U32 => "U32",
+            Self::U64 => "U64",
+            Self::F32 => "F32",
+            Self::F64 => "F64",
+            // ignore string case since we already handle it above
+            Self::Str(_) => ""
+        })
     }
 }
 
@@ -264,8 +289,8 @@ impl ByteSized for FieldType {
     const BYTES: usize = 5;
 }
 
-impl ReadFrom for FieldType {
-    fn read_from(reader: &mut impl Read) -> Result<Self> {
+impl ReadFrom<ParseError> for FieldType {
+    fn read_from(reader: &mut impl Read) -> ParseResult<Self> {
         // read data
         let mut buf = [0u8; Self::BYTES];
         reader.read_exact(&mut buf)?;
@@ -286,14 +311,14 @@ impl ReadFrom for FieldType {
             12 => {
                 Self::Str(u32::from_byte_slice(&buf[1..])?)
             },
-            _ => bail!(ParseError::InvalidValue)
+            _ => return Err(ParseError::InvalidValue)
         };
         Ok(field_type)
     }
 }
 
-impl WriteTo for FieldType {
-    fn write_to(&self, writer: &mut impl Write) -> Result<()> {
+impl WriteTo<ParseError> for FieldType {
+    fn write_to(&self, writer: &mut impl Write) -> ParseResult<()> {
         let mut buf = [0u8; Self::BYTES];
         match self {
             Self::Bool => buf[0] = 1,
