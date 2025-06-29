@@ -4,6 +4,7 @@ mod data;
 pub mod db;
 
 pub use data::{Data, Segment};
+pub use uuid;
 
 use path_absolutize::Absolutize;
 use regex::Regex;
