@@ -11,6 +11,7 @@ pub use with_data::TableWithData;
 pub use with_path::TableWithPath;
 
 use anyhow::Result;
+use std::io::{Read, Seek};
 use traits::TableTrait;
 use uuid::Uuid;
 
@@ -33,6 +34,12 @@ impl Table {
             header: Header::new(name, uuid)?
         })
     }
+
+    pub fn load(reader: &mut (impl Read + Seek)) -> Result<Self> {
+        let mut table = Self::new("",Some(Uuid::from_bytes([0u8; Uuid::BYTES])))?;
+        table.load_headers_from(reader)?;
+        Ok(table)
+    }
 }
 
 impl TableTrait for Table {
@@ -47,6 +54,8 @@ impl TableTrait for Table {
 
 #[cfg(test)]
 pub use with_path::test_helper as with_path_test_helper;
+
+use crate::traits::ByteSized;
 
 #[cfg(test)]
 mod tests {
