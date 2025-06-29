@@ -3,7 +3,7 @@ pub mod traits;
 mod data;
 pub mod db;
 
-pub use data::Data;
+pub use data::{Data, Segment};
 
 use path_absolutize::Absolutize;
 use regex::Regex;
