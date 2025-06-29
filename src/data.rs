@@ -1,3 +1,8 @@
+mod segment;
+
+#[allow(unused)]
+pub use segment::Segment;
+
 use std::io::{Read, Write, Seek};
 
 use crate::traits::DataTrait;
