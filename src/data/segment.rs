@@ -3,7 +3,7 @@ use std::io::{Read, Seek, SeekFrom, Write, Result as IoResult, ErrorKind, Error 
 /// Represents a segment of a data with read/write/seek capabilities, useful for accessing a part of a file
 /// or a buffer, similar to `std::io::Take` but with `Seek` support.
 #[allow(unused)]
-pub struct Segment<'data, T: Read + Write + Seek>{
+pub struct Segment<'data, T: Seek>{
     /// Data to be used by the segment.
     data: &'data mut T,
 
@@ -17,7 +17,7 @@ pub struct Segment<'data, T: Read + Write + Seek>{
     pos: u64
 }
 
-impl<'data, T: Read + Write + Seek> Segment<'data, T> {
+impl<'data, T: Seek> Segment<'data, T> {
     /// Creates a new segment and moves the pointer to the start position without checking the data real size.
     /// 
     /// # Arguments
@@ -61,7 +61,7 @@ impl<'data, T: Read + Write + Seek> Segment<'data, T> {
     }
 }
 
-impl<'data, T: Read + Write + Seek> Read for Segment<'data, T> {
+impl<'data, T: Read + Seek> Read for Segment<'data, T> {
     fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
         // ensure pos is within the segment
         if self.pos < self.start {
@@ -87,7 +87,7 @@ impl<'data, T: Read + Write + Seek> Read for Segment<'data, T> {
     }
 }
 
-impl<'data, T: Read + Write + Seek> Write for Segment<'data, T> {
+impl<'data, T: Write + Seek> Write for Segment<'data, T> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         // ensure pos is within the segment
         if self.pos < self.start {
@@ -114,7 +114,7 @@ impl<'data, T: Read + Write + Seek> Write for Segment<'data, T> {
     }
 }
 
-impl<'data, T: Read + Write + Seek> Seek for Segment<'data, T> {
+impl<'data, T: Seek> Seek for Segment<'data, T> {
     fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
         // ensure the position is within the segment
         let real_pos = match pos {
