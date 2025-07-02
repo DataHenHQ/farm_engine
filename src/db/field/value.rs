@@ -1,6 +1,6 @@
 use serde::ser::{Serialize, Serializer};
 use serde_json::{Value as JSValue, Number as JSNumber};
-use anyhow::{bail, Result};
+use anyhow::{bail, Result, Error as AnyError};
 use std::cmp::Ordering;
 
 /// Represents a value.
@@ -272,7 +272,7 @@ impl PartialOrd<Value> for Value{
     }
 }
 
-macro_rules! impl_convert_to_native {
+macro_rules! impl_convert_from_native {
     ($from:ty, $to:ident) => {
         impl From<$from> for Value {
             fn from(v: $from) -> Self {
@@ -288,18 +288,18 @@ macro_rules! impl_convert_to_native {
     }
 }
 
-// implement conversions for all types to native value
-impl_convert_to_native!(bool, Bool);
-impl_convert_to_native!(i8, I8);
-impl_convert_to_native!(i16, I16);
-impl_convert_to_native!(i32, I32);
-impl_convert_to_native!(i64, I64);
-impl_convert_to_native!(u8, U8);
-impl_convert_to_native!(u16, U16);
-impl_convert_to_native!(u32, U32);
-impl_convert_to_native!(u64, U64);
-impl_convert_to_native!(f32, F32);
-impl_convert_to_native!(f64, F64);
+// implement conversions for all types from native value
+impl_convert_from_native!(bool, Bool);
+impl_convert_from_native!(i8, I8);
+impl_convert_from_native!(i16, I16);
+impl_convert_from_native!(i32, I32);
+impl_convert_from_native!(i64, I64);
+impl_convert_from_native!(u8, U8);
+impl_convert_from_native!(u16, U16);
+impl_convert_from_native!(u32, U32);
+impl_convert_from_native!(u64, U64);
+impl_convert_from_native!(f32, F32);
+impl_convert_from_native!(f64, F64);
 
 impl From<&str> for Value {
     fn from(v: &str) -> Self {
@@ -312,6 +312,44 @@ impl From<&str> for &Value {
         v.into()
     }
 }
+
+macro_rules! impl_convert_into_native {
+    ($from:ident, $into:ty) => {
+        impl TryInto<$into> for Value {
+            type Error = AnyError;
+            fn try_into(self) -> Result<$into> {
+                match self {
+                    Value::$from(v) => Ok(v),
+                    _ => bail!("can't convert Value to {}", stringify!($into))
+                }
+            }
+        }
+
+        impl TryInto<$into> for &Value {
+            type Error = AnyError;
+            fn try_into(self) -> Result<$into> {
+                match self {
+                    Value::$from(v) => Ok(v.clone()),
+                    _ => bail!("can't convert Value to {}", stringify!($into))
+                }
+            }
+        }
+    }
+}
+
+// implement conversions for all types from native value
+impl_convert_into_native!(Bool, bool);
+impl_convert_into_native!(I8, i8);
+impl_convert_into_native!(I16, i16);
+impl_convert_into_native!(I32, i32);
+impl_convert_into_native!(I64, i64);
+impl_convert_into_native!(U8, u8);
+impl_convert_into_native!(U16, u16);
+impl_convert_into_native!(U32, u32);
+impl_convert_into_native!(U64, u64);
+impl_convert_into_native!(F32, f32);
+impl_convert_into_native!(F64, f64);
+impl_convert_into_native!(Str, String);
 
 impl TryFrom<JSValue> for Value {
     type Error = anyhow::Error;
@@ -961,5 +999,77 @@ mod tests {
     #[test]
     fn eq_default_default() {
         assert!(Value::Default.eq(&Value::Default));
+    }
+
+    #[test]
+    fn into_bool() {
+        assert_eq!(Value::Bool(false), false);
+        assert_eq!(Value::Bool(true), true);
+    }
+
+    #[test]
+    fn into_i8() {
+        let rnd = rand::random_range(i8::MIN..=i8::MAX);
+        assert_eq!(Value::I8(rnd), rnd);
+    }
+
+    #[test]
+    fn into_i16() {
+        let rnd = rand::random_range(i16::MIN..=i16::MAX);
+        assert_eq!(Value::I16(rnd), rnd);
+    }
+
+    #[test]
+    fn into_i32() {
+        let rnd = rand::random_range(i32::MIN..=i32::MAX);
+        assert_eq!(Value::I32(rnd), rnd);
+    }
+
+    #[test]
+    fn into_i64() {
+        let rnd = rand::random_range(i64::MIN..=i64::MAX);
+        assert_eq!(Value::I64(rnd), rnd);
+    }
+
+    #[test]
+    fn into_u8() {
+        let rnd = rand::random_range(u8::MIN..=u8::MAX);
+        assert_eq!(Value::U8(rnd), rnd);
+    }
+
+    #[test]
+    fn into_u16() {
+        let rnd = rand::random_range(u16::MIN..=u16::MAX);
+        assert_eq!(Value::U16(rnd), rnd);
+    }
+
+    #[test]
+    fn into_u32() {
+        let rnd = rand::random_range(u32::MIN..=u32::MAX);
+        assert_eq!(Value::U32(rnd), rnd);
+    }
+
+    #[test]
+    fn into_u64() {
+        let rnd = rand::random_range(u64::MIN..=u64::MAX);
+        assert_eq!(Value::U64(rnd), rnd);
+    }
+
+    #[test]
+    fn into_f32() {
+        assert_eq!(Value::F32(12.34f32), 12.34f32);
+        assert_eq!(Value::F32(56.78f32), 56.78f32);
+    }
+
+    #[test]
+    fn into_f64() {
+        assert_eq!(Value::F64(43.21f64), 43.21f64);
+        assert_eq!(Value::F64(87.65f64), 87.65f64);
+    }
+
+    #[test]
+    fn into_str() {
+        assert_eq!(Value::Str("foo".to_string()), "foo".to_string());
+        assert_eq!(Value::Str("bar".to_string()), "bar".to_string());
     }
 }
