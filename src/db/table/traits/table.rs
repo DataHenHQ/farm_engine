@@ -60,6 +60,30 @@ pub trait TableTrait {
             Err(e) => Err(e)
         }
     }
+
+    /// Seeks to the record position.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `seeker` - Byte seeker.
+    /// * `index` - Record index.
+    /// 
+    /// # Returns
+    /// 
+    /// * `Ok(true)` - Record was found.
+    /// * `Ok(false)` - Record was not found.
+    fn seek_to_record(&self, seeker: &mut impl Seek, index: u64) -> Result<bool> {
+        if self.header_ref().record.len() < 1 {
+            bail!(TableError::NoFields)
+        }
+
+        if self.header_ref().meta.record_count > index {
+            let pos = self.calc_record_pos(index);
+            seeker.seek(SeekFrom::Start(pos))?;
+            return Ok(true)
+        }
+        Ok(false)
+    }
     
     /// Move to index position and then read the record from a reader.
     /// 
@@ -68,13 +92,7 @@ pub trait TableTrait {
     /// * `reader` - Byte reader.
     /// * `index` - Record index.
     fn record_from(&self, reader: &mut (impl Read + Seek), index: u64) -> Result<Option<Record>> {
-        if self.header_ref().record.len() < 1 {
-            bail!(TableError::NoFields)
-        }
-
-        if self.header_ref().meta.record_count > index {
-            let pos = self.calc_record_pos(index);
-            reader.seek(SeekFrom::Start(pos))?;
+        if self.seek_to_record(reader, index)? {
             return Ok(Some(self.header_ref().record.read_record(reader)?));
         }
         Ok(None)
@@ -282,6 +300,15 @@ pub trait TableTrait {
             self.save_headers_into(writer)?;
         }
         Ok(())
+    }
+
+    /// *UNSAFE*, returns the next record assuming the reader is at the correct position.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `reader` - Byte reader.
+    fn unsafe_next_record(&self, reader: &mut (impl Read + Seek)) -> Result<Record> {
+        Ok(self.header_ref().record.read_record(reader)?)
     }
 }
 
@@ -570,6 +597,90 @@ mod tests {
             assert!(false, "expected to add fields, but got error: {:?}", e);
         }
         assert_eq!(expected, table.header);
+    }
+
+    #[test]
+    fn seek_to_record() {
+        let (buf, _, _) = fake_table_with_fields(true).unwrap();
+        let mut reader = Cursor::new(buf.to_vec());
+        let mut table = FakeTable::new("my_table", Some(fake_table_uuid()));
+        if let Err(e) = table.load_headers_from(&mut reader) {
+            assert!(false, "expected success but got error: {:?}", e);
+        }
+        reader.seek(SeekFrom::Start(0)).unwrap();
+        match table.seek_to_record(&mut reader, 1) {
+            Ok(found) => assert!(found, "expected to be found"),
+            Err(e) => {
+                assert!(false, "expected success but got error: {:?}", e);
+            }
+        }
+        assert_eq!(reader.position(), table.calc_record_pos(1));
+        match table.seek_to_record(&mut reader, 10) {
+            Ok(found) => assert!(!found, "expected not to be found"),
+            Err(e) => {
+                assert!(false, "expected success but got error: {:?}", e);
+            }
+        }
+        assert_eq!(reader.position(), table.calc_record_pos(1));
+    }
+
+    #[test]
+    fn seek_to_record_without_fields() {
+        let (buf, _) = fake_table_without_fields(true).unwrap();
+        let mut reader = Cursor::new(buf.to_vec());
+        let mut table = FakeTable::new("my_table", Some(fake_table_uuid()));
+        if let Err(e) = table.load_headers_from(&mut reader) {
+            assert!(false, "expected success but got error: {:?}", e);
+        }
+        match table.seek_to_record(&mut reader, 0) {
+            Ok(found) => assert!(found, "expected error TableError::NoFields"),
+            Err(e) => match e.downcast::<TableError>() {
+                Ok(ex) => match ex {
+                    TableError::NoFields => assert!(true),
+                    _ => assert!(false, "expected TableError::NoFields but got: {:?}", ex),
+                },
+                Err(err) => assert!(false, "expected TableError::NoFields but got: {:?}", err),
+            }
+        }
+    }
+
+    #[test]
+    fn unsafe_next_record() {
+        let (buf, _, _) = fake_table_with_fields(true).unwrap();
+        let mut reader = Cursor::new(buf.to_vec());
+        let mut table = FakeTable::new("my_table", Some(fake_table_uuid()));
+        if let Err(e) = table.load_headers_from(&mut reader) {
+            assert!(false, "expected success but got error: {:?}", e);
+        }
+        reader.seek(SeekFrom::Start(table.calc_record_pos(1))).unwrap();
+        match table.unsafe_next_record(&mut reader) {
+            Ok(record) => {
+                assert_eq!(record.len(), 2);
+                match record.get("foo") {
+                    Some(v) => assert_eq!(v, &Value::I32(345345345i32)),
+                    None => assert!(false, "expected foo but got None"),
+                }
+                match record.get("bar") {
+                    Some(v) => assert_eq!(v, &Value::Str("dfeg".to_string())),
+                    None => assert!(false, "expected bar but got None"),
+                }
+            },
+            Err(e) => assert!(false, "expected success but got error: {:?}", e),
+        }
+    }
+    #[test]
+    fn unsafe_next_record_bad_pos() {
+        let (buf, _, _) = fake_table_with_fields(true).unwrap();
+        let mut reader = Cursor::new(buf.to_vec());
+        let mut table = FakeTable::new("my_table", Some(fake_table_uuid()));
+        if let Err(e) = table.load_headers_from(&mut reader) {
+            assert!(false, "expected success but got error: {:?}", e);
+        }
+        reader.seek(SeekFrom::Start(0)).unwrap();
+        match table.unsafe_next_record(&mut reader) {
+            Ok(record) => assert!(false, "expected error but got {:?}", record),
+            Err(_) => assert!(true),
+        }
     }
 
     #[test]
