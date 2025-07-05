@@ -16,7 +16,7 @@ impl<'reader, 'table, R: Read + Seek> Iterator for IterRecord<'reader, 'table, R
         if self.min > self.max {
             return None;
         }
-        let record = match self.table.unsafe_next_record(self.reader) {
+        let record = match self.table.unsafe_record_from(self.reader) {
             Ok(v) => v,
             Err(_) => return None
         };

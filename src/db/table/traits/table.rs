@@ -84,6 +84,15 @@ pub trait TableTrait {
         }
         Ok(false)
     }
+
+    /// *UNSAFE*, returns the next record assuming the reader is at the correct position.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `reader` - Byte reader.
+    fn unsafe_record_from(&self, reader: &mut (impl Read + Seek)) -> Result<Record> {
+        Ok(self.header_ref().record.read_record(reader)?)
+    }
     
     /// Move to index position and then read the record from a reader.
     /// 
@@ -93,20 +102,29 @@ pub trait TableTrait {
     /// * `index` - Record index.
     fn record_from(&self, reader: &mut (impl Read + Seek), index: u64) -> Result<Option<Record>> {
         if self.seek_to_record(reader, index)? {
-            return Ok(Some(self.header_ref().record.read_record(reader)?));
+            return Ok(Some(self.unsafe_record_from(reader)?));
         }
         Ok(None)
     }
 
-    /// Updates or append a record into the table file.
+    /// *UNSAFE*, writes a record into a writer assuming the writer is at the correct position.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `writer` - Byte writer.
+    /// * `record` - Record to save.
+    fn unsafe_save_record_into(&self, writer: &mut (impl Write + Seek), record: &Record) -> Result<()> {
+        Ok(self.header_ref().record.write_record(writer, record)?)
+    }
+
+    /// Updates a record into the table file.
     /// 
     /// # Arguments
     /// 
     /// * `writer` - Byte writer.
     /// * `index` - Index value index.
     /// * `record` - Record to save.
-    /// * `save_headers` - Headers will be saved on append when true.
-    fn save_record_into(&mut self, writer: &mut (impl Write + Seek), index: u64, record: &Record, save_headers: bool) -> Result<()> {
+    fn save_record_into(&mut self, writer: &mut (impl Write + Seek), index: u64, record: &Record) -> Result<()> {
         // validate table
         if self.header_ref().record.len() < 1 {
             bail!(TableError::NoFields)
@@ -118,15 +136,23 @@ pub trait TableTrait {
         // seek and write record
         let pos = self.calc_record_pos(index);
         writer.seek(SeekFrom::Start(pos))?;
-        self.header_ref().record.write_record(writer, &record)?;
-        
-        // exit when no append
-        if index < self.header_ref().meta.record_count {
-            return Ok(())
-        }
+        self.unsafe_save_record_into(writer, record)?;
 
-        // increase record count on append
+        Ok(())
+    }
+
+    /// Appends a record into the table file.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `writer` - Byte writer.
+    /// * `record` - Record to save.
+    /// * `save_headers` - Headers will be saved on append when true.
+    fn append_record_into(&mut self, writer: &mut (impl Write + Seek), record: &Record, save_headers: bool) -> Result<()> {
         self.header_mut().meta.record_count += 1;
+        self.save_record_into(writer, self.header_ref().meta.record_count - 1, record)?;
+
+        // save headers when required
         if save_headers {
             writer.flush()?;
             self.save_headers_into(writer)?;
@@ -300,15 +326,6 @@ pub trait TableTrait {
             self.save_headers_into(writer)?;
         }
         Ok(())
-    }
-
-    /// *UNSAFE*, returns the next record assuming the reader is at the correct position.
-    /// 
-    /// # Arguments
-    /// 
-    /// * `reader` - Byte reader.
-    fn unsafe_next_record(&self, reader: &mut (impl Read + Seek)) -> Result<Record> {
-        Ok(self.header_ref().record.read_record(reader)?)
     }
 }
 
@@ -545,7 +562,7 @@ mod tests {
     use test_helper::*;
     use std::io::Cursor;
     use crate::test_helper::*;
-    use crate::db::field::Value;
+    use crate::db::field::{FieldType, Value};
     use crate::db::table::meta::test_helper::build_meta_bytes;
     use crate::db::table::meta::Meta;
     use crate::traits::ByteSized;
@@ -645,7 +662,7 @@ mod tests {
     }
 
     #[test]
-    fn unsafe_next_record() {
+    fn unsafe_record_from() {
         let (buf, _, _) = fake_table_with_fields(true).unwrap();
         let mut reader = Cursor::new(buf.to_vec());
         let mut table = FakeTable::new("my_table", Some(fake_table_uuid()));
@@ -653,7 +670,7 @@ mod tests {
             assert!(false, "expected success but got error: {:?}", e);
         }
         reader.seek(SeekFrom::Start(table.calc_record_pos(1))).unwrap();
-        match table.unsafe_next_record(&mut reader) {
+        match table.unsafe_record_from(&mut reader) {
             Ok(record) => {
                 assert_eq!(record.len(), 2);
                 match record.get("foo") {
@@ -669,7 +686,7 @@ mod tests {
         }
     }
     #[test]
-    fn unsafe_next_record_bad_pos() {
+    fn unsafe_record_from_bad_pos() {
         let (buf, _, _) = fake_table_with_fields(true).unwrap();
         let mut reader = Cursor::new(buf.to_vec());
         let mut table = FakeTable::new("my_table", Some(fake_table_uuid()));
@@ -677,7 +694,7 @@ mod tests {
             assert!(false, "expected success but got error: {:?}", e);
         }
         reader.seek(SeekFrom::Start(0)).unwrap();
-        match table.unsafe_next_record(&mut reader) {
+        match table.unsafe_record_from(&mut reader) {
             Ok(record) => assert!(false, "expected error but got {:?}", record),
             Err(_) => assert!(true),
         }
@@ -796,9 +813,28 @@ mod tests {
         let expected = "can't write or append the record, the table file is too small";
         records[2].set("foo", Value::I32(11));
         records[2].set("bar", Value::Str("hello".to_string()));
-        match table.save_record_into(&mut writer, 2, &records[2], true) {
+        match table.save_record_into(&mut writer, 2, &records[2]) {
             Ok(v) => assert!(false, "expected error but got {:?}", v),
             Err(e) => assert_eq!(expected, e.to_string())
+        }
+    }
+
+
+    #[test]
+    fn unsafe_save_record_into() {
+        // create table
+        let mut table = FakeTable::new("my_table", Some(fake_table_uuid()));
+        let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+        let mut records = write_fake_table(&mut writer, false).unwrap();
+        add_fields(&mut table.header.record).unwrap();
+
+        // test
+        records[2].set("foo", Value::I32(11));
+        records[2].set("bar", Value::Str("hello".to_string()));
+        table.seek_to_record(&mut writer, 3).unwrap();
+        match table.unsafe_save_record_into(&mut writer, &records[2]) {
+            Ok(v) => assert!(true),
+            Err(e) => assert!(false, "expected success but got error: {:?}", e)
         }
     }
 
@@ -846,7 +882,7 @@ mod tests {
         ];
         records[2].set("foo", Value::I32(11));
         records[2].set("bar", Value::Str("hello".to_string()));
-        if let Err(e) = table.save_record_into(&mut data, 2, &records[2], true) {
+        if let Err(e) = table.save_record_into(&mut data, 2, &records[2]) {
             assert!(false, "expected success but got error: {:?}", e)
         }
         if let Err(e) = data.seek(SeekFrom::Start(0)) {
@@ -870,6 +906,31 @@ mod tests {
         assert_eq!(old_bytes_before, new_bytes_before);
         assert_eq!(expected, buf);
         assert_eq!(old_bytes_after, new_bytes_after);
+    }
+
+    #[test]
+    fn append_record_into() {
+        let mut table = FakeTable::new("my_table", Some(fake_table_uuid()));
+        table.header_mut().record.add("foo", FieldType::I32).unwrap();
+        let mut writer: Cursor<Vec<u8>> = Cursor::new(Vec::new());
+        table.save_headers_into(&mut writer).unwrap();
+        let expected_values = vec![11i32, 22i32, 33i32, 44i32];
+        for index in 0..expected_values.len() {
+            let mut record = table.header_ref().record.new_record().unwrap();
+            record.set("foo", Value::I32(expected_values[index]));
+            table.append_record_into(&mut writer, &record, false).unwrap();
+            assert_eq!(table.header_ref().meta.record_count, index as u64 + 1);
+        }
+        assert_eq!(table.header_ref().meta.record_count, 4);
+        for index in 0..expected_values.len() {
+            match table.record_from(&mut writer, index as u64) {
+                Ok(opt) => match opt {
+                    Some(v) => assert_eq!(v.get("foo").unwrap(), &Value::I32(expected_values[index])),
+                    None => assert!(false, "expected record with foo {} but got None", expected_values[index])
+                },
+                Err(e) => assert!(false, "expected success but got error: {:?}", e)
+            }
+        }
     }
 
     #[test]
@@ -970,7 +1031,7 @@ mod tests {
         // test
         records[2].set("foo", Value::I32(11));
         records[2].set("bar", Value::Str("hello".to_string()));
-        match table.save_record_into(&mut data, 2, &records[2], true) {
+        match table.save_record_into(&mut data, 2, &records[2]) {
             Ok(()) => assert!(false, "expected TableError::NoFields but got success"),
             Err(e) => match e.downcast::<TableError>() {
                 Ok(ex) => match ex {

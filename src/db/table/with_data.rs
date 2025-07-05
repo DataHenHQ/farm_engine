@@ -96,8 +96,18 @@ impl<T: Read + Write + Seek, E, S: DataTrait<T, E>> TableWithData<T, E, S> {
     /// * `index` - Index value index.
     /// * `record` - Record to save.
     /// * `save_headers` - Headers will be saved on append when true.
-    pub fn save_record(&mut self, index: u64, record: &Record, save_headers: bool) -> Result<()> {
-        self.base.save_record_into(&mut self.data, index, record, save_headers)
+    pub fn save_record(&mut self, index: u64, record: &Record) -> Result<()> {
+        self.base.save_record_into(&mut self.data, index, record)
+    }
+
+    /// Appends a record into the table file.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `record` - Record to append.
+    /// * `save_headers` - Headers will be saved on append when true.
+    pub fn append_record(&mut self, record: &Record, save_headers: bool) -> Result<()> {
+        self.base.append_record_into(&mut self.data, record, save_headers)
     }
 
     /// Perform a healthckeck over the table.
@@ -124,7 +134,7 @@ mod tests {
     use std::io::Cursor;
     use crate::error::TableError;
     use crate::Data;
-    use crate::db::field::Value;
+    use crate::db::field::{FieldType, Value};
     use crate::db::table::Header;
     use crate::db::table::meta::Meta;
     use crate::db::table::traits::table_test_helper::*;
@@ -263,7 +273,7 @@ mod tests {
         let expected = "can't write or append the record, the table file is too small";
         records[2].set("foo", Value::I32(11));
         records[2].set("bar", Value::Str("hello".to_string()));
-        match table.save_record(2, &records[2], true) {
+        match table.save_record(2, &records[2]) {
             Ok(v) => assert!(false, "expected error but got {:?}", v),
             Err(e) => assert_eq!(expected, e.to_string())
         }
@@ -313,7 +323,7 @@ mod tests {
         ];
         records[2].set("foo", Value::I32(11));
         records[2].set("bar", Value::Str("hello".to_string()));
-        if let Err(e) = table.save_record(2, &records[2], true) {
+        if let Err(e) = table.save_record(2, &records[2]) {
             assert!(false, "expected success but got error: {:?}", e)
         }
         if let Err(e) = table.data.rewind() {
@@ -352,7 +362,7 @@ mod tests {
         // test
         records[2].set("foo", Value::I32(11));
         records[2].set("bar", Value::Str("hello".to_string()));
-        match table.save_record(2, &records[2], true) {
+        match table.save_record(2, &records[2]) {
             Ok(()) => assert!(false, "expected TableError::NoFields but got success"),
             Err(e) => match e.downcast::<TableError>() {
                 Ok(ex) => match ex {
@@ -368,6 +378,31 @@ mod tests {
         table.data.rewind().unwrap();
         table.data.read_to_end(&mut buf).unwrap();
         assert_eq!(expected, buf);
+    }
+
+    #[test]
+    fn append_record_into() {
+        let data: Data<Cursor<Vec<u8>>> = Data::new(Cursor::new(Vec::new()), false);
+        let mut table = TableWithData::new(data, "my_table", Some(fake_table_uuid())).unwrap();
+        table.header_mut().record.add("foo", FieldType::I32).unwrap();
+        table.save_headers().unwrap();
+        let expected_values = vec![11i32, 22i32, 33i32, 44i32];
+        for index in 0..expected_values.len() {
+            let mut record = table.header_ref().record.new_record().unwrap();
+            record.set("foo", Value::I32(expected_values[index]));
+            table.append_record(&record, false).unwrap();
+            assert_eq!(table.header_ref().meta.record_count, index as u64 + 1);
+        }
+        assert_eq!(table.header_ref().meta.record_count, 4);
+        for index in 0..expected_values.len() {
+            match table.record(index as u64) {
+                Ok(opt) => match opt {
+                    Some(v) => assert_eq!(v.get("foo").unwrap(), &Value::I32(expected_values[index])),
+                    None => assert!(false, "expected record with foo {} but got None", expected_values[index])
+                },
+                Err(e) => assert!(false, "expected success but got error: {:?}", e)
+            }
+        }
     }
 
     #[test]

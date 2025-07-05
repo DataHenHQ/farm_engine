@@ -181,9 +181,18 @@ impl<'table> TableWithPath {
     /// 
     /// * `index` - Index value index.
     /// * `record` - Record to save.
+    pub fn save_record(&mut self, index: u64, record: &Record) -> Result<()> {
+        self.inner.save_record(index, record)
+    }
+
+    /// Appends a record into the table file.
+    /// 
+    /// # Arguments
+    /// 
+    /// * `record` - Record to append.
     /// * `save_headers` - Headers will be saved on append when true.
-    pub fn save_record(&mut self, index: u64, record: &Record, save_headers: bool) -> Result<()> {
-        self.inner.save_record(index, record, save_headers)
+    pub fn append_record(&mut self, record: &Record, save_headers: bool) -> Result<()> {
+        self.inner.append_record(record, save_headers)
     }
 
     /// Saves the headers and then jump back to the last writer stream position.
