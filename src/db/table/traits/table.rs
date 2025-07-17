@@ -833,7 +833,7 @@ mod tests {
         records[2].set("bar", Value::Str("hello".to_string()));
         table.seek_to_record(&mut writer, 3).unwrap();
         match table.unsafe_save_record_into(&mut writer, &records[2]) {
-            Ok(v) => assert!(true),
+            Ok(_) => assert!(true),
             Err(e) => assert!(false, "expected success but got error: {:?}", e)
         }
     }
