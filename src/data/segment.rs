@@ -30,43 +30,46 @@ impl<'data, T: Seek> Segment<'data, T> {
     /// 
     /// * `data` - Data to be used by the segment.
     /// * `start` - Start position of the segment.
-    /// * `size` - Size of the segment.
+    /// * `segment_size` - Size of the segment.
     /// * `pos` - Current position of the segment.
-    /// * `real_size` - Real size of the data.
+    /// * `data_size` - Real size of the data.
     /// * `allow_grow` - Whether to allow growing the segment size.
     #[allow(unused)]
-    pub fn inner_new_unsafe(data: &'data mut T, start: u64, size: u64, pos: u64, real_size: u64, allow_grow: bool) -> IoResult<Self> {
+    pub fn inner_new_unsafe(data: &'data mut T, start: u64, segment_size: u64, pos: u64, data_size: u64, allow_grow: bool) -> IoResult<Self> {
         // validate size
-        if !allow_grow && size < 1 {
+        if !allow_grow && segment_size < 1 {
             return Err(IoError::new(ErrorKind::InvalidData, "segment size must be greater than 0"));
         }
         Ok(Self {
             data,
             start,
-            size,
+            size: segment_size,
             pos,
-            real_size,
+            real_size: data_size,
             allow_grow
         })
     }
 
     /// Creates a new segment and moves the pointer to the start position without checking the data real size,
     /// this allows to increase the real data size (if data isn't static) as long as it remains within the
-    /// segment bounds or unless allowed to grow. It assumes the real_size as `start + size`.
+    /// segment bounds or unless allowed to grow.
     /// 
     /// # Arguments
     /// 
     /// * `data` - Data to be used by the segment.
     /// * `start` - Start position of the segment.
-    /// * `size` - Size of the segment.
+    /// * `segment_size` - Size of the segment.
+    /// * `data_size` - Real size of the data.
     /// * `allow_grow` - Whether to allow growing the segment defined size (if data isn't static).
     #[allow(unused)]
-    pub fn new_unsafe(data: &'data mut T, start: u64, size: u64, allow_grow: bool) -> IoResult<Self> {
+    pub fn new_unsafe(data: &'data mut T, start: u64, segment_size: u64, data_size: u64, allow_grow: bool) -> IoResult<Self> {
         let mut pos = data.stream_position()?;
         if pos < start {
-            pos = data.seek(SeekFrom::Start(start))?;
+            // force start position when the current position is under the start position
+            // due no negative seek positions rule
+            pos = data.seek(SeekFrom::Start(start.max(pos)))?;
         }
-        Self::inner_new_unsafe(data, start, size, pos, start + size, allow_grow)
+        Self::inner_new_unsafe(data, start, segment_size, pos, data_size, allow_grow)
     }
 
     /// Creates a new segment and moves the pointer to the start position checking the data real size first so
@@ -129,6 +132,9 @@ impl<'data, T: Write + Seek> Write for Segment<'data, T> {
         self.pos += written as u64;
         if self.allow_grow && self.pos > self.start + self.size {
             self.size = self.pos - self.start;
+            if self.pos > self.real_size {
+                self.real_size = self.pos;
+            }
         }
         Ok(written)
     }
@@ -151,16 +157,23 @@ impl<'data, T: Seek> Seek for Segment<'data, T> {
                 SeekFrom::Start(pos + self.start)
             },
             SeekFrom::End(pos) => {
+                let size = self.real_size.min(self.size + self.start) - self.start;
                 // handle overflow
                 if pos > 0 {
-                    self.pos = self.start + self.size + pos as u64;
-                    return Ok(self.pos - self.start);
+                    let new_pos = self.start + size + pos as u64;
+                    // handle real_size < size
+                    if new_pos > size + self.start {
+                        self.pos = new_pos;
+                        return Ok(self.pos - self.start);
+                    }
+                    SeekFrom::Start(new_pos - self.start)
+                } else {
+                    // handle underflow
+                    if ((-pos) as u64) > size {
+                        return Err(IoError::new(ErrorKind::InvalidData, "can't seek before the segment starting position"));
+                    }
+                    SeekFrom::Start(self.start + size - (-pos) as u64)
                 }
-                // handle underflow
-                if ((-pos) as u64) > self.size {
-                    return Err(IoError::new(ErrorKind::InvalidData, "can't seek before the segment starting position"));
-                }
-                SeekFrom::Start(self.start + self.size - (-pos) as u64)
             },
             SeekFrom::Current(pos) => {
                 if pos > 0 {
@@ -326,7 +339,7 @@ mod tests {
     #[test]
     fn new_unsafe() {
         let mut data = std::io::Cursor::new(SAMPLE_DATA);
-        let segment = match Segment::new_unsafe(&mut data, 100, 1024, false) {
+        let segment = match Segment::new_unsafe(&mut data, 100, 1024, SAMPLE_DATA.len() as u64, false) {
             Ok(v) => v,
             Err(e) => {
                 assert!(false, "expected a new segment but got an error: {}", e);
@@ -348,7 +361,7 @@ mod tests {
     #[test]
     fn new_unsafe_size_zero() {
         let mut data = std::io::Cursor::new(SAMPLE_DATA);
-        match Segment::new_unsafe(&mut data, 4, 0, false) {
+        match Segment::new_unsafe(&mut data, 4, 0, SAMPLE_DATA.len() as u64, false) {
             Ok(_) => assert!(false, "expected an error but got a segment"),
             Err(e) => {
                 let msg = e.to_string();
@@ -364,7 +377,7 @@ mod tests {
     fn new_unsafe_allow_grow_size_zero() {
         let mut data = std::io::Cursor::new(Vec::new());
         data.write_all(&SAMPLE_DATA).unwrap();
-        let segment = match Segment::new_unsafe(&mut data, 4, 0, true) {
+        let segment = match Segment::new_unsafe(&mut data, 4, 0, 0, true) {
             Ok(v) => v,
             Err(e) => {
                 assert!(false, "expected a new segment but got an error: {}", e);
@@ -390,7 +403,7 @@ mod tests {
     fn read() {
         let mut data = std::io::Cursor::new(SAMPLE_DATA);
         data.seek(SeekFrom::Start(5)).unwrap();
-        let mut segment = match Segment::new_unsafe(&mut data, 5, 10, false) {
+        let mut segment = match Segment::new_unsafe(&mut data, 5, 10, SAMPLE_DATA.len() as u64, false) {
             Ok(v) => v,
             Err(e) => {
                 assert!(false, "expected a new segment but got an error: {}", e);
@@ -413,7 +426,7 @@ mod tests {
     #[test]
     fn read_past_end() {
         let mut data = std::io::Cursor::new(SAMPLE_DATA);
-        let mut segment = match Segment::new_unsafe(&mut data, 7, 3, false) {
+        let mut segment = match Segment::new_unsafe(&mut data, 7, 3, SAMPLE_DATA.len() as u64, false) {
             Ok(v) => v,
             Err(e) => {
                 assert!(false, "expected a new segment but got an error: {}", e);
@@ -437,7 +450,7 @@ mod tests {
     fn read_past_end_with_offset() {
         let mut data = std::io::Cursor::new(SAMPLE_DATA);
         data.seek(SeekFrom::Start(7)).unwrap();
-        let mut segment = match Segment::new_unsafe(&mut data, 5, 5, false) {
+        let mut segment = match Segment::new_unsafe(&mut data, 5, 5, SAMPLE_DATA.len() as u64, false) {
             Ok(v) => v,
             Err(e) => {
                 assert!(false, "expected a new segment but got an error: {}", e);
@@ -461,7 +474,7 @@ mod tests {
     fn read_within_segment_negative_offset() {
         let mut data = std::io::Cursor::new(SAMPLE_DATA);
         data.seek(SeekFrom::Start(2)).unwrap();
-        let mut segment = match Segment::new_unsafe(&mut data, 5, 10, false) {
+        let mut segment = match Segment::new_unsafe(&mut data, 5, 10, SAMPLE_DATA.len() as u64, false) {
             Ok(v) => v,
             Err(e) => {
                 assert!(false, "expected a new segment but got an error: {}", e);
@@ -485,7 +498,7 @@ mod tests {
     fn read_within_segment_with_offset() {
         let mut data = std::io::Cursor::new(SAMPLE_DATA);
         data.seek(SeekFrom::Start(4)).unwrap();
-        let mut segment = match Segment::new_unsafe(&mut data, 2, 10, false) {
+        let mut segment = match Segment::new_unsafe(&mut data, 2, 10, SAMPLE_DATA.len() as u64, false) {
             Ok(v) => v,
             Err(e) => {
                 assert!(false, "expected a new segment but got an error: {}", e);
@@ -509,7 +522,7 @@ mod tests {
     fn read_after_end_with_offset() {
         let mut data = std::io::Cursor::new(SAMPLE_DATA);
         data.seek(SeekFrom::Start(10)).unwrap();
-        let mut segment = match Segment::new_unsafe(&mut data, 5, 3, false) {
+        let mut segment = match Segment::new_unsafe(&mut data, 5, 3, SAMPLE_DATA.len() as u64, false) {
             Ok(v) => v,
             Err(e) => {
                 assert!(false, "expected a new segment but got an error: {}", e);
@@ -533,7 +546,7 @@ mod tests {
     fn read_after_end_without_offset() {
         let mut data = std::io::Cursor::new(SAMPLE_DATA);
         data.seek(SeekFrom::Start(8)).unwrap();
-        let mut segment = match Segment::new_unsafe(&mut data, 5, 3, false) {
+        let mut segment = match Segment::new_unsafe(&mut data, 5, 3, SAMPLE_DATA.len() as u64, false) {
             Ok(v) => v,
             Err(e) => {
                 assert!(false, "expected a new segment but got an error: {}", e);
@@ -557,7 +570,7 @@ mod tests {
     fn write() {
         let mut data = std::io::Cursor::new([0u8; 20]);
         data.seek(SeekFrom::Start(5)).unwrap();
-        let mut segment = Segment::new_unsafe(&mut data, 5, 10, false).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 5, 10, 20, false).unwrap();
         let buf = [5, 6, 7, 8, 9];
         let written = match segment.write(&buf) {
             Ok(v) => v,
@@ -577,7 +590,7 @@ mod tests {
     fn write_past_end() {
         let mut data = std::io::Cursor::new([0u8; 20]);
         data.seek(SeekFrom::Start(8)).unwrap();
-        let mut segment = Segment::new_unsafe(&mut data, 5, 3, false).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 5, 3, 20, false).unwrap();
         assert_eq!(segment.data.stream_position().unwrap(), 8);
         assert_eq!(segment.pos, 8);
         let buf = [1, 2, 3, 4, 5];
@@ -602,7 +615,7 @@ mod tests {
     fn write_allow_grow_past_end() {
         let mut data = std::io::Cursor::new([0u8; 20]);
         data.seek(SeekFrom::Start(8)).unwrap();
-        let mut segment = Segment::new_unsafe(&mut data, 5, 3, true).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 5, 3, 20, true).unwrap();
         let buf = [8, 9, 10, 11, 12];
         let written = match segment.write(&buf) {
             Ok(v) => v,
@@ -624,7 +637,7 @@ mod tests {
     fn write_past_end_with_offset() {
         let mut data = std::io::Cursor::new([0u8; 20]);
         data.seek(SeekFrom::Start(7)).unwrap();
-        let mut segment = Segment::new_unsafe(&mut data, 5, 5, false).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 5, 5, 20, false).unwrap();
         assert_eq!(segment.data.stream_position().unwrap(), 7);
         assert_eq!(segment.pos, 7);
         let buf = [7, 8, 9, 10, 11];
@@ -649,7 +662,7 @@ mod tests {
     fn write_past_allow_grow_end_with_offset() {
         let mut data = std::io::Cursor::new([0u8; 20]);
         data.seek(SeekFrom::Start(7)).unwrap();
-        let mut segment = Segment::new_unsafe(&mut data, 5, 5, true).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 5, 5, 20, true).unwrap();
         let buf = [7, 8, 9, 10, 11];
         let written = match segment.write(&buf) {
             Ok(v) => v,
@@ -671,7 +684,7 @@ mod tests {
     fn write_within_segment_negative_offset() {
         let mut data = std::io::Cursor::new([0u8; 20]);
         data.seek(SeekFrom::Start(2)).unwrap();
-        let mut segment = Segment::new_unsafe(&mut data, 5, 11, false).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 5, 11, 20, false).unwrap();
         let buf = [5, 6, 7, 8, 9];
         let written = match segment.write(&buf) {
             Ok(v) => v,
@@ -691,7 +704,7 @@ mod tests {
     fn write_within_segment_with_offset() {
         let mut data = std::io::Cursor::new([0u8; 20]);
         data.seek(SeekFrom::Start(4)).unwrap();
-        let mut segment = Segment::new_unsafe(&mut data, 2, 10, false).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 2, 10, 20, false).unwrap();
         let buf = [4, 5, 6, 7, 8];
         let written = match segment.write(&buf) {
             Ok(v) => v,
@@ -710,7 +723,7 @@ mod tests {
     fn write_real_grow_within_offset() {
         let mut data = std::io::Cursor::new(vec![0u8; 20]);
         data.seek(SeekFrom::Start(18)).unwrap();
-        let mut segment = Segment::new_unsafe(&mut data, 18, 10, false).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 18, 10, 20, false).unwrap();
         let buf = [18, 19, 20, 21, 22];
         let written = match segment.write(&buf) {
             Ok(v) => v,
@@ -732,7 +745,7 @@ mod tests {
     fn write_allow_grow_real_grow() {
         let mut data = std::io::Cursor::new(vec![0u8; 20]);
         data.seek(SeekFrom::Start(18)).unwrap();
-        let mut segment = Segment::new_unsafe(&mut data, 18, 1, true).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 18, 1, 20, true).unwrap();
         let buf = [18, 19, 20, 21, 22];
         let written = match segment.write(&buf) {
             Ok(v) => v,
@@ -754,7 +767,7 @@ mod tests {
     fn write_after_end_with_offset() {
         let mut data = std::io::Cursor::new([0u8; 20]);
         data.seek(SeekFrom::Start(10)).unwrap();
-        let mut segment = Segment::new_unsafe(&mut data, 5, 3, false).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 5, 3, 20, false).unwrap();
         assert_eq!(segment.data.stream_position().unwrap(), 10);
         assert_eq!(segment.pos, 10);
         let buf = [1, 2, 3, 4, 5];
@@ -779,7 +792,7 @@ mod tests {
     fn write_after_end_without_offset() {
         let mut data = std::io::Cursor::new([0u8; 20]);
         data.seek(SeekFrom::Start(8)).unwrap();
-        let mut segment = Segment::new_unsafe(&mut data, 5, 3, false).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 5, 3, 20, false).unwrap();
         assert_eq!(segment.data.stream_position().unwrap(), 8);
         assert_eq!(segment.pos, 8);
         let buf = [1, 2, 3, 4, 5];
@@ -803,7 +816,7 @@ mod tests {
     #[test]
     fn seek_current() {
         let mut data = std::io::Cursor::new([0u8; 20]);
-        let mut segment = Segment::new_unsafe(&mut data, 5, 10, false).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 5, 10, 20, false).unwrap();
         assert_eq!(segment.data.stream_position().unwrap(), 5);
         let pos = segment.seek(SeekFrom::Current(5)).unwrap();
         assert_eq!(pos, 5);
@@ -814,7 +827,7 @@ mod tests {
     fn seek_current_position_adjustment_positive() {
         let mut data = std::io::Cursor::new([0u8; 20]);
         data.seek(SeekFrom::Start(2)).unwrap();
-        let mut segment = Segment::new_unsafe(&mut data, 5, 10, false).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 5, 10, 20, false).unwrap();
         let pos = segment.seek(SeekFrom::Current(2)).unwrap();
         assert_eq!(pos, 2);
         assert_eq!(data.position(), 7);
@@ -824,7 +837,7 @@ mod tests {
     fn seek_current_position_adjustment_negative() {
         let mut data = std::io::Cursor::new([0u8; 20]);
         data.seek(SeekFrom::Start(8)).unwrap();
-        let mut segment = Segment::new_unsafe(&mut data, 5, 10, false).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 5, 10, 20, false).unwrap();
         assert_eq!(segment.data.stream_position().unwrap(), 8);
         assert_eq!(segment.pos, 8);
         match segment.seek(SeekFrom::Current(-2)) {
@@ -841,7 +854,7 @@ mod tests {
     fn seek_current_position_adjustment_negative_before_start() {
         let mut data = std::io::Cursor::new([0u8; 20]);
         data.seek(SeekFrom::Start(2)).unwrap();
-        let mut segment = Segment::new_unsafe(&mut data, 5, 10, false).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 5, 10, 20, false).unwrap();
         match segment.seek(SeekFrom::Current(-1)) {
             Ok(_) => {
                 assert!(false, "expected an error but got Ok");
@@ -863,7 +876,7 @@ mod tests {
     #[test]
     fn seek_current_overflow() {
         let mut data = std::io::Cursor::new([0u8; 20]);
-        let mut segment = Segment::new_unsafe(&mut data, 5, 5, false).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 5, 5, 20, false).unwrap();
         assert_eq!(segment.data.stream_position().unwrap(), 5);
         match segment.seek(SeekFrom::Current(6)) {
             Ok(pos) => {
@@ -880,7 +893,7 @@ mod tests {
     fn seek_current_before_start() {
         let mut data = std::io::Cursor::new([0u8; 20]);
         data.seek(SeekFrom::Start(7)).unwrap();
-        let mut segment = Segment::new_unsafe(&mut data, 5, 5, false).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 5, 5, 20, false).unwrap();
         match segment.seek(SeekFrom::Current(-3)) {
             Ok(_) => {
                 assert!(false, "expected an error but got Ok");
@@ -902,7 +915,7 @@ mod tests {
     #[test]
     fn seek_start() {
         let mut data = std::io::Cursor::new([0u8; 20]);
-        let mut segment = Segment::new_unsafe(&mut data, 5, 10, false).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 5, 10, 20, false).unwrap();
         assert_eq!(segment.data.stream_position().unwrap(), 5);
         assert_eq!(segment.pos, 5);
         let pos = segment.seek(SeekFrom::Start(3)).unwrap();
@@ -913,7 +926,7 @@ mod tests {
     #[test]
     fn seek_start_overflow() {
         let mut data = std::io::Cursor::new([0u8; 20]);
-        let mut segment = Segment::new_unsafe(&mut data, 5, 5, false).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 5, 5, 20, false).unwrap();
         assert_eq!(segment.data.stream_position().unwrap(), 5);
         assert_eq!(segment.pos, 5);
         match segment.seek(SeekFrom::Start(6)) {
@@ -929,7 +942,7 @@ mod tests {
     #[test]
     fn seek_end() {
         let mut data = std::io::Cursor::new([0u8; 20]);
-        let mut segment = Segment::new_unsafe(&mut data, 5, 5, false).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 5, 5, 20, false).unwrap();
         assert_eq!(segment.data.stream_position().unwrap(), 5);
         assert_eq!(segment.pos, 5);
         let pos = segment.seek(SeekFrom::End(-3)).unwrap();
@@ -942,7 +955,7 @@ mod tests {
     fn seek_end_before_start() {
         let mut data = std::io::Cursor::new([0u8; 20]);
         data.seek(SeekFrom::Start(5)).unwrap();
-        let mut segment = Segment::new_unsafe(&mut data, 5, 5, false).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 5, 5, 20, false).unwrap();
         match segment.seek(SeekFrom::End(-6)) {
             Ok(_) => {
                 assert!(false, "expected an error but got Ok");
@@ -964,7 +977,7 @@ mod tests {
     #[test]
     fn seek_end_after_end() {
         let mut data = std::io::Cursor::new([0u8; 20]);
-        let mut segment = Segment::new_unsafe(&mut data, 5, 5, false).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 5, 5, 20, false).unwrap();
         assert_eq!(segment.data.stream_position().unwrap(), 5);
         assert_eq!(segment.pos, 5);
         match segment.seek(SeekFrom::End(1)) {
@@ -972,6 +985,22 @@ mod tests {
                 assert_eq!(pos, 6);
                 assert_eq!(segment.data.stream_position().unwrap(), 5);
                 assert_eq!(segment.pos, 11);
+            },
+            Err(e) => assert!(false, "expected a seek but got an error: {}", e),
+        }
+    }
+
+    #[test]
+    fn seek_end_size_not_real_size() {
+        let mut data = std::io::Cursor::new([0u8; 20]);
+        let mut segment = Segment::new_unsafe(&mut data, 5, 5, 8, false).unwrap();
+        assert_eq!(segment.data.stream_position().unwrap(), 5);
+        assert_eq!(segment.pos, 5);
+        match segment.seek(SeekFrom::End(0)) {
+            Ok(pos) => {
+                assert_eq!(pos, 3);
+                assert_eq!(segment.data.stream_position().unwrap(), 8);
+                assert_eq!(segment.pos, 8);
             },
             Err(e) => assert!(false, "expected a seek but got an error: {}", e),
         }
