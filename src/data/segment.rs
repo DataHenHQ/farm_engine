@@ -88,6 +88,11 @@ impl<'data, T: Seek> Segment<'data, T> {
         let pos = data.seek(SeekFrom::Start(start))?; 
         Self::inner_new_unsafe(data, start, size, pos, real_size, allow_grow)
     }
+
+    /// Releases the data from the segment.
+    pub fn release(self) -> &'data mut T {
+        self.data
+    }
 }
 
 impl<'data, T: Read + Seek> Read for Segment<'data, T> {
