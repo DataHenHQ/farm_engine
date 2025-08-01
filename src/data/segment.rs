@@ -2,7 +2,7 @@ use std::io::{Read, Seek, SeekFrom, Write, Result as IoResult, ErrorKind, Error 
 
 /// Represents a segment of a data with read/write/seek capabilities, useful for accessing a part of a file
 /// or a buffer, similar to `std::io::Take` but with `Seek` support.
-#[allow(unused)]
+#[derive(PartialEq, Debug)]
 pub struct Segment<'data, T: Seek>{
     /// Data to be used by the segment.
     data: &'data mut T,
@@ -34,7 +34,6 @@ impl<'data, T: Seek> Segment<'data, T> {
     /// * `pos` - Current position of the segment.
     /// * `data_size` - Real size of the data.
     /// * `allow_grow` - Whether to allow growing the segment size.
-    #[allow(unused)]
     pub fn inner_new_unsafe(data: &'data mut T, start: u64, segment_size: u64, pos: u64, data_size: u64, allow_grow: bool) -> IoResult<Self> {
         // validate size
         if !allow_grow && segment_size < 1 {
@@ -61,7 +60,6 @@ impl<'data, T: Seek> Segment<'data, T> {
     /// * `segment_size` - Size of the segment.
     /// * `data_size` - Real size of the data.
     /// * `allow_grow` - Whether to allow growing the segment defined size (if data isn't static).
-    #[allow(unused)]
     pub fn new_unsafe(data: &'data mut T, start: u64, segment_size: u64, data_size: u64, allow_grow: bool) -> IoResult<Self> {
         let mut pos = data.stream_position()?;
         if pos < start {
@@ -82,7 +80,6 @@ impl<'data, T: Seek> Segment<'data, T> {
     /// * `size` - Size of the segment.
     /// * `allow_grow` - Whether to allow growing the segment size (if data isn't static). An error is
     ///   triggered when the segment size overflows the real size.
-    #[allow(unused)]
     pub fn new(data: &'data mut T, start: u64, size: u64, allow_grow: bool) -> IoResult<Self> {
         let real_size = data.seek(SeekFrom::End(0))?;
         if !allow_grow && real_size < start + size {
