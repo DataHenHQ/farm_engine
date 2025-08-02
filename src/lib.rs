@@ -3,7 +3,7 @@ pub mod traits;
 mod data;
 pub mod db;
 
-pub use data::{Data, Segment};
+pub use data::{Data, Segment, SegmentMeta};
 pub use uuid;
 
 use path_absolutize::Absolutize;

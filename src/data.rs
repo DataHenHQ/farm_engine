@@ -1,7 +1,7 @@
 mod segment;
 
 #[allow(unused)]
-pub use segment::Segment;
+pub use segment::*;
 
 use std::io::{Read, Write, Seek};
 
