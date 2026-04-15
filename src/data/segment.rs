@@ -111,6 +111,36 @@ impl<'data, T: Seek> Segment<'data, T> {
             data
         }
     }
+
+    /// Returns the real position relative to the data.
+    pub fn real_pos(&self) -> u64 {
+        return self.meta.pos;
+    }
+
+    /// Resturn the starting position relative to the data.
+    pub fn start_pos(&self) -> u64 {
+        return self.meta.start;
+    }
+
+    /// Returns the position relative to the segment.
+    pub fn position(&self) -> u64 {
+        return self.meta.pos - self.meta.start;
+    }
+
+    /// Returns the current size of the segment.
+    pub fn size(&self) -> u64 {
+        return self.meta.size;
+    }
+
+    /// Returns whether the segment is allowed to grow.
+    pub fn is_grow_allowed(&self) -> bool {
+        return self.meta.allow_grow;
+    }
+
+    /// Disables the grow flag.
+    pub fn disable_grow(&mut self) {
+        self.meta.allow_grow = false;
+    }
 }
 
 impl<'data, T: Read + Seek> Read for Segment<'data, T> {
@@ -844,6 +874,20 @@ mod tests {
     }
 
     #[test]
+    fn seek_current_negative() {
+        let mut data = std::io::Cursor::new([0u8; 20]);
+        data.seek(SeekFrom::Start(8)).unwrap();
+        let mut segment = Segment::new_unsafe(&mut data, 5, 10, 20, false).unwrap();
+        segment.data.seek(SeekFrom::Start(13)).unwrap();
+        segment.meta.pos = 13;
+        assert_eq!(segment.data.stream_position().unwrap(), 13);
+        let pos = segment.seek(SeekFrom::Current(-3)).unwrap();
+        assert_eq!(pos, 5);
+        assert_eq!(segment.data.stream_position().unwrap(), 10);
+        assert_eq!(segment.meta.pos, 10);
+    }
+
+    #[test]
     fn seek_current_position_adjustment_positive() {
         let mut data = std::io::Cursor::new([0u8; 20]);
         data.seek(SeekFrom::Start(2)).unwrap();
@@ -1056,5 +1100,57 @@ mod tests {
         assert_eq!(segment.meta.real_size, 20);
         assert_eq!(segment.meta.allow_grow, false);
         assert_eq!(segment.data.stream_position().unwrap(), 0);
+    }
+
+    #[test]
+    fn test_real_pos() {
+        let mut data = std::io::Cursor::new(SAMPLE_DATA);
+        let mut segment = Segment::new_unsafe(&mut data, 5, 5, 20, true).unwrap();
+        segment.meta.pos = 10;
+        assert_eq!(segment.real_pos(), 10);
+    }
+
+    #[test]
+    fn test_start_pos() {
+        let mut data = std::io::Cursor::new(SAMPLE_DATA);
+        let segment = Segment::new_unsafe(&mut data, 3, 10, 20, true).unwrap();
+        assert_eq!(segment.start_pos(), 3);
+    }
+
+    #[test]
+    fn test_position() {
+        let mut data = std::io::Cursor::new(SAMPLE_DATA);
+        let mut segment = Segment::new_unsafe(&mut data, 10, 4, 20, true).unwrap();
+        // initial position should be start, so relative position is 0
+        assert_eq!(segment.position(), 0);
+        segment.meta.pos += 2;
+        assert_eq!(segment.position(), 2);
+    }
+
+    #[test]
+    fn test_size() {
+        let mut data = std::io::Cursor::new(SAMPLE_DATA);
+        let segment = Segment::new_unsafe(&mut data, 2, 8, 20, true).unwrap();
+        assert_eq!(segment.size(), 8);
+    }
+
+    #[test]
+    fn test_is_grow_allowed() {
+        let mut data = std::io::Cursor::new(SAMPLE_DATA);
+        let mut segment = Segment::new_unsafe(&mut data, 0, 10, 20, true).unwrap();
+        assert!(segment.is_grow_allowed());
+        segment.meta.allow_grow = false;
+        assert!(!segment.is_grow_allowed());
+    }
+
+    #[test]
+    fn test_disable_grow() {
+        let mut data = std::io::Cursor::new(SAMPLE_DATA);
+        let mut segment = Segment::new_unsafe(&mut data, 0, 10, 20, true).unwrap();
+        assert!(segment.meta.allow_grow);
+        segment.disable_grow();
+        assert!(!segment.meta.allow_grow);
+        segment.disable_grow();
+        assert!(!segment.meta.allow_grow);
     }
 }
